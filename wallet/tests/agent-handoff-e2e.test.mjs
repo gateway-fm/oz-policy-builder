@@ -46,7 +46,7 @@ test('actual stdio MCP delivers through real HTTP/client/controller; only wallet
     let imports = 0, reads = 0;
     const session = new WalletSession({ origin: 'http://localhost:3000', host: 'localhost:3000', secret: sessionToken });
     const actions = createWalletActions({ handoff, session, native: {},
-      delegates: { create: () => delegate, check: (cap, addr) => { assert.equal(cap, delegate.capabilityId); assert.equal(addr, delegate.address); } },
+      delegates: { available: true, create: () => delegate, check: (cap, addr) => { assert.equal(cap, delegate.capabilityId); assert.equal(addr, delegate.address); } },
       network: { profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0', ensureDelegateAccount: async () => {}, assertNetwork: async () => { reads++; }, requireInstance: async () => { reads++; }, latestLedger: async () => 123 },
       toolchain: { record: async () => { imports++; return f.record; }, generate: async () => f.artifact } });
     const server = createWalletServer({ session, actions, handoff });
