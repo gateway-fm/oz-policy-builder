@@ -478,6 +478,9 @@ export function createWalletActions({ session, toolchain, network, native = null
       if (handoff.view().pairingPending || handoff.view().connection) refuse();
       credential(input);
       if (accountAttempted) refuse();
+      // Operator-funded, no confirmation is offered while the operator's account cannot pay one
+      // transaction: the least the first write needs (`fundPayer`).
+      if (ownerFunded) await network.payerCovers(fees.maxFeeStroops);
       // Operator-funded, the wallet deploys two contracts and funds nothing: the owner sends the account its XLM.
       const summary = { credentialId: input.credentialId, publicKey: input.publicKey, accountWasm: ACCOUNT_WASM,
         verifierWasm: WEBAUTHN_WASM, sampleFundingStroops: ownerFunded ? '0' : '10000000', maxFeeStroops: fees.maxFeeStroops,
@@ -600,24 +603,30 @@ export function createWalletActions({ session, toolchain, network, native = null
       const { response: artifact } = held;
       if (attemptedArtifacts.has(input.artifactId) || attemptedArtifacts.size >= 8) refuse();
       // Operator-funded: the upload's simulated cost is shown first, and refused before consent when either cap would be passed.
-      let uploadSimulatedFeeStroops = null;
+      // Code already stored (an upload that returned before its creation was refused) is not uploaded again
+      // (`confirm-deploy`), so only the policy's creation is simulated, counted and asked of the payer.
+      let uploadSimulatedFeeStroops = null, codeStored = null;
       if (ownerFunded) {
-        const cost = await network.uploadCost(Buffer.from(held.wasmBase64, 'base64'));
-        uploadSimulatedFeeStroops = cost.feeStroops;
-        // A refusal names the operator setting that refused it, the simulated cost and the least value that lets it through.
-        const capped = (reason, setting, needed) => Object.assign(because(reason),
-          { limit: { setting, simulatedFeeStroops: cost.feeStroops, neededStroops: needed.toString() } });
-        if (BigInt(cost.feeStroops) > BigInt(fees.maxUploadFeeStroops)) throw capped('fee_cap', 'maxUploadFeeStroops', BigInt(cost.feeStroops));
-        // The upload, the policy's creation, and room for an installation and its removal.
-        const needed = BigInt(network.spentStroops) + BigInt(cost.feeStroops) + 3n * BigInt(fees.maxFeeStroops);
+        codeStored = (await network.codePresent(artifact.wasmHash)).present === true;
+        const cost = codeStored ? null : await network.uploadCost(Buffer.from(held.wasmBase64, 'base64'));
+        const uploadFee = cost ? BigInt(cost.feeStroops) : 0n;
+        uploadSimulatedFeeStroops = cost?.feeStroops ?? null;
+        // A refusal names the operator setting that refused it, the simulated upload cost and the least value that lets it
+        // through; with no upload to simulate, it names only the cap.
+        const capped = (reason, setting, needed) => (cost ? Object.assign(because(reason),
+          { limit: { setting, simulatedFeeStroops: cost.feeStroops, neededStroops: needed.toString() } }) : because(reason));
+        if (uploadFee > BigInt(fees.maxUploadFeeStroops)) throw capped('fee_cap', 'maxUploadFeeStroops', uploadFee);
+        // The upload unless stored, the policy's creation, and room for an installation and its removal.
+        const needed = BigInt(network.spentStroops) + uploadFee + 3n * BigInt(fees.maxFeeStroops);
         if (needed > BigInt(fees.sessionSpendCapStroops)) throw capped('spend_cap', 'sessionSpendCapStroops', needed);
-        // And the operator's account must be able to pay the upload and the policy's creation now, before consent.
-        await network.payerCovers(BigInt(cost.feeStroops) + BigInt(fees.maxFeeStroops));
+        // And the operator's account must be able to pay the upload, unless stored, and the policy's creation now, before consent.
+        await network.payerCovers(uploadFee + BigInt(fees.maxFeeStroops));
       }
       return { action: session.issue('deploy', { artifactId: input.artifactId }), summary: {
         specHash: artifact.specHash, wasmHash: artifact.wasmHash, maxFeeStroops: fees.maxFeeStroops,
-        maxUploadFeeStroops: fees.maxUploadFeeStroops, maxTotalFeeStroops: fees.maxUploadFeeStroops + fees.maxFeeStroops,
-        uploadSimulatedFeeStroops, sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops,
+        maxUploadFeeStroops: fees.maxUploadFeeStroops,
+        maxTotalFeeStroops: (codeStored ? 0 : fees.maxUploadFeeStroops) + fees.maxFeeStroops,
+        uploadSimulatedFeeStroops, codeStored, sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops,
       } };
     },
     'confirm-deploy': async (input) => {

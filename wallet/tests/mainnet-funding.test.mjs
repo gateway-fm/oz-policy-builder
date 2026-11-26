@@ -21,6 +21,7 @@ import { TESTNET_FEES, WalletNetwork } from '../server/network.mjs';
 import { readPinnedWasm, uploadInstruction } from '../server/pinned-code.mjs';
 import { HELPER_DEPLOY } from '../server/live-check.mjs';
 import { setup, deploymentFixture } from './actions-fixture.mjs';
+import { sampleTransfer } from './sample-fixture.mjs';
 
 const { mainnet: MAINNET, testnet: TESTNET } = WALLET_NETWORKS;
 /**
@@ -636,6 +637,82 @@ operatorTest('deployment is refused before consent when the operator account can
     assert.deepEqual(asked, [10_005_100n], 'the simulated upload plus one transaction for the policy\'s creation');
     assert.deepEqual(f.calls, [], 'nothing deployed');
   }
+});
+
+const payerUnfunded = () => Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' });
+
+operatorTest('a creation-only retry, once the code is stored, is previewed and checked with the creation\'s fee alone', async (_t, network) => {
+  const cost = '100000000';
+  const asked = [];
+  let simulated = 0;
+  // The upload returns and is counted; the creation is then refused before it is signed, so the artifact may be deployed again.
+  const f = deploymentFixture((value) => {
+    const upload = value.network.upload;
+    value.network.upload = async (...args) => { const result = await upload(...args); value.network.spentStroops = cost; return result; };
+    const create = value.network.create;
+    value.network.create = async () => { value.network.create = create; throw payerUnfunded(); };
+  }, { network: { profile: network, operatorFunded: true, fees: MAINNET_FEE_DEFAULTS, spentStroops: '0',
+    uploadCost: async () => { simulated++; return { resourceFeeStroops: cost, feeStroops: cost, ledger: 100 }; },
+    payerCovers: async (stroops) => { asked.push(BigInt(stroops)); } } });
+  const first = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+  assert.equal(first.summary.codeStored, false);
+  await assert.rejects(() => f.actions['confirm-deploy']({ id: first.action.id }), (error) => error.reason === 'payer_unfunded');
+  // Counting the upload again would need 100 spent + 100 + 3 × 10 XLM, past the 150 XLM session cap.
+  const again = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+  assert.equal(simulated, 1, 'the stored code is not simulated again');
+  assert.deepEqual(asked, [110_000_000n, 10_000_000n], 'the retry asks the payer for the policy\'s creation only');
+  assert.equal(again.summary.codeStored, true);
+  assert.equal(again.summary.uploadSimulatedFeeStroops, null);
+  assert.equal(again.summary.maxTotalFeeStroops, MAINNET_FEE_DEFAULTS.maxFeeStroops);
+  const deployed = await f.actions['confirm-deploy']({ id: again.action.id });
+  assert.deepEqual(deployed.receipts[0], { status: 'already_stored', wasmHash: f.artifact.wasmHash });
+  assert.equal(f.calls.filter((call) => call === 'upload').length, 1);
+});
+
+operatorTest('the account preview is refused before consent while the operator account cannot pay one transaction', async (_t, network) => {
+  for (const [spendable, refused] of [[9_999_999n, true], [10_000_000n, false]]) {
+    const asked = [];
+    const { actions, calls, f } = operatorActions(network, { payerCovers: async (stroops) => {
+      asked.push(BigInt(stroops));
+      if (BigInt(stroops) > spendable) throw payerUnfunded();
+    } });
+    const preview = actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
+    if (refused) await assert.rejects(() => preview, (error) => error.reason === 'payer_unfunded', String(spendable));
+    else assert.equal((await preview).summary.ownerFunds, true);
+    assert.deepEqual(asked, [BigInt(MAINNET_FEE_DEFAULTS.maxFeeStroops)], 'the per-transaction cap, as the first write needs');
+    assert.deepEqual(calls, [], 'nothing deployed');
+  }
+});
+
+operatorTest('the sample transfer is drafted for the owner\'s signature only while the operator account can pay its fee', async (t, network) => {
+  const sample = sampleTransfer();
+  const f = operatorNetwork(t, { network, fee: 2_500, change: (server) => {
+    const simulate = server.simulateTransaction;
+    // The record-mode draft of the sample transfer: the account's own authorization of exactly that call.
+    server.simulateTransaction = async (tx, resources, mode) => {
+      if (mode !== 'record') return simulate(tx, resources, mode);
+      const call = tx.toEnvelope().v1.tx.operations[0].body.invokeHostFunctionOp.hostFunction.invokeContract;
+      const entry = new xdr.SorobanAuthorizationEntry({ credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(
+        new xdr.SorobanAddressCredentials({ address: new Address(sample.wallet.contractId).toScAddress(), nonce: 4n,
+          signatureExpirationLedger: 0, signature: xdr.ScVal.scvVoid() })), rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(call), subInvocations: [] }) });
+      return { latestLedger: 100, result: { auth: [entry], retval: xdr.ScVal.scvVoid() } };
+    };
+  } });
+  sample.descriptor.recipient = f.network.payerAddress;
+  await f.network.fundPayer();
+  // Drawn down after the account's creation (another session, a manual payment): it can no longer pay the sample's fee.
+  const spendable = (stroops) => {
+    f.network.payerAccount = async () => ({ exists: true, balanceStroops: String(10_000_000n + stroops), minimumStroops: '10000000',
+      spendableStroops: String(stroops), ledger: 100 });
+  };
+  spendable(2_499n);
+  await assert.rejects(() => f.network.prepareSample({ ...sample, ownerReadLedger: 100 }), (error) => error.reason === 'payer_unfunded');
+  spendable(2_500n);
+  const prepared = await f.network.prepareSample({ ...sample, ownerReadLedger: 100 });
+  assert.equal(prepared.assembly.fee_stroops, 2_500);
+  assert.equal(f.calls.some((call) => call.sent), false);
+  assert.deepEqual(readdirSync(f.root), ['0000.session.json'], 'nothing signed or journaled');
 });
 
 test('mainnet: after an uncertain submission its whole fee stays counted and nothing else is sent', async (t) => {

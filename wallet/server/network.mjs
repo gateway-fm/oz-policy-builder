@@ -420,6 +420,9 @@ export class WalletNetwork {
       const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
       checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase, this.#fees);
       const final = assembled.toEnvelope();
+      // Operator-funded: the owner is asked to sign only a sample the operator's account can pay for,
+      // since a refusal after the signature would spend the sample's one attempt.
+      if (this.#payer.operator) await this.#payerCovers(final.v1.tx.fee);
       const restored = final.v1.tx.ext.sorobanData.ext;
       const assembly = {
         envelope_xdr_base64: final.toXDR('base64'), envelope_xdr_sha256: digest(bytes(final)), network_id: this.#network.networkId,

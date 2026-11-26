@@ -304,14 +304,17 @@ it yourself with the minimum reserve plus the session cap. The backend reads it,
 and refuses to sign while it cannot pay (`payer_unfunded`): before the first write but a removal its
 account must be able to spend at least the per-transaction cap, and before each write, a removal and
 a policy upload included, that transaction's own fee, read again just before it is signed. It is
-asked before the owner commits too: the policy deployment preview is refused when the account cannot
-pay the simulated upload and the policy's creation, and no installation entry is released for the
-passkey while it cannot pay one transaction. Such a refusal, like a cap's, signs, journals and counts
+asked before the owner commits too: the account preview is refused while the account cannot spend
+the per-transaction cap, the policy deployment preview while it cannot pay the simulated upload and
+the policy's creation, and no entry is released for the passkey while it cannot pay for it: the
+sample transfer's while the account cannot pay that transfer's fee, an installation's while it
+cannot spend the per-transaction cap. Such a refusal, like a cap's, signs, journals and counts
 nothing and leaves no submission uncertain, so the session can still write: an account creation, a
 policy deployment or an installation refused before anything was signed can be confirmed again once
 the account is funded (the installation once the entry released for it has expired). Nothing
 already done is paid for twice: a deployment whose upload had returned does not upload the code
-again, and an account creation whose verifier had been created reuses it once it reads back with
+again, and its new preview finds the code stored and checks the caps and the account against the
+policy's creation alone; an account creation whose verifier had been created reuses it once it reads back with
 the pinned code (the verifier holds no credential; the account's signer names it). The sample transfer is
 attempted once per session, whatever the cause. The key is held only in the backend's memory; it is not printed, logged, returned to the browser or written to the journal.
 It is only the source and fee payer of the backend's transactions, never a signer on an account:
