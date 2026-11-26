@@ -1024,8 +1024,7 @@ time.sleep(30)"#;
         .unwrap();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().canonicalize().unwrap().join("launcher");
-        std::fs::write(&path, source).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::write_executable(&path, &source, 0o700);
         let config = BuildConfig {
             worker_launcher: Some(path),
             ..BuildConfig::default()
