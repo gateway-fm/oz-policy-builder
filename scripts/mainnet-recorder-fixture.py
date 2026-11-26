@@ -17,8 +17,9 @@ script does both halves, read-only, against a public mainnet RPC:
       call the recorder's acquisition path makes for it: `getNetwork`, `getTransaction`
       (base64, as `ozpb_source_rpc::get_transaction` asks), and `getLedgerEntries` for the
       contract instances the transaction references. Then write the manifest. The corpus is
-      replaced only once every case has been captured, so a transaction that has left the
-      endpoint's retention cannot leave a mix of old and new cases behind.
+      replaced only once every case has been captured with every instance it references live
+      in the answer, so a transaction that has left the endpoint's retention, or an instance
+      that has since been archived, cannot leave a mix of old and new cases behind.
 
 Without --rpc, Gateway's public mainnet RPC is used, and mainnet.sorobanrpc.com if it does
 not answer.
@@ -180,17 +181,20 @@ def cases_of(record):
     arms = [arm(entry["credentials"]) for entry in auth]
     authorizers = [credential_address(entry["credentials"]) or tx["source_account"] for entry in auth]
     plain = 0 if kind == "tx" else 1  # a plain envelope keeps each case apart from the fee bump
+    # A fee bump counts only when another account pays: both fee-bump cases' tests require it.
+    payer = record["envelopeJson"]["tx_fee_bump"]["tx"]["fee_source"] if kind == "tx_fee_bump" else None
+    paid_by_another = payer is not None and payer != tx["source_account"]
     if not success:
         if call:
             found["failed-invocation"] = plain
         return found
-    if kind == "tx_fee_bump":
+    if paid_by_another and payer not in authorizers:
         # The relayer pattern: one party pays the fee, another authorizes the call.
         found["fee-bump-invocation"] = 0 if "address" in arms else 1
-    if call and call["function_name"] == "transfer" and arms == ["source_account"]:
-        # Fee-bumped, so the case pins that the credential resolves to the inner source and
-        # never to the fee payer.
-        found["sac-transfer-source-account"] = 0 if kind == "tx_fee_bump" else 1
+    if paid_by_another and call and call["function_name"] == "transfer" and arms == ["source_account"]:
+        # Fee-bumped only: the case pins that the credential resolves to the inner source and
+        # never to the fee payer, and its test requires the fee bump.
+        found["sac-transfer-source-account"] = 0
     if arms == ["address"] and authorizers[0].startswith("G") and authorizers[0] != tx["source_account"]:
         found["classic-address-credential"] = plain
     if any(a.startswith("C") for a in authorizers):
@@ -229,6 +233,23 @@ def instances(url, contracts):
         data = entry["dataJson"]["contract_data"]
         by_contract[data["contract"]] = data["val"]["contract_instance"]["executable"]
     return by_contract if len(by_contract) == len(contracts) else None
+
+
+def unusable_instances(keys, result):
+    """Why a `getLedgerEntries` answer cannot stand in the corpus, or None. The recorder refuses
+    a case unless every instance asked for is in the answer and live at its `latestLedger`."""
+    answered = [entry.get("key") for entry in result.get("entries") or []]
+    if len(set(answered)) != len(answered):
+        return "an instance is answered more than once"
+    if set(answered) - set(keys):
+        return "the answer holds an unrequested key"
+    entries = {entry.get("key"): entry for entry in result.get("entries") or []}
+    for key in keys:
+        if key not in entries:
+            return "an instance is missing from the answer"
+        if entries[key].get("liveUntilLedgerSeq", 0) < result["latestLedger"]:
+            return "an instance is archived"
+    return None
 
 
 def is_oz_account(url, executable):
@@ -369,7 +390,11 @@ def capture(args):
                 raise SystemExit(f"{case}: {len(contracts)} instances need batching; pick another transaction")
             if contracts:
                 keys = [instance_key(c) for c in contracts]
-                write(staging / case / "getLedgerEntries.json", rpc(url, "getLedgerEntries", {"keys": keys, "xdrFormat": "base64"}))
+                entries = rpc(url, "getLedgerEntries", {"keys": keys, "xdrFormat": "base64"})
+                problem = unusable_instances(keys, entries)
+                if problem:
+                    raise SystemExit(f"{case}: {problem} at ledger {entries['latestLedger']}; the corpus is unchanged")
+                write(staging / case / "getLedgerEntries.json", entries)
             manifest.append(
                 {
                     "case": case,
