@@ -341,6 +341,10 @@ pub enum Constraint {
     LeI128 { max: String },
     /// Lower bound (inclusive) — only reachable through explicit widening.
     GeI128 { min: String },
+    /// Both bounds, inclusive: `min <= x <= max`. The one constraint that closes a cap from
+    /// below, so "spend up to X" can be stated as `0..=X` without inferring a floor from the
+    /// type. Only reachable through explicit widening; validation refuses `min > max`.
+    RangeI128 { min: String, max: String },
     /// Accept ANY value at this argument position — the maximal widening (e.g. W3's
     /// caller-chosen `deadline`). Only reachable through an explicit, high-blast-radius
     /// user decision or a target-bound adapter derivation — validation enforces both — and
@@ -386,6 +390,7 @@ kind_vocabulary!(Constraint {
     Constraint::EqScval { .. } => "eq_scval",
     Constraint::GeI128 { .. } => "ge_i128",
     Constraint::LeI128 { .. } => "le_i128",
+    Constraint::RangeI128 { .. } => "range_i128",
 });
 
 // `PredicateKind` is declared above; the vocabulary sits here because a `macro_rules!` is only
@@ -403,8 +408,27 @@ impl Constraint {
     pub fn is_widening(&self) -> bool {
         matches!(
             self,
-            Constraint::LeI128 { .. } | Constraint::GeI128 { .. } | Constraint::AnyValue
+            Constraint::LeI128 { .. }
+                | Constraint::GeI128 { .. }
+                | Constraint::RangeI128 { .. }
+                | Constraint::AnyValue
         )
+    }
+
+    /// Whether a numeric bound refuses no `i128` at all: each end it states is the type's own
+    /// limit, where the generated check leaves the comparison out and keeps only the type check.
+    /// On an `i128` argument that is the grant `AnyValue` makes.
+    pub fn spans_the_i128_domain(&self) -> bool {
+        let is = |value: &str, limit: i128| value.parse::<i128>() == Ok(limit);
+        match self {
+            Constraint::LeI128 { max } => is(max, i128::MAX),
+            Constraint::GeI128 { min } => is(min, i128::MIN),
+            Constraint::RangeI128 { min, max } => is(min, i128::MIN) && is(max, i128::MAX),
+            Constraint::EqAddress { .. }
+            | Constraint::EqI128 { .. }
+            | Constraint::EqScval { .. }
+            | Constraint::AnyValue => false,
+        }
     }
 }
 
@@ -626,6 +650,17 @@ pub enum SpecError {
         arg: u32,
         value: String,
     },
+    #[error(
+        "E_SPEC_RANGE: rule {rule}, call '{call}', arg {arg}: range min {min} exceeds max {max}, \
+         so it admits no value"
+    )]
+    EmptyRange {
+        rule: usize,
+        call: String,
+        arg: u32,
+        min: String,
+        max: String,
+    },
     #[error("E_SPEC_STATE: rule {rule}: {reason}")]
     State { rule: usize, reason: String },
     #[error("E_SPEC_REVIEWED_POLICY: rule {rule}: {reason}")]
@@ -653,8 +688,8 @@ pub enum SpecError {
     },
     #[error(
         "E_SPEC_ANY_VALUE_BLAST_RADIUS: rule {0}, call '{1}', arg {2}: an unconstrained \
-         argument requires an explicit high-blast-radius user decision or a target-bound \
-         adapter derivation"
+         argument (any_value, or a bound spanning the whole i128 range) requires an explicit \
+         high-blast-radius user decision or a target-bound adapter derivation"
     )]
     AnyValueBlastRadius(usize, String, u32),
     #[error("E_SPEC_NO_EVIDENCE: spec carries no recording references")]
@@ -816,6 +851,7 @@ impl PolicySpec {
                                         Constraint::EqI128 { .. }
                                             | Constraint::LeI128 { .. }
                                             | Constraint::GeI128 { .. }
+                                            | Constraint::RangeI128 { .. }
                                     )
                                 })
                             {
@@ -840,6 +876,12 @@ impl PolicySpec {
                                     }
                                     Constraint::GeI128 { min } => {
                                         min.parse::<i128>().is_ok_and(|min| min <= limit)
+                                    }
+                                    // [min, max] meets [0, limit]. An empty range is refused
+                                    // on its own below.
+                                    Constraint::RangeI128 { min, max } => {
+                                        min.parse::<i128>().is_ok_and(|min| min <= limit)
+                                            && max.parse::<i128>().is_ok_and(|max| max >= 0)
                                     }
                                     Constraint::EqAddress { .. }
                                     | Constraint::EqScval { .. }
@@ -989,22 +1031,37 @@ impl PolicySpec {
                     errors.push(SpecError::ArgIndexes(ri, call.fn_name.clone()));
                 }
                 for arg in &call.args {
-                    let numeric = match &arg.constraint {
-                        Constraint::EqI128 { value } => Some(value),
-                        Constraint::LeI128 { max } => Some(max),
-                        Constraint::GeI128 { min } => Some(min),
+                    let numeric: &[&String] = match &arg.constraint {
+                        Constraint::EqI128 { value } => &[value],
+                        Constraint::LeI128 { max } => &[max],
+                        Constraint::GeI128 { min } => &[min],
+                        Constraint::RangeI128 { min, max } => &[min, max],
                         Constraint::EqAddress { .. }
                         | Constraint::EqScval { .. }
-                        | Constraint::AnyValue => None,
+                        | Constraint::AnyValue => &[],
                     };
-                    if let Some(value) = numeric {
+                    for value in numeric {
                         if !is_canonical_i128(value) {
                             errors.push(SpecError::I128 {
                                 rule: ri,
                                 call: call.fn_name.clone(),
                                 arg: arg.index,
-                                value: value.clone(),
+                                value: (*value).clone(),
                             });
+                        }
+                    }
+                    // A range that admits nothing denies every call while reading as a grant.
+                    if let Constraint::RangeI128 { min, max } = &arg.constraint {
+                        if let (Ok(low), Ok(high)) = (min.parse::<i128>(), max.parse::<i128>()) {
+                            if low > high {
+                                errors.push(SpecError::EmptyRange {
+                                    rule: ri,
+                                    call: call.fn_name.clone(),
+                                    arg: arg.index,
+                                    min: min.clone(),
+                                    max: max.clone(),
+                                });
+                            }
                         }
                     }
                     match &arg.constraint {
@@ -1039,6 +1096,7 @@ impl PolicySpec {
                         | Constraint::EqI128 { .. }
                         | Constraint::LeI128 { .. }
                         | Constraint::GeI128 { .. }
+                        | Constraint::RangeI128 { .. }
                         | Constraint::AnyValue => {}
                     }
                     if arg.constraint.is_widening()
@@ -1053,9 +1111,15 @@ impl PolicySpec {
                     // AnyValue is the maximal widening; its schema contract says it exists
                     // only behind an explicit high-blast-radius acknowledgement. A user
                     // decision labelled low/medium is a contradiction the artifact must not
-                    // carry. (ObservedExact is rejected above; an adapter derivation is
-                    // target-bound by the adapter-binding checks below.)
-                    if matches!(arg.constraint, Constraint::AnyValue) {
+                    // carry. A numeric bound at both of the type's limits is the same grant on
+                    // an i128 — codegen renders only the type check — so it is held to the same
+                    // demand. (ObservedExact is rejected above; an adapter derivation is
+                    // target-bound by the adapter-binding checks below.) An open top alone is
+                    // not held here: whether it is any amount depends on what the argument
+                    // means, which the spec does not record; synthesis holds it where it can.
+                    if matches!(arg.constraint, Constraint::AnyValue)
+                        || arg.constraint.spans_the_i128_domain()
+                    {
                         if let Provenance::UserWidened { blast_radius, .. } = &arg.provenance {
                             if *blast_radius != ozpb_domain::BlastRadius::High {
                                 errors.push(SpecError::AnyValueBlastRadius(
@@ -1795,6 +1859,124 @@ mod tests {
         }
     }
 
+    fn with_amount_range(min: &str, max: &str) -> PolicySpec {
+        let mut s = subscription_spec();
+        s.rules[0].allowed_calls[0].args[2].constraint = Constraint::RangeI128 {
+            min: min.to_string(),
+            max: max.to_string(),
+        };
+        s.rules[0].allowed_calls[0].args[2].provenance = Provenance::UserWidened {
+            intent: "spend between min and max".to_string(),
+            blast_radius: ozpb_domain::BlastRadius::Medium,
+        };
+        s
+    }
+
+    /// A range is inclusive at both ends, and a range that admits nothing is refused: it would
+    /// deny every call while reading as a grant.
+    #[test]
+    fn a_range_is_inclusive_and_an_empty_one_is_refused() {
+        for (min, max) in [
+            ("0".to_string(), "500000000".to_string()),
+            ("7".to_string(), "7".to_string()),
+            ("-5".to_string(), i128::MAX.to_string()),
+        ] {
+            let spec = with_amount_range(&min, &max);
+            assert!(spec.validate().is_ok(), "{min}..={max} must validate");
+        }
+        // The whole type is no range at all; its blast radius is held as any_value's is
+        // (`a_bound_spanning_the_i128_domain_requires_high_blast_radius`).
+        let mut whole = with_amount_range(&i128::MIN.to_string(), &i128::MAX.to_string());
+        assert!(whole.clone().validate().is_err());
+        whole.rules[0].allowed_calls[0].args[2].provenance = Provenance::UserWidened {
+            intent: "any amount".to_string(),
+            blast_radius: ozpb_domain::BlastRadius::High,
+        };
+        assert!(whole.validate().is_ok());
+        let errors = with_amount_range("2", "1").validate().unwrap_err();
+        assert_eq!(
+            errors,
+            vec![SpecError::EmptyRange {
+                rule: 0,
+                call: "transfer".to_string(),
+                arg: 2,
+                min: "2".to_string(),
+                max: "1".to_string(),
+            }]
+        );
+        assert!(errors[0].to_string().starts_with("E_SPEC_RANGE:"));
+
+        // Each bound is held to the canonical decimal form: both reach generated source.
+        for (min, max, bad) in [("01", "5", "01"), ("0", "5; panic!()", "5; panic!()")] {
+            let errors = with_amount_range(min, max).validate().unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e, SpecError::I128 { value, .. } if value == bad)),
+                "{bad:?} must be refused: {errors:?}"
+            );
+        }
+
+        // A range is a widening: it never carries observed_exact provenance.
+        let mut spec = with_amount_range("0", "500000000");
+        spec.rules[0].allowed_calls[0].args[2].provenance = Provenance::ObservedExact;
+        assert!(spec
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|e| matches!(e, SpecError::WideningProvenance(0, _, 2))));
+    }
+
+    #[test]
+    fn a_range_has_a_closed_wire_shape_and_its_own_kind() {
+        let range = Constraint::RangeI128 {
+            min: "0".to_string(),
+            max: "10".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&range).unwrap(),
+            serde_json::json!({ "range_i128": { "min": "0", "max": "10" } })
+        );
+        assert_eq!(range.kind_name(), "range_i128");
+        assert!(Constraint::KINDS.contains(&"range_i128"));
+        assert!(range.is_widening());
+        for wire in [
+            serde_json::json!({ "range_i128": { "min": "0", "max": "10", "step": "1" } }),
+            serde_json::json!({ "range_i128": { "min": "0" } }),
+            serde_json::json!({ "range_i128": { "max": "10" } }),
+        ] {
+            assert!(
+                serde_json::from_value::<Constraint>(wire.clone()).is_err(),
+                "{wire} must be refused"
+            );
+        }
+    }
+
+    /// The reviewed spending limit admits amounts in 0..=limit (500000000 in this fixture); a
+    /// composition is refused only when the range shares no amount with that.
+    #[test]
+    fn a_spending_limit_composes_with_a_range_that_meets_zero_to_the_limit() {
+        for (min, max) in [
+            ("0", "500000000"),
+            ("-5", "0"),
+            ("500000000", "500000005"),
+            ("-1", "999999999"),
+        ] {
+            let spec = with_amount_range(min, max);
+            assert!(spec.validate().is_ok(), "{min}..={max} meets 0..=500000000");
+        }
+        for (min, max) in [("-5", "-1"), ("500000001", "500000005")] {
+            let errors = with_amount_range(min, max).validate().unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e, SpecError::ReviewedPolicy { reason, .. }
+                    if reason.contains("no common nonnegative amount"))),
+                "{min}..={max}: {errors:?}"
+            );
+        }
+    }
+
     #[test]
     fn widened_i128_constraints_reject_source_tokens() {
         for constraint in [
@@ -2069,12 +2251,89 @@ mod tests {
         assert!(adapter.validate().is_ok());
     }
 
+    /// A numeric bound at both of the type's limits renders only the `i128` type check: it
+    /// accepts every value, exactly as `any_value` does on an amount. So it carries the same
+    /// high-blast-radius demand, whichever spelling the decision used. The demand is the
+    /// constraint's own and needs no argument semantics, which is why validation holds it: an
+    /// open top alone is a high blast radius only where the argument is an amount, a question
+    /// synthesis answers (`an_open_above_bound_requires_high_blast_radius`) and this spec cannot.
+    #[test]
+    fn a_bound_spanning_the_i128_domain_requires_high_blast_radius() {
+        let (min, max) = (i128::MIN.to_string(), i128::MAX.to_string());
+        let with = |constraint: Constraint, blast_radius| {
+            let mut spec = subscription_spec();
+            spec.rules[0].allowed_calls[0].args[2].constraint = constraint;
+            spec.rules[0].allowed_calls[0].args[2].provenance = Provenance::UserWidened {
+                intent: "any amount".to_string(),
+                blast_radius,
+            };
+            spec
+        };
+        for constraint in [
+            Constraint::LeI128 { max: max.clone() },
+            Constraint::GeI128 { min: min.clone() },
+            Constraint::RangeI128 {
+                min: min.clone(),
+                max: max.clone(),
+            },
+        ] {
+            for blast_radius in [
+                ozpb_domain::BlastRadius::Low,
+                ozpb_domain::BlastRadius::Medium,
+            ] {
+                let errors = with(constraint.clone(), blast_radius)
+                    .validate()
+                    .unwrap_err();
+                assert_eq!(
+                    errors,
+                    vec![SpecError::AnyValueBlastRadius(0, "transfer".to_string(), 2)],
+                    "{constraint:?} rated {blast_radius:?}"
+                );
+            }
+            assert!(
+                with(constraint.clone(), ozpb_domain::BlastRadius::High)
+                    .validate()
+                    .is_ok(),
+                "{constraint:?} rated high"
+            );
+        }
+        // One finite end is a bound, and its rating stays the decision's.
+        for constraint in [
+            Constraint::LeI128 {
+                max: "500000000".to_string(),
+            },
+            Constraint::GeI128 {
+                min: "0".to_string(),
+            },
+            Constraint::RangeI128 {
+                min: min.clone(),
+                max: "500000000".to_string(),
+            },
+            Constraint::RangeI128 {
+                min: "0".to_string(),
+                max: max.clone(),
+            },
+        ] {
+            assert!(
+                with(constraint.clone(), ozpb_domain::BlastRadius::Low)
+                    .validate()
+                    .is_ok(),
+                "{constraint:?} rated low"
+            );
+        }
+        // An adapter derivation carries no rating; a cap at the observed i128::MAX is still its
+        // target-bound claim, as an adapter's any_value is.
+        let mut adapter = adapter_derived_spec();
+        adapter.rules[0].allowed_calls[0].args[2].constraint = Constraint::LeI128 { max };
+        assert!(adapter.validate().is_ok());
+    }
+
     #[test]
     fn bounded_widenings_accept_every_declared_blast_radius() {
-        // The high-blast-radius demand is AnyValue's alone. A bounded widening still
-        // constrains the argument, and its blast radius is the user's honest assessment —
-        // Low included; tightening this to "at least Medium" would be a schema change in
-        // validator's clothing.
+        // The high-blast-radius demand is AnyValue's, and that of a bound spanning the whole
+        // type (above). A bounded widening still constrains the argument, and its blast radius
+        // is the user's honest assessment — Low included; tightening this to "at least Medium"
+        // would be a schema change in validator's clothing.
         for blast_radius in [
             ozpb_domain::BlastRadius::Low,
             ozpb_domain::BlastRadius::Medium,

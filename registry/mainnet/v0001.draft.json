@@ -70,9 +70,10 @@
         "eq_i128",
         "eq_scval",
         "ge_i128",
-        "le_i128"
+        "le_i128",
+        "range_i128"
       ],
-      "review_reference": "PENDING, replace before signing: the reference of the completed security review that covers this template family's code generation. No review is referenced yet."
+      "review_reference": "PENDING, replace before signing: the reference of OpenZeppelin's documented review of the code this template family generates: its sign-off row in the review record (docs/OZ-REVIEW-PACKAGE.md#review-record). No review is referenced yet."
     }
   },
   "revocations": {

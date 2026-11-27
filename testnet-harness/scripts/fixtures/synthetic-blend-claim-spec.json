@@ -9,7 +9,7 @@
   },
   "name": "blend-claim-fixture",
   "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
-  "registry_snapshot": "92d18f90b6cace23974118f90e9bb0d6f5e0aaedbaec09ca67b15206647dbbb8",
+  "registry_snapshot": "8874c4e03f7dd47d2cdc197e56f4317a5c8edb69e8571a3df383bd15f17b48eb",
   "rules": [
     {
       "allowed_calls": [

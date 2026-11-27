@@ -3,8 +3,8 @@ import { Buffer } from 'buffer';
 import { scValToNative, xdr } from '#wallet-stellar-sdk';
 import { decide, intentMismatches, walletTrust } from './authority.mjs';
 import { decodeBase64Url } from './base64url.mjs';
+import { networkById } from './networks.mjs';
 
-export const NETWORK_ID = 'cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472';
 export const ACCOUNT_WASM = '203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f';
 export const WEBAUTHN_WASM = 'e63a030d0f1a1481e36059a4837c433083b33e704c1f9625b7314795b6d72b76'; // gitleaks:allow -- public WebAuthn Wasm SHA-256
 const refuse = () => { throw new Error('wallet review refused; refresh and review the exact grant'); };
@@ -54,11 +54,15 @@ export function ownerRule(intent, wallet, raw) {
   return choice.rule_id;
 }
 
-/** Returned immutable data is the approval display and all subsequent signing expectations. */
+/**
+ * Returned immutable data is the approval display and all subsequent signing expectations.
+ * `expected.networkId` is the session's network; the CLI's verdict must name the same one.
+ */
 export function reviewIntent({ intent, expected, wallet, ownerRuleXdr }) {
   try {
     const v = intent.authority.verdict;
-    if (intentMismatches(intent).length || expected.networkId !== NETWORK_ID
+    const network = networkById(expected.networkId);
+    if (intentMismatches(intent).length || v.network_id !== network.networkId
       || expected.account !== wallet.contractId || v.account_code_hash !== ACCOUNT_WASM
       || ![expected.specHash, expected.bindingSetHash, expected.registrySnapshotRoot].every(isHash)
       || intent.authority.binding_set_hash !== expected.bindingSetHash || v.binding_set_hash !== expected.bindingSetHash) refuse();
@@ -66,7 +70,7 @@ export function reviewIntent({ intent, expected, wallet, ownerRuleXdr }) {
     const decision = decide(intent.authority, { trust, expect: expected });
     if (!decision.accept) refuse();
     const ownerRuleId = ownerRule(intent, wallet, ownerRuleXdr);
-    return freezeCopy({ intent, expected, wallet, ownerRuleId, ownerRuleXdr,
+    return freezeCopy({ networkId: network.networkId, intent, expected, wallet, ownerRuleId, ownerRuleXdr,
       commitment: decision.commitment, observedLedger: decision.observedLedger,
       authorities: decision.entries, approval_state: 'reviewed_not_signed', trust_basis: 'wallet_owned_passkey_identity' });
   } catch { refuse(); }

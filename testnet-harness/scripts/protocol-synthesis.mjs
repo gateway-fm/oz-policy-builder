@@ -95,9 +95,11 @@ export function protocolInputs(run, recording) {
     widenings = [
       widen(PROTOCOL_TARGETS.router, 'swap_exact_tokens_for_tokens', 1, { ge_i128: { min: decided.output_floor.min } }, decided.output_floor.intent),
       // A direct transfer to the pair is lost to the account. Allowing more than the recorded swap
-      // moved is authority the walkthrough never exercised, so it is high blast radius.
-      widen(PROTOCOL_TARGETS.native, 'transfer', 2, { le_i128: { max: decided.transfer_cap.max } }, decided.transfer_cap.intent,
+      // moved is authority the walkthrough never exercised, so it is high blast radius. The cap
+      // sets no floor on the signed amount; that is the operator's acceptance, passed on as made.
+      { ...widen(PROTOCOL_TARGETS.native, 'transfer', 2, { le_i128: { max: decided.transfer_cap.max } }, decided.transfer_cap.intent,
         BigInt(decided.transfer_cap.max) > BigInt(plan.amount_in) ? 'high' : 'medium'),
+      no_floor_acknowledged: decided.transfer_cap.no_floor_acknowledged },
     ];
   }
   return { calls, account: { address: run.account, observed_code_hash: run.account_code_hash,

@@ -5,7 +5,9 @@ import base64url from "base64url";
 import { expect, it, vi } from "vitest";
 import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, StrKey, TransactionBuilder, hash, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import type { Approval } from "../../policy-builder/shared/approval.mjs";
-import { NETWORK_ID, ownerRule, WEBAUTHN_WASM } from "../../policy-builder/shared/approval.mjs";
+import { ownerRule, WEBAUTHN_WASM } from "../../policy-builder/shared/approval.mjs";
+import { WALLET_NETWORKS } from "../../policy-builder/shared/networks.mjs";
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 import type { CheckedAssembly } from "../../policy-builder/shared/assembly.mjs";
 import { validateSignedAuthorization } from "../../policy-builder/shared/signature.mjs";
 import { reviewSample, validateSampleAssembly } from "../../policy-builder/shared/sample.mjs";
@@ -58,7 +60,7 @@ it.each([
       .addOperation(Operation.invokeHostFunction({ func: xdr.HostFunction.hostFunctionTypeInvokeContract(entry.rootInvocation().function().contractFn()), auth: [entry] }))
       .setLedgerbounds(100, 220).setTimeout(0)
       .setSorobanData(new SorobanDataBuilder().setResourceFee("100").build()).build();
-    const approval: Approval = { wallet: { contractId: account, verifier, credentialId: "AQ", publicKey },
+    const approval: Approval = { networkId: NETWORK_ID, wallet: { contractId: account, verifier, credentialId: "AQ", publicKey },
       ownerRuleId, ownerRuleXdr: "unused", commitment: "a".repeat(64), observedLedger: 100,
       intent: {}, expected: {}, authorities: [], approval_state: "reviewed_not_signed", trust_basis: "wallet_owned_passkey_identity" };
     const fields = {
@@ -79,7 +81,7 @@ it.each([
     }] } } }, approval.wallet, ruleXdr)).toBe(ownerRuleId);
     const signingApproval = kind === "sample" ? reviewSample({ wallet: approval.wallet,
       descriptor: { recipient: payer.publicKey(), amountStroops: "1000000", ownerRuleXdr: ruleXdr },
-      ownerRuleXdr: ruleXdr }) : approval;
+      ownerRuleXdr: ruleXdr, networkId: NETWORK_ID }) : approval;
     const checked: CheckedAssembly = kind === "sample" ? validateSampleAssembly({ approval: signingApproval,
       ownerRuleXdr: ruleXdr, assembly: {
         envelope_xdr_base64: transaction.toXDR(), envelope_xdr_sha256: hash(transaction.toEnvelope().toXDR()).toString("hex"),

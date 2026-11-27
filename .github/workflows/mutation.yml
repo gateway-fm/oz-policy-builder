@@ -40,6 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           # The pull-request mode diffs against the base branch, which a shallow clone lacks.
           fetch-depth: 0
       - name: toolchain
@@ -48,7 +49,9 @@ jobs:
         run: cargo install cargo-mutants --locked --version 27.1.0
       - name: mutants on the changed lines
         if: github.event_name == 'pull_request'
-        run: bash scripts/mutation-test.sh --in-diff "origin/${{ github.base_ref }}"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/mutation-test.sh --in-diff "$BASE_SHA"
       - name: mutants in every core
         if: github.event_name != 'pull_request'
         run: bash scripts/mutation-test.sh

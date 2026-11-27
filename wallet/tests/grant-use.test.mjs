@@ -125,3 +125,27 @@ test('testnet\'s own answer to a second use, 11 November 2026, is the call cap\'
     assert.equal(validateRepeatedUse({ ...real, intent: { ...real.intent, ...change } }).outcome, 'failed', JSON.stringify(change));
   }
 });
+
+test('stellar-rpc 30.0.1: a second use refused with the host error alone is read from the structured events', async () => {
+  const s = sample();
+  const hostOnly = (simulation) => ({ ...simulation, error: 'HostError: Error(Auth, InvalidAction)' });
+  const verdict = validateRepeatedUse({ intent: s.intent, envelopeXdr: s.envelopeXdr, simulation: hostOnly(useDenial(s.intent, s.entries)) });
+  assert.equal(verdict.outcome, 'deny', JSON.stringify(verdict));
+  assert.deepEqual([verdict.reason, verdict.code], ['call_count_exceeded', 7]);
+  for (const [label, simulation, reason] of [
+    ['NoTupleMatched', hostOnly(useDenial(s.intent, s.entries, { code: 6 })), 'policy_code'],
+    ['raised by another contract', hostOnly(useDenial(s.intent, s.entries, { raisedBy: s.intent.account })), 'not_a_policy_denial'],
+    // An endpoint without --preflight-enable-debug returns no diagnostic events: named as such, never a verdict.
+    ['no events', { ...hostOnly(useDenial(s.intent, s.entries)), events: [] }, 'no_diagnostic_events'],
+  ]) {
+    const result = validateRepeatedUse({ intent: s.intent, envelopeXdr: s.envelopeXdr, simulation });
+    assert.equal(result.outcome, 'failed', label);
+    assert.equal(result.reason, reason, label);
+  }
+  // The real 30.0.0 answer with its printed log removed is what 30.0.1 returns for it.
+  const { readFileSync } = await import('node:fs');
+  const real = JSON.parse(readFileSync(new URL('./grant-use-testnet.json', import.meta.url), 'utf8'));
+  const realVerdict = validateRepeatedUse({ ...real, simulation: hostOnly(real.simulation) });
+  assert.equal(realVerdict.outcome, 'deny', JSON.stringify(realVerdict));
+  assert.equal(realVerdict.code, 7);
+});

@@ -459,6 +459,11 @@ fn scoped(input: &DryRunInput) -> Result<(NativeScope, Vec<Case>), &'static str>
     if max_calls.is_some_and(|cap| cap > MAX_CALL_CAP) {
         return Err("the selected rule's call cap exceeds the native worker's sequence");
     }
+    // The size bounds above already keep the suite to a few thousand small cases; this is the
+    // same check every other entry point that derives a suite from a request makes.
+    if crate::verification::suite_over_limits(&spec).is_some() {
+        return Err("the spec's reference suite exceeds its case or case-data limit");
+    }
     let suite: Vec<_> = ozpb_harness::build_suite(&spec)
         .into_iter()
         .filter(|case| case.rule_index == rule_index)

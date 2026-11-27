@@ -38,3 +38,5 @@ ozpb-registry = { workspace = true }
 stellar-xdr = { workspace = true }
 # `oneshot` drives the HTTP guard without a listener; already in the tree through axum.
 tower = { version = "0.5", features = ["util"] }
+# The startup test writes a fake build launcher into a private directory.
+tempfile = { workspace = true }

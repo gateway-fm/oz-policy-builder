@@ -56,10 +56,7 @@ pub fn plan_call_surface_read(
     build_config: &ozpb_build_runner::BuildConfig,
 ) -> Result<CallSurfaceReadPlan, ToolError> {
     let prepared = prepare_call_surface_check(input, registry_trust, build_config)?;
-    let authority = prepared
-        .registry
-        .resolve_account_authority(&prepared.spec.spec().smart_account.observed_code_hash)
-        .map_err(map_registry_err)?;
+    let authority = &prepared.account_authority;
     let mut contracts: BTreeSet<String> = input
         .binding_set
         .bindings

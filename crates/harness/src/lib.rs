@@ -237,7 +237,9 @@ fn expected_classes_for_rule(rule: &RuleSpec) -> BTreeSet<MutationClass> {
                     expected.insert(MutationClass::NumericBoundary);
                     expected.insert(MutationClass::TypeConfusion);
                 }
-                Constraint::LeI128 { .. } | Constraint::GeI128 { .. } => {
+                Constraint::LeI128 { .. }
+                | Constraint::GeI128 { .. }
+                | Constraint::RangeI128 { .. } => {
                     expected.insert(MutationClass::NumericBoundary);
                     expected.insert(MutationClass::TypeConfusion);
                 }
@@ -474,6 +476,98 @@ pub fn emit_cases(spec: &ValidatedSpec) -> Result<SuiteCases, serde_json::Error>
         total: cases.len(),
         cases,
     })
+}
+
+/// The most cases a caller-supplied spec's suite may have, checked with [`suite_bound`] before
+/// anything is built. Far above every committed spec (the largest derives 65 cases).
+///
+/// Validation bounds each part of a spec, not the suite they compose into: cross products grow
+/// with the square of a function's tuples times their arity, so a 991 KB spec within every
+/// per-item limit (14 rules of 32 tuples of 32 exact amounts) derived 310,674 cases, held about
+/// 1 GB while they were evaluated and answered with 74 MB.
+pub const MAX_SUITE_CASES: usize = 20_000;
+
+/// The most bytes a suite's cases may hold, as [`suite_bound`] estimates them. A case copies the
+/// whole tuple it varies, so a few tuples carrying large exact values can make a suite of few
+/// cases large: one tuple of four 60 KiB values crossed with nine others is a few hundred cases
+/// of about 330 KB each.
+pub const MAX_SUITE_BYTES: usize = 64 * 1024 * 1024;
+
+/// What one case holds besides its arguments: its label, contract, function name, evaluation
+/// context and outcome. Calibrated on the spec above: 310,674 cases of 32 small arguments
+/// (about 1 KiB each) at 931 MB resident is about 3 KiB a case.
+const CASE_BYTES: usize = 2048;
+
+/// [`suite_bound`]'s answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SuiteBound {
+    /// At most this many cases: exact for each call's own mutations, an upper bound for each
+    /// rule's signer, time and state boundaries, and the cross products before those
+    /// reproducing an accepted tuple are skipped.
+    pub cases: usize,
+    /// An estimate of the bytes those cases hold: each case at [`CASE_BYTES`] plus
+    /// the tuple it copies (a cross product, both tuples it mixes).
+    pub bytes: usize,
+}
+
+/// How large [`build_suite`] would make `spec`'s suite, counted without building it.
+pub fn suite_bound(spec: &ValidatedSpec) -> SuiteBound {
+    fn tuple_bytes(args: &[ArgValue]) -> usize {
+        args.iter()
+            .map(|arg| {
+                std::mem::size_of::<ArgValue>()
+                    + match arg {
+                        ArgValue::Address(text) | ArgValue::ScvalXdr(text) => text.len(),
+                        ArgValue::I128(_) => 0,
+                    }
+            })
+            .sum()
+    }
+    let mut bound = SuiteBound { cases: 0, bytes: 0 };
+    let mut add = |cases: usize, each: usize| {
+        bound.cases = bound.cases.saturating_add(cases);
+        bound.bytes = bound
+            .bytes
+            .saturating_add(cases.saturating_mul(CASE_BYTES.saturating_add(each)));
+    };
+    for rule in &spec.spec().rules {
+        let tuples: Vec<(&str, Vec<ArgValue>)> = rule
+            .allowed_calls
+            .iter()
+            .map(|call| (call.fn_name.as_str(), concrete_args(spec, rule, call)))
+            .collect();
+        for (call, (_, args)) in rule.allowed_calls.iter().zip(&tuples) {
+            let mutations: usize = args
+                .iter()
+                .enumerate()
+                .map(|(i, arg)| {
+                    let constraint = call
+                        .args
+                        .iter()
+                        .find(|a| a.index as usize == i)
+                        .map(|a| &a.constraint);
+                    arg_mutations(arg, constraint).len()
+                })
+                .sum();
+            // Original, other contract, other function, extra and missing argument.
+            add(
+                3 + mutations + 1 + usize::from(!args.is_empty()),
+                tuple_bytes(args),
+            );
+        }
+        // Zero, wrong, partial, duplicate and extra signer; two strict-set; three time. Each
+        // copies the rule's first tuple; the largest stands in for it.
+        let largest = tuples.iter().map(|(_, args)| tuple_bytes(args)).max();
+        add(10 + 6 * rule.state.len(), largest.unwrap_or(0));
+        for (left, (function, a)) in tuples.iter().enumerate() {
+            for (other, b) in &tuples[left + 1..] {
+                if other == function && a.len() == b.len() {
+                    add(a.len(), tuple_bytes(a) + tuple_bytes(b));
+                }
+            }
+        }
+    }
+    bound
 }
 
 /// Expose the suite so layer 2 (the contracts workspace) drives the same mutations.
@@ -981,6 +1075,59 @@ fn arg_mutations(
                 false,
             ));
         }
+        (ArgValue::I128(_), Some(Constraint::RangeI128 { min, max })) => {
+            if let (Ok(low), Ok(high)) = (min.parse::<i128>(), max.parse::<i128>()) {
+                // Below the floor: one past it, and the far end of the signed range, which is
+                // the negative amount a cap alone would have let through.
+                if let Some(below) = low.checked_sub(1) {
+                    out.push((
+                        "below range minimum".into(),
+                        ArgValue::I128(below),
+                        MutationClass::NumericBoundary,
+                        false,
+                    ));
+                    out.push((
+                        "i128 minimum".into(),
+                        ArgValue::I128(i128::MIN),
+                        MutationClass::NumericBoundary,
+                        false,
+                    ));
+                }
+                out.push((
+                    "at range minimum".into(),
+                    ArgValue::I128(low),
+                    MutationClass::NumericBoundary,
+                    true,
+                ));
+                out.push((
+                    "at range maximum".into(),
+                    ArgValue::I128(high),
+                    MutationClass::NumericBoundary,
+                    true,
+                ));
+                // Above the cap: one past it, and the far end of the signed range.
+                if let Some(above) = high.checked_add(1) {
+                    out.push((
+                        "above range maximum".into(),
+                        ArgValue::I128(above),
+                        MutationClass::NumericBoundary,
+                        false,
+                    ));
+                    out.push((
+                        "i128 maximum".into(),
+                        ArgValue::I128(i128::MAX),
+                        MutationClass::NumericBoundary,
+                        false,
+                    ));
+                }
+            }
+            out.push((
+                "type: address where i128".into(),
+                ArgValue::Address(stranger_addr()),
+                MutationClass::TypeConfusion,
+                false,
+            ));
+        }
         (ArgValue::Address(_), Some(Constraint::EqAddress { .. })) => {
             out.push((
                 "different address".into(),
@@ -1137,6 +1284,7 @@ fn concrete_for(spec: &ValidatedSpec, _rule: &RuleSpec, c: &Constraint) -> ArgVa
         // For a bound, pick a value satisfying it (the "original" for a widened arg).
         Constraint::LeI128 { max } => ArgValue::I128(max.parse::<i128>().unwrap_or(0)),
         Constraint::GeI128 { min } => ArgValue::I128(min.parse::<i128>().unwrap_or(0)),
+        Constraint::RangeI128 { max, .. } => ArgValue::I128(max.parse::<i128>().unwrap_or(0)),
         Constraint::EqScval { xdr_base64 } => ArgValue::ScvalXdr(xdr_base64.clone()),
         // A wildcard accepts anything; the "original" concrete value is arbitrary.
         Constraint::AnyValue => ArgValue::I128(0),
@@ -1263,6 +1411,125 @@ mod tests {
     // *tested*, so a regression that stopped emitting an entire boundary class (every signer
     // case, say) would still report `all_agree: true` and pass every gate. These assert the
     // suite actually covers the classes the spec's own shape implies.
+
+    /// One rule of `calls` tuples of one function, each of `arity` distinct exact amounts: every
+    /// pair of tuples differs everywhere, so every swap is a novel cross product.
+    fn wide_rule(calls: usize, arity: u32) -> ValidatedSpec {
+        let mut spec = golden_spec().spec().clone();
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        let template = spec.rules[0].allowed_calls[0].clone();
+        spec.rules[0].allowed_calls = (0..calls)
+            .map(|call| {
+                let mut tuple = template.clone();
+                tuple.fn_name = "f".into();
+                tuple.args = (0..arity)
+                    .map(|index| ozpb_policy_spec::ArgConstraint {
+                        index,
+                        constraint: Constraint::EqI128 {
+                            value: (1000 * call + index as usize + 1).to_string(),
+                        },
+                        provenance: ozpb_domain::Provenance::ObservedExact,
+                    })
+                    .collect();
+                tuple
+            })
+            .collect();
+        spec.validate()
+            .expect("a wide rule within the per-item limits")
+    }
+
+    /// [`wide_rule`] of ten tuples of 32, whose first four arguments are exact byte strings: 60 KiB
+    /// each in the first tuple (the per-rule budget is 256 KiB), one distinct byte in the others.
+    fn large_values_rule() -> ValidatedSpec {
+        let mut spec = wide_rule(10, 32).spec().clone();
+        for (call, tuple) in spec.rules[0].allowed_calls.iter_mut().enumerate() {
+            for arg in &mut tuple.args[..4] {
+                let bytes = if call == 0 {
+                    vec![arg.index as u8; 60 * 1024]
+                } else {
+                    vec![(call * 4) as u8 + arg.index as u8]
+                };
+                let value = stellar_xdr::ScVal::Bytes(stellar_xdr::ScBytes(
+                    bytes.try_into().expect("within the XDR bound"),
+                ));
+                arg.constraint = Constraint::EqScval {
+                    xdr_base64: value
+                        .to_xdr_base64(stellar_xdr::Limits::none())
+                        .expect("encodes"),
+                };
+            }
+        }
+        spec.validate().expect("within every per-item limit")
+    }
+
+    /// The bound an entry point checks before building is never below what the build produces,
+    /// so a spec under the limit cannot build a suite over it.
+    #[test]
+    fn the_suite_bound_covers_every_case_the_suite_builds() {
+        for (label, spec) in [
+            ("W2 subscription", golden_spec()),
+            ("W1 blend", blend_claim_spec()),
+            ("W3 soroswap", soroswap_swap_spec()),
+            ("cross products", wide_rule(6, 4)),
+        ] {
+            let built = build_suite(&spec);
+            let bound = suite_bound(&spec);
+            assert!(
+                bound.cases >= built.len(),
+                "{label}: {bound:?} < {}",
+                built.len()
+            );
+            assert!(
+                bound.cases <= built.len() + 16,
+                "{label}: {bound:?} is loose"
+            );
+            let held: usize = built
+                .iter()
+                .map(|case| {
+                    CASE_BYTES
+                        + case
+                            .invocation
+                            .args
+                            .iter()
+                            .map(|arg| {
+                                std::mem::size_of::<ArgValue>()
+                                    + match arg {
+                                        ArgValue::Address(t) | ArgValue::ScvalXdr(t) => t.len(),
+                                        ArgValue::I128(_) => 0,
+                                    }
+                            })
+                            .sum::<usize>()
+                })
+                .sum();
+            assert!(
+                bound.bytes >= held,
+                "{label}: {bound:?} < {held} bytes held"
+            );
+        }
+    }
+
+    /// A 991 KB spec of 14 such rules (32 tuples of 32 arguments) built 310,674 cases and held
+    /// about 1 GB. One rule of that shape is already over the limit; the bound says so without
+    /// building anything.
+    #[test]
+    fn a_spec_whose_suite_would_exceed_the_limit_is_measured_not_built() {
+        assert!(suite_bound(&wide_rule(32, 32)).cases > MAX_SUITE_CASES);
+        // Far above anything committed: the largest committed spec's suite has 65 cases.
+        let golden = suite_bound(&golden_spec());
+        assert!(golden.cases * 100 < MAX_SUITE_CASES && golden.bytes * 100 < MAX_SUITE_BYTES);
+    }
+
+    /// Few cases can still be large: every case copies the tuple it varies. One tuple of four
+    /// 60 KiB exact values among ten derives a few thousand cases, hundreds of them copying it.
+    #[test]
+    fn a_suite_of_few_cases_that_would_hold_too_much_is_measured_not_built() {
+        let large = large_values_rule();
+        let bound = suite_bound(&large);
+        assert!(bound.cases < MAX_SUITE_CASES, "{bound:?}");
+        assert!(bound.bytes > MAX_SUITE_BYTES, "{bound:?}");
+    }
 
     #[test]
     fn a_spec_shape_always_covers_its_structurally_required_classes() {
@@ -1908,6 +2175,88 @@ mod tests {
             );
         }
         assert!(run_layer1(&soroswap_swap_spec()).all_agree());
+    }
+
+    fn golden_with_amount_range(min: i128, max: i128) -> ValidatedSpec {
+        let mut spec = golden_spec().spec().clone();
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        let amount = &mut spec.rules[0].allowed_calls[0].args[2];
+        amount.constraint = Constraint::RangeI128 {
+            min: min.to_string(),
+            max: max.to_string(),
+        };
+        // A range spanning the whole type is any amount, which validation holds to high.
+        let blast_radius = if amount.constraint.spans_the_i128_domain() {
+            ozpb_domain::BlastRadius::High
+        } else {
+            ozpb_domain::BlastRadius::Medium
+        };
+        amount.provenance = ozpb_domain::Provenance::UserWidened {
+            intent: "spend between min and max".into(),
+            blast_radius,
+        };
+        spec.validate().expect("a range on the transfer amount")
+    }
+
+    /// A range denies just outside either end and the whole negative half below a floor, and
+    /// permits at both ends; each case's label says which, and layer 1 agrees on all of them.
+    #[test]
+    fn a_range_tests_both_ends_one_past_each_and_the_signed_minimum() {
+        let amounts = |suite: &[Case]| -> BTreeMap<String, (i128, bool)> {
+            suite
+                .iter()
+                .filter(|case| case.class == MutationClass::NumericBoundary)
+                .filter_map(|case| match case.invocation.args.get(2) {
+                    Some(ArgValue::I128(amount)) => {
+                        Some((case.label.clone(), (*amount, case.expect_permit)))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let spec = golden_with_amount_range(0, 1_000);
+        let found = amounts(&build_suite(&spec));
+        for (label, amount, permit) in [
+            ("below range minimum", -1, false),
+            ("at range minimum", 0, true),
+            ("at range maximum", 1_000, true),
+            ("above range maximum", 1_001, false),
+            ("i128 minimum", i128::MIN, false),
+            ("i128 maximum", i128::MAX, false),
+        ] {
+            assert!(
+                found
+                    .iter()
+                    .any(|(name, value)| name.contains(label) && *value == (amount, permit)),
+                "missing {label} = {amount} (permit {permit}): {found:#?}"
+            );
+        }
+        assert!(run_layer1(&spec).all_agree());
+        assert!(build_suite(&spec)
+            .iter()
+            .any(|case| { case.class == MutationClass::TypeConfusion && !case.expect_permit }));
+
+        // At the ends of i128 nothing lies one past a bound, and i128::MIN is the floor itself.
+        let full = golden_with_amount_range(i128::MIN, i128::MAX);
+        let found = amounts(&build_suite(&full));
+        assert!(
+            found
+                .iter()
+                .all(|(name, _)| !name.contains("below range minimum")
+                    && !name.contains("above range maximum")
+                    && !name.contains("i128 minimum")
+                    && !name.contains("i128 maximum")),
+            "{found:#?}"
+        );
+        assert!(found
+            .iter()
+            .any(|(name, value)| name.contains("at range minimum") && *value == (i128::MIN, true)));
+        assert!(found
+            .iter()
+            .any(|(name, value)| name.contains("at range maximum") && *value == (i128::MAX, true)));
+        assert!(run_layer1(&full).all_agree());
     }
 
     #[test]

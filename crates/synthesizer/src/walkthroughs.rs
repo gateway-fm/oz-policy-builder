@@ -11,6 +11,10 @@
 //! exactly that the three specs disagree about argument kinds, widening provenance and
 //! constraint mix — one fixture would not tell it much.
 //!
+//! A fourth, two recorded payments of one token, is the only fixture whose rule accepts two
+//! tuples of one function. The others accept one, so no compiled policy built from them can show
+//! that a generated policy refuses the cross products of two accepted calls.
+//!
 //! Architecture §7 describes three end-to-end walkthroughs over these same protocols; those
 //! are second-milestone deliverables. What is here borrows the protocols, not the deliverable:
 //! these are inputs to this milestone's tests.
@@ -179,7 +183,9 @@ pub const SOROSWAP_ROUTER: fn() -> String = || contract(30);
 
 /// `swap_exact_tokens_for_tokens(amount_in, amount_out_min, path, to, deadline)`.
 /// - amount_in: user_widened cap (LeI128)
-/// - amount_out_min: user-provided absolute floor (GeI128) — never auto-derived
+/// - amount_out_min: user-provided absolute floor (GeI128) — never auto-derived. No adapter is
+///   bound here, so nothing tells synthesis this is a minimum output rather than an amount: a
+///   bound with no cap is rated high (`docs/SCOPING-DECISIONS.md`, "Widenings you may choose").
 /// - path: exact (whitelisted route)
 /// - to: SELF
 /// - deadline: user-widened AnyValue (high blast radius; caller-chosen)
@@ -233,6 +239,7 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
                 bound: WideningBound::LeI128 {
                     max: observed_amount_in.to_string(),
                 },
+                no_floor_acknowledged: true,
                 intent: "cap amount_in at the observed maximum input".to_string(),
                 blast_radius: BlastRadius::Medium,
             },
@@ -243,14 +250,16 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
                 bound: WideningBound::GeI128 {
                     min: observed_out_min.to_string(),
                 },
+                no_floor_acknowledged: false,
                 intent: "floor amount_out_min (user-provided absolute slippage floor)".to_string(),
-                blast_radius: BlastRadius::Medium,
+                blast_radius: BlastRadius::High,
             },
             Widening {
                 contract: router,
                 fn_name: "swap_exact_tokens_for_tokens".to_string(),
                 arg_index: 4,
                 bound: WideningBound::AnyValue,
+                no_floor_acknowledged: false,
                 intent: "deadline is caller-chosen; leave unconstrained (rule valid_until \
                          still bounds WHEN authorization can occur)"
                     .to_string(),
@@ -263,10 +272,140 @@ pub fn soroswap_swap_spec() -> ValidatedSpec {
     out.spec.validate().expect("W3 validates")
 }
 
+// ---------------------------------------------------------------------------------------
+// Two recorded payments: one rule, two accepted tuples of one function
+// ---------------------------------------------------------------------------------------
+
+pub const PAYMENT_TOKEN: fn() -> String = || contract(40);
+pub const FIRST_PAYEE: fn() -> String = || contract(41);
+pub const SECOND_PAYEE: fn() -> String = || contract(42);
+
+/// One payment recording: `transfer(SELF, payee, amount)` on [`PAYMENT_TOKEN`]. Both recordings
+/// observe the same token code, because synthesis refuses recordings that disagree about it.
+fn payment_bundle(payee: String, amount: i128, tag: &[u8]) -> RecordingBundle {
+    let token = PAYMENT_TOKEN();
+    let mut bundle = bundle_for(
+        &token,
+        "transfer",
+        vec![
+            ArgSummary::Address(account()),
+            ArgSummary::Address(payee),
+            ArgSummary::I128(amount),
+        ],
+        tag,
+    );
+    if let Some(observation) = bundle.contract_executables.get_mut(&token) {
+        observation.executable = ObservedExecutable::Wasm {
+            code_hash: sha256(b"two-payments-token"),
+        };
+    }
+    bundle
+}
+
+/// Two exact payments, `transfer(SELF, FIRST_PAYEE, 1_000)` and
+/// `transfer(SELF, SECOND_PAYEE, 2_000)`, each from its own recording, with no widening. The
+/// rule accepts exactly those two tuples, so `transfer(SELF, FIRST_PAYEE, 2_000)` and
+/// `transfer(SELF, SECOND_PAYEE, 1_000)` match every position of some accepted call and still
+/// must be refused: the tuple is the unit, never each position on its own.
+pub fn two_payment_spec() -> ValidatedSpec {
+    let mut input = base_input(payment_bundle(FIRST_PAYEE(), 1_000, b"two-payments-first"));
+    input.bundles.push(payment_bundle(
+        SECOND_PAYEE(),
+        2_000,
+        b"two-payments-second",
+    ));
+    input.spending_limit_capability = None; // two exact amounts: the tuples bound the value
+    let decisions = UserDecisions {
+        grant_name: "two-payments".to_string(),
+        delegate_signers: delegate_signers(),
+        predicate: PredicateChoice::AnyOf,
+        valid_until_ledger: Some(4_260_000),
+        no_expiry_acknowledged: false,
+        max_calls: Some(10),
+        unlimited_calls_acknowledged: false,
+        widenings: vec![],
+        spending_limit: None,
+    };
+    let out = synthesize(&input, &decisions).expect("two-payment synthesis");
+    out.spec.validate().expect("two-payment spec validates")
+}
+
+// ---------------------------------------------------------------------------------------
+// A ranged transfer — "spend up to X" without leaving the amount open below
+// ---------------------------------------------------------------------------------------
+
+pub const RANGE_TOKEN: fn() -> String = || contract(50);
+
+/// The recorded amount of the ranged transfer, and the range the user chose around it.
+pub const RANGE_RECORDED_AMOUNT: i128 = 250_000_000;
+pub const RANGE_MIN: i128 = 0;
+pub const RANGE_MAX: i128 = 1_000_000_000;
+
+/// `transfer(from = SELF, to = merchant, amount)` where the user widened the amount to the
+/// inclusive range `0..=1000000000` instead of a cap: the policy refuses a negative amount
+/// itself rather than leaving it to the token. No spending limit, so the generated policy is
+/// the only thing deciding the amount. The fixture behind the committed
+/// `contracts/range-transfer-policy` crate and its compiled differential suite.
+pub fn range_transfer_spec() -> ValidatedSpec {
+    let token = RANGE_TOKEN();
+    let merchant = format!("{}", stellar_strkey::ed25519::PublicKey([3u8; 32]));
+    let bundle = bundle_for(
+        &token,
+        "transfer",
+        vec![
+            ArgSummary::Address(account()),
+            ArgSummary::Address(merchant),
+            ArgSummary::I128(RANGE_RECORDED_AMOUNT),
+        ],
+        b"range-transfer",
+    );
+    let mut input = base_input(bundle);
+    input.spending_limit_capability = None;
+    let decisions = UserDecisions {
+        grant_name: "range-transfer".to_string(),
+        delegate_signers: delegate_signers(),
+        predicate: PredicateChoice::AnyOf,
+        valid_until_ledger: Some(4_260_000),
+        no_expiry_acknowledged: false,
+        max_calls: Some(5),
+        unlimited_calls_acknowledged: false,
+        widenings: vec![Widening {
+            contract: token,
+            fn_name: "transfer".to_string(),
+            arg_index: 2,
+            bound: WideningBound::RangeI128 {
+                min: RANGE_MIN.to_string(),
+                max: RANGE_MAX.to_string(),
+            },
+            no_floor_acknowledged: false,
+            intent: "spend up to 1000000000, never a negative amount".to_string(),
+            blast_radius: BlastRadius::Medium,
+        }],
+        spending_limit: None,
+    };
+    let out = synthesize(&input, &decisions).expect("ranged transfer synthesis");
+    out.spec.validate().expect("ranged transfer validates")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ozpb_policy_spec::Constraint;
+
+    #[test]
+    fn the_ranged_transfer_bounds_its_amount_on_both_sides() {
+        let spec = range_transfer_spec();
+        let rule = &spec.spec().rules[0];
+        assert_eq!(rule.context.contract, RANGE_TOKEN());
+        assert_eq!(rule.policies.len(), 1, "the generated policy alone");
+        assert_eq!(
+            rule.allowed_calls[0].args[2].constraint,
+            Constraint::RangeI128 {
+                min: RANGE_MIN.to_string(),
+                max: RANGE_MAX.to_string()
+            }
+        );
+    }
 
     #[test]
     fn w1_blend_claim_is_exact_and_scoped() {
@@ -291,6 +430,35 @@ mod tests {
         ));
         // A claim is inbound → only the generated scope policy, no spending limit.
         assert_eq!(rule.policies.len(), 1);
+    }
+
+    #[test]
+    fn two_payments_are_one_rule_with_two_exact_tuples_differing_in_two_positions() {
+        let spec = two_payment_spec();
+        let [rule] = spec.spec().rules.as_slice() else {
+            panic!("two payments of one token are one rule");
+        };
+        assert_eq!(rule.context.contract, PAYMENT_TOKEN());
+        assert_eq!(rule.policies.len(), 1, "only the generated policy");
+        let [first, second] = rule.allowed_calls.as_slice() else {
+            panic!("each recorded payment is its own accepted tuple");
+        };
+        assert_eq!(first.fn_name, "transfer");
+        assert_eq!(second.fn_name, "transfer");
+        let differing: Vec<usize> = (0..3)
+            .filter(|&i| first.args[i].constraint != second.args[i].constraint)
+            .collect();
+        assert_eq!(
+            differing,
+            vec![1, 2],
+            "payee and amount differ; the payer is SELF in both"
+        );
+        for call in [first, second] {
+            assert!(call
+                .args
+                .iter()
+                .all(|arg| matches!(arg.provenance, ozpb_domain::Provenance::ObservedExact)));
+        }
     }
 
     #[test]

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { Account, Keypair } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID } from '../shared/approval.mjs';
+import { ACCOUNT_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { captureHash, targetEnvelopeXdr } from '../server/captured-execution.mjs';
 import { deploymentFixture } from './actions-fixture.mjs';
 import { CASE_IDS, RECIPIENT, captureFixture, capturedFrames, capturedSignRequest } from './captured-execution-fixture.mjs';
 import { nativeFixture, signRequest } from './native-execution-fixture.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 export const LEDGER = { protocol_version: 30, sequence: 1000, timestamp: '1760000000', base_reserve: 5000000,
   min_temp_entry_ttl: 720, min_persistent_entry_ttl: 120960, max_entry_ttl: 3110400 };
@@ -91,7 +93,7 @@ export function stubNativeChecks(f, delegate, holder, { maxCalls = 2, captureCha
   f.network.targetEnvelope = async (call) => {
     if (envelopeFails) throw new Error('wallet network operation refused; inspect the local journal before retrying');
     // A real unsigned envelope from a throwaway source, so a test can search every output for it.
-    holder.envelopes.push(targetEnvelopeXdr(new Account(Keypair.random().publicKey(), '41'), call));
+    holder.envelopes.push(targetEnvelopeXdr(new Account(Keypair.random().publicKey(), '41'), call, WALLET_NETWORKS.testnet.passphrase));
     return holder.envelopes.at(-1);
   };
   f.toolchain.captureTarget = async (envelope, options) => {

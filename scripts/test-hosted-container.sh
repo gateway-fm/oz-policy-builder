@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${OZPB_IMAGE:?Set the image ID built from the tested revision}"
 : "${OZPB_PROXY_IMAGE:?Set the proxy image ID built from the tested revision}"
+: "${OZPB_TOOLKIT_COMMIT:?Set the commit the image was built from (its OZPB_TOOLKIT_SOURCE build argument)}"
 WORK="$(mktemp -d)"
 PROJECT="ozpb-check-$$"
 export OZPB_CONFIG_DIR="$WORK"
@@ -49,6 +50,11 @@ python3 scripts/check-hosted-endpoint.py "https://localhost:$OZPB_TLS_PORT/v1/mc
 "${compose[@]}" down --remove-orphans >/dev/null
 # New containers give the tool session a fresh quota and enough body capacity for artifacts.
 export OZPB_HTTP_REQUESTS_PER_MINUTE=10 OZPB_HTTP_MAX_BODY_BYTES=8388608
+# They keep their output, unlike the package's `none` log driver, so the retention check can read
+# what both processes print. Nothing else changes; removing the containers deletes these logs.
+printf '%s\n' 'services:' '  api: {logging: {driver: json-file}}' '  tls: {logging: {driver: json-file}}' \
+    >"$WORK/keep-output.yaml"
+compose+=(-f "$WORK/keep-output.yaml")
 "${compose[@]}" up -d --wait
 for attempt in {1..30}; do
     if [ "$(curl --silent --cacert "$WORK/tls.crt" -o /dev/null -w '%{http_code}' "https://localhost:$OZPB_TLS_PORT/v1/mcp" || true)" = 401 ]; then
@@ -57,5 +63,11 @@ for attempt in {1..30}; do
     sleep 1
 done
 python3 scripts/check-hosted-build.py "https://localhost:$OZPB_TLS_PORT/v1/mcp" \
-    --token-file "$WORK/bearer-token" --ca-file "$WORK/tls.crt" --spec docs/examples/subscription-spec.json
+    --token-file "$WORK/bearer-token" --ca-file "$WORK/tls.crt" --spec docs/examples/subscription-spec.json \
+    --expect-toolkit-commit "$OZPB_TOOLKIT_COMMIT"
+# After the build, so the canary spec compiles against a warm cache; the check stops both services.
+python3 scripts/check-hosted-retention.py "https://localhost:$OZPB_TLS_PORT/v1/mcp" \
+    --token-file "$WORK/bearer-token" --ca-file "$WORK/tls.crt" --spec docs/examples/subscription-spec.json \
+    --envelope-bundle docs/examples/import-bundle.json \
+    --api-container "$("${compose[@]}" ps -q api)" --proxy-container "$("${compose[@]}" ps -q tls)"
 "${compose[@]}" down --remove-orphans >/dev/null

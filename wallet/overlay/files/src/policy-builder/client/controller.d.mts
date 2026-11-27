@@ -31,7 +31,14 @@ export interface WalletState {
   readonly samplePreview: Details | null;
   readonly sampleTransactionHash: string | null;
   readonly sampleAttempted: boolean;
-  readonly delegate: { readonly capabilityId: string; readonly address: string } | null;
+  readonly delegate: { readonly capabilityId: string; readonly address: string;
+    readonly account?: { readonly exists: boolean; readonly minimumStroops: string } } | null;
+  /** Operator-funded: what the owner funds or uploads first (`readiness`), as the backend read it. */
+  readonly readiness: Details | null;
+  /** The attached account's rules as stored now (`listRules`), for removing an earlier session's grant. */
+  readonly accountRules: (Details & { rules: readonly { id: number; xdr: string; owner: boolean; grant: boolean; summary: Details | null }[] }) | null;
+  readonly earlierRevokePreview: (Details & { display: Details; ruleId: number }) | null;
+  readonly earlierRemoval: Details | null;
   readonly livePreview: (Details & { display: ConsentDisplay; statementSha256: string; cases: readonly LiveCase[] }) | null;
   readonly replay: Details | null;
   readonly installPreview: (Details & { display: Details }) | null;
@@ -56,7 +63,7 @@ export class WalletController {
   constructor(options: {
     request(name: string, data: unknown): Promise<unknown>;
     validators: {
-      parseGrantProposal(text: string, accountAddress: string): GrantProposal;
+      parseGrantProposal(text: string, accountAddress: string, networkId: string): GrantProposal;
       checkProposalArtifact(proposal: GrantProposal, artifact: unknown): ProposalReview;
       reviewIntent(input: unknown): Approval;
       validateAssembly(input: unknown): CheckedAssembly;
@@ -64,7 +71,7 @@ export class WalletController {
       validateSampleAssembly(input: unknown): CheckedAssembly;
       validateSignedAuthorization(input: unknown): Promise<SignedAuthorization>;
       liveCases(input: unknown): readonly LiveCase[];
-      consentDisplay(cases: readonly LiveCase[], options: { currentLedger: number }): ConsentDisplay;
+      consentDisplay(cases: readonly LiveCase[], options: { currentLedger: number; operatorFunded?: boolean }): ConsentDisplay;
       statementHash(display: ConsentDisplay): string;
       checkLiveOwnerEntry(input: unknown): LiveOwnerChecked;
       validateLiveOwnerSignature(input: unknown): Promise<LiveOwnerSignature>;
@@ -76,7 +83,7 @@ export class WalletController {
     };
     sign(input: { approval: Pick<Approval, 'wallet' | 'ownerRuleId' | 'commitment'>; checked: CheckedAssembly | LiveOwnerChecked }): Promise<string[]>;
     origin: string;
-    pins: { networkId: string; accountWasm: string; verifierWasm: string };
+    pins: { network: 'testnet' | 'mainnet'; networkId: string; accountWasm: string; verifierWasm: string };
     onChange?(state: WalletState): void;
     pause?(ms: number): Promise<void>;
     /** Monotonic milliseconds; defaults to performance.now(). */
@@ -104,6 +111,10 @@ export class WalletController {
   prepareDeploy(): Promise<void>;
   confirmDeploy(): Promise<void>;
   review(): Promise<void>;
+  readiness(): Promise<void>;
+  listRules(): Promise<void>;
+  prepareEarlierRevoke(ruleId: number): Promise<void>;
+  revokeEarlier(): Promise<void>;
   createDelegate(): Promise<void>;
   checkAccount(): Promise<void>;
   prepareLive(): Promise<void>;

@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StrKey } from '@stellar/stellar-sdk';
 import { WalletNetwork } from '../../wallet/server/network.mjs';
+import { WALLET_NETWORKS } from '../../wallet/shared/networks.mjs';
 import { loadBundleFiles } from './bundle-command.mjs';
 import { isMainModule } from './cli-entry.mjs';
 import { bundleCheckRequest, checkBundleArtifacts } from './permission-bundle.mjs';
@@ -78,7 +79,9 @@ export async function runProtocolDryRuns(directory, env = process.env, overrides
   const sources = resolve(required('OZPB_RPC_SOURCES_FILE'));
   const snapshot = new RawJson(readFileSync(resolve(required('OZPB_SIGNED_REGISTRY_SNAPSHOT')), 'utf8'));
   const deps = { checkArtifacts: checkBundleArtifacts, loadKey, execute: spawnSync,
-    nativeSource: () => new WalletNetwork({ rpcUrl: env.OZPB_RPC_URL || RPC_URL }).nativeSource(PINNED_ACCOUNT_WASM), ...overrides };
+    // A read only: testnet, no journal, nothing it could submit.
+    nativeSource: () => new WalletNetwork({ network: WALLET_NETWORKS.testnet, rpcUrl: env.OZPB_RPC_URL || RPC_URL })
+      .nativeSource(PINNED_ACCOUNT_WASM), ...overrides };
   const identities = await deps.checkArtifacts(spec, artifacts);
   const delegate = deps.loadKey('delegate');
   requireThat(delegate.publicKey() === run.delegate, 'offline delegate differs from run');

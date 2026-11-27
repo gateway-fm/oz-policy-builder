@@ -20,7 +20,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 mod render;
-use render::{RenderConstraint, RenderRule, RenderSigner};
+use render::{I128Literal, RenderConstraint, RenderRule, RenderSigner};
 
 /// Version pins embedded in the generated crate. These must match the audited
 /// `stellar-accounts` release (recorded in the BuildManifest by the caller).
@@ -111,6 +111,51 @@ struct NormCall<'a> {
 }
 
 const CODEGEN_VERSION: u32 = 1;
+
+/// The target triple every generated crate declares in its `rust-toolchain.toml`, and the one the
+/// pinned `stellar contract build` compiles it for. The BuildManifest records it as
+/// `build_target`.
+pub const BUILD_TARGET: &str = "wasm32v1-none";
+
+/// Where this file's test module begins. Everything before it is the emitter; everything after it
+/// is tests, which [`template_pack_hash`] leaves out so that a test edit is not a template change.
+/// Written with escapes so that this literal is not itself a match.
+const TEST_MODULE_MARKER: &str = "\n#[cfg(test)]\nmod tests {";
+
+/// Hash of the template pack this generator emits from.
+///
+/// For a generator whose templates are code, the template pack is that code: this file up to its
+/// test module, `render.rs`, and the committed lockfile [`emit_lockfile`] copies into every
+/// generated crate — embedded at compile time, so the value describes the binary that runs rather
+/// than whatever checkout sits beside it. It moves with any edit to those, a comment included,
+/// which makes it an identifier of the emitter's source and not a claim about behaviour: the
+/// template family is the behavioural version, and the generated source hash says exactly what
+/// was emitted.
+pub fn template_pack_hash() -> Result<Hash32, CodegenError> {
+    template_pack_of(
+        include_str!("lib.rs"),
+        include_str!("render.rs"),
+        include_str!("../../../contracts/golden-transfer-policy/Cargo.lock"),
+    )
+}
+
+/// [`template_pack_hash`] over given file contents. Line endings are normalized to LF first, so a
+/// checkout with `core.autocrlf` compiles in the same template pack — and still finds the test
+/// module, which is located by an LF marker.
+fn template_pack_of(lib: &str, render: &str, lockfile: &str) -> Result<Hash32, CodegenError> {
+    let lf = |text: &str| text.replace("\r\n", "\n");
+    let lib = lf(lib);
+    let (emitter, _tests) = lib
+        .split_once(TEST_MODULE_MARKER)
+        .ok_or_else(|| CodegenError::Internal("codegen test module not found".to_string()))?;
+    let files = BTreeMap::from([
+        ("contracts/golden-transfer-policy/Cargo.lock", lf(lockfile)),
+        ("crates/codegen/src/lib.rs", emitter.to_string()),
+        ("crates/codegen/src/render.rs", lf(render)),
+    ]);
+    ozpb_domain::canonical_hash(domains::TEMPLATE_PACK, &files)
+        .map_err(|e| CodegenError::Internal(e.to_string()))
+}
 /// Must remain equal to build-runner's input ceiling. Enforcing it at generation keeps a caller
 /// from receiving an artifact that the very next Phase 1 stage necessarily refuses.
 const MAX_GENERATED_CRATE_BYTES: usize = 2 * 1024 * 1024;
@@ -183,7 +228,8 @@ pub fn generate(
     files.insert("Cargo.toml".to_string(), emit_cargo_toml(&crate_name, pins));
     files.insert("rust-toolchain.toml".to_string(), emit_rust_toolchain(pins));
     files.insert("rustfmt.toml".to_string(), emit_rustfmt_toml());
-    let (crate_root, contract) = emit_lib(&render_rule, &hash);
+    let meta = contract_meta(&render_rule, &hash)?;
+    let (crate_root, contract) = emit_lib(&render_rule, &hash, &meta);
     files.insert("src/lib.rs".to_string(), crate_root);
     files.insert("src/contract.rs".to_string(), contract);
 
@@ -207,6 +253,49 @@ pub fn generate(
         files,
         normalized_input_hash: hash,
     })
+}
+
+/// The generator's name and codegen version, as the artifact states it in `ozpb_generator`.
+///
+/// A codegen version rather than the toolkit's crate version or git revision, deliberately. Every
+/// value here is compiled into the Wasm, so it has to be a fixed point of the emitted source: a
+/// revision cannot be (the committed golden crates would have to contain the hash of the commit
+/// that contains them), and the crate version is `0.1.0` across releases, so stating it would be
+/// a claim the binary cannot back. The toolkit's revision belongs to the BuildManifest.
+fn generator_identity() -> String {
+    format!("oz-policy-builder/codegen@{CODEGEN_VERSION}")
+}
+
+/// The `contractmeta!` block of the crate root: what the artifact states about its own origin in
+/// its SEP-46 `contractmetav0` section, readable with `stellar contract info meta`.
+///
+/// Only values the normalized codegen input already determines, because these are compiled into
+/// the Wasm: the spec hash, registry snapshot and account would make one grant shape a different
+/// Wasm per spec, per registry update and per account (`normalized_hash_ignores_non_code_fields`),
+/// which is the property that lets equal grants share one deployment. Those stay in the
+/// BuildManifest, which binds this Wasm's hash to the spec it was built from.
+fn contract_meta(rule: &RenderRule, hash: &Hash32) -> Result<String, CodegenError> {
+    let mut out = String::from("\n");
+    out.push_str(&render::wrap_comment(
+        "// ",
+        "Provenance, read with `stellar contract info meta`. The spec this was built from, its \
+         registry snapshot and the toolkit revision are in the BuildManifest, not here: they \
+         would make one grant shape a different Wasm per spec.",
+    ));
+    for (key, value) in [
+        (render::MetaKey::Generator, generator_identity()),
+        (
+            render::MetaKey::TemplateFamily,
+            rule.template_family.to_string(),
+        ),
+        (render::MetaKey::CodegenInput, hash.to_hex()),
+    ] {
+        out.push_str(&render::contract_meta_entry(
+            key,
+            &render::MetaValue::new(&value)?,
+        ));
+    }
+    Ok(out)
 }
 
 fn emit_lockfile(crate_name: &str, pins: &Pins) -> Result<String, CodegenError> {
@@ -248,7 +337,7 @@ fn emit_rust_toolchain(pins: &Pins) -> String {
 # rebuilding invalidates that hash.
 [toolchain]
 channel = "{channel}"
-targets = ["wasm32v1-none"]
+targets = ["{BUILD_TARGET}"]
 "#,
         channel = pins.rust_channel
     )
@@ -346,6 +435,35 @@ fn emit_doc(indent: &str, paragraphs: &[String], sections: &[(&str, Vec<String>)
 /// cannot follow that: it opens with a delimiter and never has an undelimited region, because
 /// emitting one would mean a reader could not tell a section boundary from the top of the file.
 /// So the enum gets a heading, and the heading is a name of our own.
+/// The check on an `i128` argument with an optional floor and cap: the value must be an `i128`,
+/// then `x < min` and `x > max` each refuse the tuple. Two checks rather than one `||`
+/// condition, because two 40-digit literals on one line outgrow rustfmt's width and the generated
+/// crate must be rustfmt's own output. A bound at the type's own limit refuses nothing, and a
+/// comparison against it is what rustc's `unused_comparisons` and clippy's deny-level
+/// `absurd_extreme_comparisons` reject, so it is left out; the type check always stays.
+fn i128_bounds(i: u32, min: Option<&I128Literal>, max: Option<&I128Literal>) -> String {
+    let checks: Vec<String> = [
+        min.filter(|min| !min.is_type_min()).map(|min| {
+            format!("            if x < {min} {{\n                return false;\n            }}\n")
+        }),
+        max.filter(|max| !max.is_type_max()).map(|max| {
+            format!("            if x > {max} {{\n                return false;\n            }}\n")
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if checks.is_empty() {
+        return format!(
+            "    if i128::try_from_val(e, &v{i}).is_err() {{\n        return false;\n    }}\n"
+        );
+    }
+    format!(
+        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n{}        }}\n        Err(_) => return false,\n    }}\n",
+        checks.concat()
+    )
+}
+
 fn section(name: &str) -> String {
     let rule = "#".repeat(18);
     format!("// {rule} {name} {rule}\n\n")
@@ -427,9 +545,11 @@ fn caller_managed_ttl_note() -> String {
 /// just spent its last permitted call can never permit again, and buying the largest possible
 /// extension at exactly that moment is the opposite of what the artifact claims to do. The shared
 /// instance entry stays alive through whichever *other* installation is still active, and when
-/// none is, the contract is useless to everyone and is meant to expire. The **code** entry is not
-/// extended here at all — it is shared with every other deployment of the same wasm, so its rent
-/// is not this policy's to pay (§3 of the conformance record states that as a decision).
+/// none is, the contract is useless to everyone and is meant to expire. `instance().extend_ttl`
+/// extends the Wasm **code** entry together with the instance (soroban-sdk 28
+/// `Instance::extend_ttl`, the host's `extend_current_contract_instance_and_code_ttl`), so this
+/// block also pays rent on a code entry shared with every other deployment of the same Wasm. That
+/// is a cost, not a safety property; §3 of the conformance record says why it stays.
 ///
 /// The chained `extend_ttl` calls are one line each: `chain_width` is `max_width` under
 /// `use_small_heuristics = "Max"`, so the three-segment chain no longer breaks across lines the
@@ -452,10 +572,10 @@ fn ttl_extension_block(has_state: bool) -> String {
             render::wrap_comment(
                 "        // ",
                 "Not a permission check — nothing here decides anything. This keeps this \
-                 installation and the contract instance out of archival. The wasm code entry is \
-                 deliberately not extended: it is shared with every other deployment of the same \
-                 code. With no call cap there is no condition under which the extension is \
-                 withheld."
+                 installation, the contract instance and its Wasm code out of archival: the \
+                 instance extension extends the code entry with it, and that entry is shared \
+                 with every deployment of the same Wasm. With no call cap there is no condition \
+                 under which the extension is withheld."
             )
         )
     }
@@ -564,7 +684,7 @@ lto = true
 /// Takes a [`RenderRule`], never a `RuleSpec`: every value here has already been through its
 /// validating constructor, so no raw spec string is in scope to interpolate (§4.4 rendering
 /// safety). Emission is infallible for a well-formed `RenderRule`.
-fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
+fn emit_lib(rule: &RenderRule, hash: &Hash32, meta: &str) -> (String, String) {
     let template_family = &rule.template_family;
     let has_state = rule.has_state();
     let has_scval = rule.has_scval();
@@ -668,6 +788,7 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
     // — `unbalanced_constants` exists to prove a constant is never emitted without its use site —
     // so the attribute would hide the very thing that test checks for.
     out.push_str("#![no_std]\n\npub mod contract;\n");
+    out.push_str(meta);
     let crate_root = out;
 
     let mut out = String::new();
@@ -1334,27 +1455,66 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
         out.push_str(")\n        {\n");
     }
     out.push_str("            panic_with_error!(e, PolicyError::FunctionNotAllowed);\n        }\n");
-    // `&&` binds tighter than `||`, so per-disjunct parens are unnecessary; a single
-    // allowed call must emit no wrapping parens at all (clippy: unnecessary_parens).
-    let multi = rule.calls.len() > 1;
-    let tuple_expr = rule
-        .calls
+    // The tuples, grouped by function name so that each name's guard is read once:
+    // `fn_0_ok && (check_call_0(..) || check_call_1(..))`. A guard per tuple,
+    // `(fn_0_ok && check_call_0(..)) || (fn_0_ok && check_call_1(..))`, means the same and is
+    // what `clippy::nonminimal_bool` refuses. A group takes the place of its name's first tuple,
+    // so a rule whose names have one tuple each emits what it did before grouping, and the
+    // checks run in the same order: at most one name matches, and its tuples are tried in call
+    // order either way.
+    let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (ci, call) in rule.calls.iter().enumerate() {
+        // `fn_names` is sorted and deduplicated just above, so the lookup is a binary search
+        // rather than a scan per call — and it uses the ordering that is already established
+        // instead of building a second index beside it. (A hash map is not an option here in any
+        // case: `clippy.toml` bans `HashMap` across both workspaces, because per-process
+        // iteration order is how emitted bytes stop being reproducible.)
+        let fi = fn_names
+            .binary_search(&call.fn_name.as_str())
+            .unwrap_or_else(|_| unreachable!("fn_names is built from rule.calls"));
+        // A scan, over at most MAX_CALLS_PER_RULE groups, because the groups keep call order.
+        match groups.iter_mut().find(|(group_fi, _)| *group_fi == fi) {
+            Some((_, calls)) => calls.push(ci),
+            None => groups.push((fi, vec![ci])),
+        }
+    }
+    // rustfmt's layouts under the shipped config, measured with the pinned toolchain's rustfmt
+    // and with the nightly CI pins, on generated crates of each shape: a group of several tuples
+    // first, later and alone, up to 32 tuples. CI's own fmt gate sees only the committed shapes,
+    // so `tuples_of_one_function_are_checked_under_one_function_guard` pins the others. Several
+    // groups are parenthesized, each after the first on its own `||` line one level in; a single
+    // group is not (rustc: unused_parens). A group of several tuples breaks after its guard, with
+    // `&& (` one level in from the line the group starts on, and then before each further check,
+    // one level deeper: even two checks, `check_call_0(..) || check_call_1(..)`, are 84 columns,
+    // and after `&& (` at column 16 at the earliest, with at least `)` and one more character
+    // behind them (`;` or `)`), they end at column 102. The first group starts on the `let` line,
+    // a later one on its `||` line, which is a level deeper already.
+    let several = groups.len() > 1;
+    let tuple_expr = groups
         .iter()
         .enumerate()
-        .map(|(ci, call)| {
-            // `fn_names` is sorted and deduplicated just above, so the lookup is a binary
-            // search rather than a scan per call — and it uses the ordering that is already
-            // established instead of building a second index beside it. (A hash map is not an
-            // option here in any case: `clippy.toml` bans `HashMap` across both workspaces,
-            // because per-process iteration order is how emitted bytes stop being reproducible.)
-            let fi = fn_names
-                .binary_search(&call.fn_name.as_str())
-                .unwrap_or_else(|_| unreachable!("fn_names is built from rule.calls"));
-            let inner = format!("fn_{fi}_ok && check_call_{ci}(e, &c.args, &smart_account)");
-            if multi {
-                format!("({inner})")
+        .map(|(gi, (fi, calls))| {
+            let check = |ci: &usize| format!("check_call_{ci}(e, &c.args, &smart_account)");
+            let group = match calls.as_slice() {
+                [ci] => format!("fn_{fi}_ok && {}", check(ci)),
+                _ => {
+                    let (and_indent, or_indent) = if gi == 0 {
+                        ("            ", "                ")
+                    } else {
+                        ("                ", "                    ")
+                    };
+                    let checks = calls
+                        .iter()
+                        .map(check)
+                        .collect::<Vec<_>>()
+                        .join(&format!("\n{or_indent}|| "));
+                    format!("fn_{fi}_ok\n{and_indent}&& ({checks})")
+                }
+            };
+            if several {
+                format!("({group})")
             } else {
-                inner
+                group
             }
         })
         .collect::<Vec<_>>()
@@ -1659,15 +1819,10 @@ fn emit_lib(rule: &RenderRule, hash: &Hash32) -> (String, String) {
                         "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x != {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
                     ));
                 }
-                RenderConstraint::LeI128(lit) => {
-                    helpers.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x > {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
-                }
-                RenderConstraint::GeI128(lit) => {
-                    helpers.push_str(&format!(
-                        "    match i128::try_from_val(e, &v{i}) {{\n        Ok(x) => {{\n            if x < {lit} {{\n                return false;\n            }}\n        }}\n        Err(_) => return false,\n    }}\n"
-                    ));
+                RenderConstraint::LeI128(max) => helpers.push_str(&i128_bounds(i, None, Some(max))),
+                RenderConstraint::GeI128(min) => helpers.push_str(&i128_bounds(i, Some(min), None)),
+                RenderConstraint::RangeI128 { min, max } => {
+                    helpers.push_str(&i128_bounds(i, Some(min), Some(max)))
                 }
                 // The bytes are a module constant (emitted above), so this line is short
                 // whatever the recorded `ScVal` encodes to.
@@ -1847,6 +2002,264 @@ mod tests {
         );
     }
 
+    /// The `contractmeta!` entries of an emitted crate root, as `(key, value)` in source order.
+    ///
+    /// Parsed rather than searched for: a value that escaped its literal shows up as a parse
+    /// failure, an extra item or a non-literal argument, never as a substring that happens to
+    /// match.
+    fn contract_meta_of(source: &str) -> Vec<(String, String)> {
+        let file = syn::parse_file(source).expect("the crate root must parse");
+        file.items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Macro(item)
+                    if item
+                        .mac
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "contractmeta") =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .map(|item| {
+                let args = item
+                    .mac
+                    .parse_body_with(
+                        syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
+                    )
+                    .expect("contractmeta! arguments are `name = value` pairs");
+                let pairs: Vec<(String, String)> = args
+                    .iter()
+                    .map(|pair| {
+                        let name = pair.path.get_ident().expect("a bare argument name").to_string();
+                        let syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(value),
+                            ..
+                        }) = &pair.value
+                        else {
+                            panic!("contractmeta! takes string literals")
+                        };
+                        (name, value.value())
+                    })
+                    .collect();
+                assert_eq!(
+                    pairs.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+                    ["key", "val"],
+                    "one key and one value per entry"
+                );
+                (pairs[0].1.clone(), pairs[1].1.clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_artifact_states_its_provenance_in_contract_meta() {
+        // What `stellar contract info meta` shows a reader of the deployed Wasm, without our
+        // BuildManifest: which generator, which template family, and which normalized input.
+        // Nothing that `normalized_hash_ignores_non_code_fields` keeps out of the bytes — spec
+        // hash, registry snapshot, account — may appear here, or one grant shape would stop
+        // being one Wasm.
+        for (label, spec) in [
+            ("W2 subscription", golden_spec()),
+            (
+                "W3 soroswap",
+                ozpb_synthesizer::walkthroughs::soroswap_swap_spec(),
+            ),
+        ] {
+            let generated = generate(&spec, 0, &Pins::default()).unwrap();
+            assert_eq!(
+                contract_meta_of(&generated.files["src/lib.rs"]),
+                vec![
+                    (
+                        "ozpb_generator".to_string(),
+                        "oz-policy-builder/codegen@1".to_string()
+                    ),
+                    (
+                        "ozpb_template_family".to_string(),
+                        "policy-templates/scope@1".to_string()
+                    ),
+                    (
+                        "ozpb_codegen_input".to_string(),
+                        generated.normalized_input_hash.to_hex()
+                    ),
+                ],
+                "{label}"
+            );
+            assert!(
+                !generated.files["src/contract.rs"].contains("contractmeta"),
+                "{label}: provenance is stated once, in the crate root"
+            );
+        }
+    }
+
+    /// The template pack of a generator whose templates are code is the emitter's source: the
+    /// non-test half of this file, `render.rs`, and the lockfile emission copies. Rebuilt here
+    /// from the files on disk, so a hash over the wrong bytes — tests included, a file left out,
+    /// a different domain — fails rather than agrees with itself.
+    #[test]
+    fn the_template_pack_hash_is_the_emitter_source_without_its_tests() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read = |path: &str| std::fs::read_to_string(root.join(path)).unwrap();
+        let lib = read("src/lib.rs");
+        let marker = "\n#[cfg(test)]\nmod tests {";
+        assert_eq!(
+            lib.matches(marker).count(),
+            1,
+            "the test module must be found exactly once, or the emitter's end is ambiguous"
+        );
+        let emitter = lib.split_once(marker).unwrap().0;
+        assert!(emitter.contains("fn emit_lib(") && !emitter.contains("fn golden_crate_matches"));
+        let expected = ozpb_domain::canonical_hash(
+            ozpb_domain::domains::TEMPLATE_PACK,
+            &BTreeMap::from([
+                (
+                    "contracts/golden-transfer-policy/Cargo.lock",
+                    read("../../contracts/golden-transfer-policy/Cargo.lock"),
+                ),
+                ("crates/codegen/src/lib.rs", emitter.to_string()),
+                ("crates/codegen/src/render.rs", read("src/render.rs")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(template_pack_hash().unwrap(), expected);
+
+        // A checkout with CRLF line endings (`core.autocrlf`) holds the same template pack: the
+        // hash is over LF text, and the test-module marker is still found.
+        let crlf = |text: &str| text.replace('\n', "\r\n");
+        assert_eq!(
+            template_pack_of(
+                &crlf(&lib),
+                &crlf(&read("src/render.rs")),
+                &crlf(&read("../../contracts/golden-transfer-policy/Cargo.lock")),
+            )
+            .unwrap(),
+            expected
+        );
+    }
+
+    /// The files whose bytes are emitted into every generated crate or hashed into the template
+    /// pack must check out with LF endings everywhere. `emit_lockfile` copies the golden lockfile
+    /// verbatim, so under `core.autocrlf` a Windows checkout would emit a different crate, and a
+    /// different `source_hash`, from the same spec. Asked of git itself; skipped outside a
+    /// checkout (a source archive or a mutation-testing copy has no attributes to ask about).
+    #[test]
+    fn the_emitted_and_hashed_files_check_out_with_lf_endings() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let files = [
+            "contracts/golden-transfer-policy/Cargo.lock",
+            "contracts/soroswap-swap-policy/Cargo.lock",
+            "contracts/golden-transfer-policy/src/lib.rs",
+            "crates/codegen/src/lib.rs",
+            "crates/codegen/src/render.rs",
+        ];
+        let Ok(output) = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["check-attr", "eol", "--"])
+            .args(files)
+            .output()
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        let report = String::from_utf8(output.stdout).unwrap();
+        for file in files {
+            assert!(
+                report.contains(&format!("{file}: eol: lf\n")),
+                "{file} is not checked out with LF endings:\n{report}"
+            );
+        }
+    }
+
+    /// The target the manifest records is the one the emitted crate declares.
+    #[test]
+    fn the_build_target_is_the_one_the_crate_declares() {
+        let generated = generate(&golden_spec(), 0, &Pins::default()).unwrap();
+        assert_eq!(BUILD_TARGET, "wasm32v1-none");
+        assert!(generated.files["rust-toolchain.toml"]
+            .contains(&format!("targets = [\"{BUILD_TARGET}\"]\n")));
+    }
+
+    #[test]
+    fn a_hostile_meta_value_cannot_leave_its_literal() {
+        // `contractmeta!` takes string literals, so a value is emitted *inside* one. A quote
+        // would close it and turn the rest into Rust; a backslash changes what it means; a
+        // newline or `*/` breaks the line structure a reviewer reads. None is escaped: a value
+        // that would need escaping is refused.
+        for hostile in [
+            "scope@1\"); pub fn back_door() {} //",
+            "scope@1\nsoroban_sdk::contractmeta!(key = \"ozpb_generator\", val = \"forged\");",
+            "scope@1 */ pub fn back_door() {} /*",
+            "scope@1*/",
+            "scope@1\\",
+            "scope@1\"",
+            "with space",
+            "tab\there",
+            "",
+            &"a".repeat(65),
+        ] {
+            assert!(
+                render::MetaValue::new(hostile).is_err(),
+                "MetaValue accepted {hostile:?}"
+            );
+            assert!(
+                render::TemplateFamily::new(hostile).is_err(),
+                "TemplateFamily accepted {hostile:?}, and it is emitted as a meta value"
+            );
+        }
+        // What is accepted renders as exactly one item whose literal is the value, unchanged.
+        for value in ["policy-templates/scope@1", "f".repeat(64).as_str()] {
+            let line = render::contract_meta_entry(
+                render::MetaKey::TemplateFamily,
+                &render::MetaValue::new(value).unwrap(),
+            );
+            assert_eq!(syn::parse_file(&line).unwrap().items.len(), 1, "{line}");
+            assert_eq!(
+                contract_meta_of(&line),
+                vec![("ozpb_template_family".to_string(), value.to_string())]
+            );
+        }
+    }
+
+    #[test]
+    fn both_meta_layouts_are_the_ones_rustfmt_would_choose() {
+        // `use_small_heuristics = "Max"` keeps a call on one line while the whole line fits
+        // `max_width`; past it, rustfmt takes one argument per line with no trailing comma.
+        // Measured against the pinned rustfmt with the shipped rustfmt.toml, at 100 and 101.
+        let fixed = "soroban_sdk::contractmeta!(key = \"ozpb_template_family\", val = \"\");".len();
+        let entry = |total: usize| {
+            let value = "a".repeat(total - fixed);
+            (
+                render::contract_meta_entry(
+                    render::MetaKey::TemplateFamily,
+                    &render::MetaValue::new(&value).unwrap(),
+                ),
+                value,
+            )
+        };
+        let (fits, value) = entry(render::MAX_WIDTH);
+        assert_eq!(
+            fits,
+            format!(
+                "soroban_sdk::contractmeta!(key = \"ozpb_template_family\", val = \"{value}\");\n"
+            )
+        );
+        assert_eq!(fits.trim_end().chars().count(), render::MAX_WIDTH);
+        let (overflows, value) = entry(render::MAX_WIDTH + 1);
+        assert_eq!(
+            overflows,
+            format!(
+                "soroban_sdk::contractmeta!(\n    key = \"ozpb_template_family\",\n    val = \
+                 \"{value}\"\n);\n"
+            )
+        );
+    }
+
     #[test]
     fn only_contract_and_account_strkeys_are_accepted_as_addresses() {
         // A muxed or pre-auth strkey decodes cleanly but is not a Soroban `Address`; emitting
@@ -1889,17 +2302,21 @@ mod tests {
             let mut rest = source.as_str();
             let mut literals = 0usize;
             while let Some(open) = rest.find('"') {
+                // A `contractmeta!` argument may also carry the meta-value punctuation
+                // (`-./@`), and nothing else: still no quote, backslash, space or newline.
+                let meta_argument =
+                    rest[..open].ends_with("key = ") || rest[..open].ends_with("val = ");
                 rest = &rest[open + 1..];
                 let close = rest
                     .find('"')
                     .unwrap_or_else(|| panic!("{label}: unterminated string literal"));
                 let content = &rest[..close];
                 assert!(
-                    content
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                    content.bytes().all(|b| b.is_ascii_alphanumeric()
+                        || b == b'_'
+                        || (meta_argument && matches!(b, b'-' | b'.' | b'/' | b'@'))),
                     "{label}: emitted string literal {content:?} is not a bare \
-                     identifier/strkey; an untrusted value escaped its literal"
+                     identifier/strkey or meta value; an untrusted value escaped its literal"
                 );
                 literals += 1;
                 rest = &rest[close + 1..];
@@ -1940,9 +2357,12 @@ mod tests {
             if constraint.is_widening() {
                 Provenance::UserWidened {
                     intent: "property-test widening".to_string(),
-                    // AnyValue is the maximal widening: validation holds it to the
-                    // high-blast-radius acknowledgement its schema contract states.
-                    blast_radius: if matches!(constraint, Constraint::AnyValue) {
+                    // AnyValue is the maximal widening, and so is a bound spanning the whole
+                    // i128 range: validation holds both to the high-blast-radius
+                    // acknowledgement the schema contract states.
+                    blast_radius: if matches!(constraint, Constraint::AnyValue)
+                        || constraint.spans_the_i128_domain()
+                    {
                         BlastRadius::High
                     } else {
                         BlastRadius::Medium
@@ -1980,7 +2400,22 @@ mod tests {
                     .prop_map(|value| Constraint::EqI128 { value }),
                 proptest::sample::select(numbers.clone())
                     .prop_map(|max| Constraint::LeI128 { max }),
-                proptest::sample::select(numbers).prop_map(|min| Constraint::GeI128 { min }),
+                proptest::sample::select(numbers.clone())
+                    .prop_map(|min| Constraint::GeI128 { min }),
+                // Two draws put in order, so every pair is a valid range, equal ends included.
+                (
+                    proptest::sample::select(numbers.clone()),
+                    proptest::sample::select(numbers)
+                )
+                    .prop_map(|(a, b)| {
+                        let (min, max) = if a.parse::<i128>().unwrap() <= b.parse::<i128>().unwrap()
+                        {
+                            (a, b)
+                        } else {
+                            (b, a)
+                        };
+                        Constraint::RangeI128 { min, max }
+                    }),
                 proptest::sample::select(vec![
                     scval_b64(ScVal::U32(0)),
                     scval_b64(ScVal::U64(u64::MAX)),
@@ -2241,7 +2676,249 @@ mod tests {
                          \n--- source ---\n{source}"
                     )));
                 }
+                // The corpus draws 1 to 32 calls from 36 names, so most cases put several tuples
+                // under one name, in every interleaving: the shape whose repeated guard clippy
+                // refused. One small expression parsed per case, so it costs nothing measurable.
+                let names: Vec<&str> = spec.spec().rules[0]
+                    .allowed_calls
+                    .iter()
+                    .map(|call| call.fn_name.as_str())
+                    .collect();
+                let defects = tuple_check_defects(source, &names);
+                if !defects.is_empty() {
+                    return Err(proptest::test_runner::TestCaseError::fail(format!(
+                        "the tuple check is not read-once under the right guards: {defects:?}\
+                         \n--- source ---\n{source}"
+                    )));
+                }
             }
+        }
+
+        /// What is wrong with the `tuple_ok` statement, given the function name of each allowed
+        /// call in emission order. Empty in a correct emission.
+        ///
+        /// The statement is parsed, not scanned, because what makes it correct is its structure.
+        /// It must be an `||` of terms, each `fn_<k>_ok && check_call_<i>(..)` or
+        /// `fn_<k>_ok && (check_call_<i>(..) || …)`, parenthesized or not, and nothing else: no
+        /// other operator, no term without a guard, no guard outside an `&&`. Every check must sit
+        /// under the guard that binds its own call's function, and every guard and check must be
+        /// read exactly once. A token scan cannot tell `fn_2_ok && (check_call_0(..) ||
+        /// check_call_2(..))` from `fn_2_ok && check_call_0(..) || check_call_2(..)` or
+        /// `fn_2_ok || (check_call_0(..) || check_call_2(..))`, and both of those permit a tuple
+        /// for whatever function is invoked.
+        ///
+        /// Read-once is what the lint gate needs: `clippy::nonminimal_bool` refuses a condition it
+        /// can rewrite with fewer operands, and `(fn_0_ok && check_call_0(..)) || (fn_0_ok &&
+        /// check_call_1(..))` reads `fn_0_ok` twice.
+        pub(super) fn tuple_check_defects(source: &str, call_names: &[&str]) -> Vec<String> {
+            use std::collections::BTreeMap;
+            use syn::{BinOp, Expr};
+
+            /// An `||` chain in source order; a parenthesized operand stays one operand.
+            fn disjuncts(expr: &Expr) -> Vec<&Expr> {
+                match expr {
+                    Expr::Binary(or) if matches!(or.op, BinOp::Or(_)) => {
+                        let mut terms = disjuncts(&or.left);
+                        terms.extend(disjuncts(&or.right));
+                        terms
+                    }
+                    _ => vec![expr],
+                }
+            }
+            fn ident(expr: &Expr) -> Option<String> {
+                match expr {
+                    Expr::Path(path) => path.path.get_ident().map(ToString::to_string),
+                    _ => None,
+                }
+            }
+            fn check_index(expr: &Expr) -> Option<usize> {
+                let Expr::Call(call) = expr else {
+                    return None;
+                };
+                ident(&call.func)?.strip_prefix("check_call_")?.parse().ok()
+            }
+
+            // `let fn_<k>_ok = c.fn_name == Symbol::new(e, "<name>");`, one line each.
+            let guards: BTreeMap<&str, &str> = source
+                .lines()
+                .filter_map(|line| {
+                    let rest = line.trim_start().strip_prefix("let ")?;
+                    let (binding, rest) = rest.split_once(" = c.fn_name == Symbol::new(e, \"")?;
+                    Some((binding, rest.strip_suffix("\");")?))
+                })
+                .collect();
+            let Some(start) = source.find("let tuple_ok = ") else {
+                return vec!["no `let tuple_ok` statement".to_string()];
+            };
+            let rest = &source[start + "let tuple_ok = ".len()..];
+            let text = &rest[..rest.find(';').unwrap_or(rest.len())];
+            let expr: Expr = match syn::parse_str(text) {
+                Ok(expr) => expr,
+                Err(error) => return vec![format!("`tuple_ok` does not parse: {error}")],
+            };
+
+            let mut defects = Vec::new();
+            let mut reads: BTreeMap<String, usize> = BTreeMap::new();
+            for (ti, term) in disjuncts(&expr).into_iter().enumerate() {
+                let term = match term {
+                    Expr::Paren(paren) => &*paren.expr,
+                    _ => term,
+                };
+                let guarded = match term {
+                    Expr::Binary(and) if matches!(and.op, BinOp::And(_)) => ident(&and.left)
+                        .filter(|guard| guards.contains_key(guard.as_str()))
+                        .map(|guard| (guard, &*and.right)),
+                    _ => None,
+                };
+                let Some((guard, checks)) = guarded else {
+                    defects.push(format!(
+                        "disjunct {ti} is not `fn_<k>_ok && <tuple checks>`"
+                    ));
+                    continue;
+                };
+                let bound = guards.get(guard.as_str()).copied();
+                *reads.entry(guard.clone()).or_default() += 1;
+                let checks = match checks {
+                    Expr::Paren(paren) => disjuncts(&paren.expr),
+                    single => vec![single],
+                };
+                for check in checks {
+                    let Some(ci) = check_index(check) else {
+                        defects.push(format!(
+                            "disjunct {ti} has an operand that is not a tuple check"
+                        ));
+                        continue;
+                    };
+                    let expected = call_names.get(ci).copied();
+                    if expected.is_none() || expected != bound {
+                        defects.push(format!(
+                            "check_call_{ci} (a call to {expected:?}) is under {guard}, which \
+                             binds {bound:?}"
+                        ));
+                    }
+                    *reads.entry(format!("check_call_{ci}")).or_default() += 1;
+                }
+            }
+            defects.extend(
+                reads
+                    .iter()
+                    .filter(|(_, count)| **count != 1)
+                    .map(|(operand, count)| format!("{operand} read {count} times")),
+            );
+            for guard in guards.keys() {
+                if !reads.contains_key(*guard) {
+                    defects.push(format!("{guard} is never read as a guard"));
+                }
+            }
+            for ci in 0..call_names.len() {
+                if !reads.contains_key(&format!("check_call_{ci}")) {
+                    defects.push(format!("check_call_{ci} is not under any guard"));
+                }
+            }
+            defects
+        }
+
+        #[test]
+        fn tuple_check_defects_names_each_way_the_statement_can_be_wrong() {
+            let guards = "let fn_0_ok = c.fn_name == Symbol::new(e, \"approve\");\n\
+                          let fn_1_ok = c.fn_name == Symbol::new(e, \"transfer\");\n";
+            let c = |ci: usize| format!("check_call_{ci}(e, &c.args, &smart_account)");
+            let source = |tuple_ok: String| format!("{guards}let tuple_ok = {tuple_ok};\n");
+            let calls = ["transfer", "approve", "transfer"];
+            let defects = |tuple_ok: String| tuple_check_defects(&source(tuple_ok), &calls);
+            let none = Vec::<String>::new();
+
+            // What the emitter writes, with and without parentheses around single checks.
+            let correct = format!(
+                "(fn_1_ok && ({} || {})) || (fn_0_ok && {})",
+                c(0),
+                c(2),
+                c(1)
+            );
+            assert_eq!(defects(correct), none);
+            let unparenthesized =
+                format!("fn_1_ok && ({} || {}) || fn_0_ok && {}", c(0), c(2), c(1));
+            assert_eq!(defects(unparenthesized), none);
+
+            // The shape clippy refused: one guard per tuple.
+            let repeated = format!(
+                "(fn_1_ok && {}) || (fn_0_ok && {}) || (fn_1_ok && {})",
+                c(0),
+                c(1),
+                c(2)
+            );
+            assert_eq!(defects(repeated), vec!["fn_1_ok read 2 times"]);
+
+            // Widening by precedence: `&&` binds tighter, so the second transfer tuple stands
+            // alone and permits for whatever function is invoked. A token scan saw nothing.
+            let ungrouped = format!("fn_1_ok && {} || {} || fn_0_ok && {}", c(0), c(2), c(1));
+            assert_eq!(
+                defects(ungrouped),
+                vec![
+                    "disjunct 1 is not `fn_<k>_ok && <tuple checks>`",
+                    "check_call_2 is not under any guard",
+                ]
+            );
+            // Widening by operator: the guard as one more disjunct guards nothing.
+            let or_guard = format!("fn_1_ok || ({} || {}) || (fn_0_ok && {})", c(0), c(2), c(1));
+            assert_eq!(
+                defects(or_guard),
+                vec![
+                    "disjunct 0 is not `fn_<k>_ok && <tuple checks>`",
+                    "disjunct 1 is not `fn_<k>_ok && <tuple checks>`",
+                    "fn_1_ok is never read as a guard",
+                    "check_call_0 is not under any guard",
+                    "check_call_2 is not under any guard",
+                ]
+            );
+            // Another operator among the checks.
+            let and_checks = format!(
+                "(fn_1_ok && ({} && {})) || (fn_0_ok && {})",
+                c(0),
+                c(2),
+                c(1)
+            );
+            assert_eq!(
+                defects(and_checks),
+                vec![
+                    "disjunct 0 has an operand that is not a tuple check",
+                    "check_call_0 is not under any guard",
+                    "check_call_2 is not under any guard",
+                ]
+            );
+            // Each tuple under the other function's guard, every operand still read once.
+            let misplaced = format!(
+                "(fn_1_ok && ({} || {})) || (fn_0_ok && {})",
+                c(0),
+                c(1),
+                c(2)
+            );
+            assert_eq!(
+                defects(misplaced),
+                vec![
+                    "check_call_1 (a call to Some(\"approve\")) is under fn_1_ok, which binds \
+                     Some(\"transfer\")",
+                    "check_call_2 (a call to Some(\"transfer\")) is under fn_0_ok, which binds \
+                     Some(\"approve\")",
+                ]
+            );
+            // A guard never read, and a check this rule does not have: `check_call_10` is not
+            // a read of `check_call_1`.
+            let foreign = format!("fn_1_ok && ({} || {})", c(1), c(10));
+            assert_eq!(
+                tuple_check_defects(&source(foreign), &["approve", "transfer"]),
+                vec![
+                    "check_call_10 (a call to None) is under fn_1_ok, which binds \
+                     Some(\"transfer\")",
+                    "fn_0_ok is never read as a guard",
+                    "check_call_0 is not under any guard",
+                ]
+            );
+            assert_eq!(
+                tuple_check_defects(guards, &calls),
+                vec!["no `let tuple_ok` statement"]
+            );
+            assert!(defects("fn_1_ok && (".to_string())[0].starts_with("`tuple_ok` does not parse"));
         }
 
         /// Constants the emitted source declares but never reads, and constants it reads but
@@ -2589,6 +3266,12 @@ mod tests {
                         6 | 31 => Constraint::GeI128 {
                             min: "-1".to_string(),
                         },
+                        // The widest range line: both ends 40 characters, neither the named
+                        // constant.
+                        7 => Constraint::RangeI128 {
+                            min: (i128::MIN + 1).to_string(),
+                            max: i128::MAX.to_string(),
+                        },
                         _ => Constraint::AnyValue,
                     };
                     ArgConstraint {
@@ -2778,6 +3461,67 @@ mod tests {
         assert_ne!(
             a.crate_name, b.crate_name,
             "crate name follows the grant name"
+        );
+    }
+
+    /// A bound at the type's own limit refuses nothing, and a comparison against it is what
+    /// rustc's `unused_comparisons` and clippy's deny-level `absurd_extreme_comparisons` reject:
+    /// a generated crate must stay lint-clean whatever bound a user chose. Such a check is not
+    /// emitted; the i128 type check stays, so a wrong-typed argument is still refused.
+    #[test]
+    fn a_bound_at_the_i128_limit_emits_no_vacuous_comparison() {
+        use ozpb_policy_spec::Constraint;
+        let max = i128::MAX.to_string();
+        let min = i128::MIN.to_string();
+        let source_for = |constraint: Constraint| {
+            let mut spec = golden_spec().spec().clone();
+            let amount = &mut spec.rules[0].allowed_calls[0].args[2];
+            amount.constraint = constraint;
+            // High: validation holds a bound spanning the whole i128 range to it, as it does
+            // any_value.
+            amount.provenance = ozpb_domain::Provenance::UserWidened {
+                intent: "a bound at the limit".to_string(),
+                blast_radius: ozpb_domain::BlastRadius::High,
+            };
+            let generated = generate(&spec.validate().unwrap(), 0, &Pins::default()).unwrap();
+            for (path, source) in rust_files(&generated) {
+                syn::parse_file(&source).unwrap_or_else(|e| panic!("{path}: {e}"));
+                assert!(compilability::overlong_lines(&source).is_empty(), "{path}");
+            }
+            emitted_rust(&generated)
+        };
+        let vacuous = |source: &str| {
+            source.contains("x < i128::MIN") || source.contains(&format!("x > {max}i128"))
+        };
+        let type_checked = |source: &str| source.contains("i128::try_from_val(e, &v2)");
+        for constraint in [
+            Constraint::LeI128 { max: max.clone() },
+            Constraint::GeI128 { min: min.clone() },
+            Constraint::RangeI128 {
+                min: min.clone(),
+                max: max.clone(),
+            },
+        ] {
+            let source = source_for(constraint.clone());
+            assert!(!vacuous(&source), "{constraint:?}");
+            assert!(type_checked(&source), "{constraint:?}");
+            assert!(
+                !source.contains("if x < ") && !source.contains("if x > "),
+                "{constraint:?}"
+            );
+        }
+        // One end at the limit: only the other end is checked.
+        let upper = source_for(Constraint::RangeI128 {
+            min: min.clone(),
+            max: "5".to_string(),
+        });
+        assert!(!vacuous(&upper) && upper.contains("if x > 5i128 {") && !upper.contains("if x < "));
+        let lower = source_for(Constraint::RangeI128 {
+            min: "-5".to_string(),
+            max: max.clone(),
+        });
+        assert!(
+            !vacuous(&lower) && lower.contains("if x < -5i128 {") && !lower.contains("if x > ")
         );
     }
 
@@ -4360,6 +5104,112 @@ mod tests {
         }
     }
 
+    /// The ranged transfer's committed crate: the one fixture whose amount is bounded on both
+    /// sides, compiled by the contracts differential suite (`range_generated_suite.rs`). The
+    /// whole crate is compared, lockfile included.
+    #[test]
+    fn range_crate_matches_committed_output() {
+        let spec = ozpb_synthesizer::walkthroughs::range_transfer_spec();
+        let generated = generate(&spec, 0, &Pins::default()).unwrap();
+        let source = emitted_rust(&generated);
+        // Both ends, in order, on the amount argument and nowhere else: the floor first, then
+        // the cap, each refusing the tuple the way the single bounds do.
+        assert!(source.contains(
+            "let Some(v2) = args.get(2u32) else {\n        return false;\n    };\n    \
+             match i128::try_from_val(e, &v2) {\n        Ok(x) => {\n            \
+             if x < 0i128 {\n                return false;\n            }\n            \
+             if x > 1000000000i128 {\n                return false;\n            }\n        }\n        \
+             Err(_) => return false,\n    }\n"
+        ));
+        assert_eq!(source.matches("if x < ").count(), 1);
+        assert_eq!(source.matches("if x > ").count(), 1);
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/range-transfer-policy");
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            for (rel, content) in &generated.files {
+                std::fs::write(root.join(rel), content).unwrap();
+            }
+            return;
+        }
+
+        let mut committed_files: Vec<String> = walk(&root)
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/")
+            })
+            .collect();
+        committed_files.sort();
+        let mut generated_files: Vec<String> = generated.files.keys().cloned().collect();
+        generated_files.sort();
+        assert_eq!(
+            committed_files, generated_files,
+            "the committed range policy and codegen output have different file sets"
+        );
+        for (rel, content) in &generated.files {
+            let committed = std::fs::read_to_string(root.join(rel))
+                .unwrap_or_else(|_| panic!("missing committed range policy file {rel}"));
+            assert_eq!(
+                &committed, content,
+                "committed range policy file {rel} differs from codegen output"
+            );
+        }
+    }
+
+    /// The committed two-payment policy is the only generated crate whose rule accepts two
+    /// tuples of one function, differing in two positions. The differential suite runs its
+    /// cross products through a smart account; this keeps that compiled fixture what codegen
+    /// emits for the spec, lockfile included.
+    #[test]
+    fn two_payment_crate_matches_committed_output() {
+        let spec = ozpb_synthesizer::walkthroughs::two_payment_spec();
+        let generated = generate(&spec, 0, &Pins::default()).unwrap();
+        let source = emitted_rust(&generated);
+        // One whole-tuple check per accepted call, and no third.
+        assert!(source.contains("fn check_call_0("));
+        assert!(source.contains("fn check_call_1("));
+        assert!(!source.contains("fn check_call_2("));
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contracts/two-payment-policy");
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            for (rel, content) in &generated.files {
+                std::fs::write(root.join(rel), content).unwrap();
+            }
+            return;
+        }
+
+        let mut committed_files: Vec<String> = walk(&root)
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/")
+            })
+            .collect();
+        committed_files.sort();
+        let mut generated_files: Vec<String> = generated.files.keys().cloned().collect();
+        generated_files.sort();
+        assert_eq!(
+            committed_files, generated_files,
+            "the committed two-payment policy and codegen output have different file sets"
+        );
+        for (rel, content) in &generated.files {
+            let committed = std::fs::read_to_string(root.join(rel))
+                .unwrap_or_else(|_| panic!("missing committed two-payment policy file {rel}"));
+            assert_eq!(
+                &committed, content,
+                "committed two-payment policy file {rel} differs from codegen output"
+            );
+        }
+    }
+
     #[test]
     fn generated_crate_contains_the_pinned_dependency_lockfile() {
         let generated = generate(&golden_spec(), 0, &Pins::default()).unwrap();
@@ -4462,6 +5312,78 @@ mod tests {
         );
     }
 
+    /// Several accepted tuples of one function are checked under that function's guard once.
+    /// Repeating the guard per tuple, `(fn_0_ok && check_call_0(..)) || (fn_0_ok &&
+    /// check_call_1(..))`, means the same thing, and `clippy::nonminimal_bool` refuses it, which
+    /// kept the two-payment crate out of the lint gate. Each layout below is rustfmt's for the
+    /// shape: `cargo fmt --check`, with the pinned toolchain and with the nightly CI pins, left
+    /// generated crates of these shapes untouched, and `cargo clippy -- -D warnings` passed them.
+    /// Only the two-payment shape is committed, so this test is what holds the mixed one.
+    #[test]
+    fn tuples_of_one_function_are_checked_under_one_function_guard() {
+        // Two tuples of one function: the committed two-payment fixture.
+        let source = emitted_for(&ozpb_synthesizer::walkthroughs::two_payment_spec());
+        assert!(
+            source.contains(
+                "        let tuple_ok = fn_0_ok\n            \
+                 && (check_call_0(e, &c.args, &smart_account)\n                \
+                 || check_call_1(e, &c.args, &smart_account));\n"
+            ),
+            "{source}"
+        );
+
+        // A mix: two names with two tuples each, interleaved, and a third name with one. A group
+        // keeps the position of its name's first tuple, so a rule whose names each have one
+        // tuple emits what it did before grouping; the first group continues the `let` line and
+        // every later one starts its own `||` line, one level deeper.
+        let transfer = golden_spec().spec().rules[0].allowed_calls[0].clone();
+        let mut other_amount = transfer.clone();
+        other_amount.args[2].constraint = Constraint::EqI128 {
+            value: "7".to_string(),
+        };
+        let renamed = |call: &ozpb_policy_spec::AllowedCall, name: &str| {
+            let mut call = call.clone();
+            call.fn_name = name.to_string();
+            call
+        };
+        let mut spec = golden_spec().spec().clone();
+        // A reviewed spending limit covers transfer tuples only.
+        spec.rules[0]
+            .policies
+            .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+        spec.rules[0].allowed_calls = vec![
+            transfer.clone(),
+            renamed(&transfer, "approve"),
+            other_amount.clone(),
+            renamed(&other_amount, "approve"),
+            renamed(&transfer, "burn"),
+        ];
+        let spec = spec
+            .validate()
+            .expect("five distinct tuples under three names validate");
+        let source = emitted_for(&spec);
+        // Bound in sorted order: fn_0 `approve`, fn_1 `burn`, fn_2 `transfer`.
+        assert!(
+            source.contains(
+                "        let tuple_ok = (fn_2_ok\n            \
+                 && (check_call_0(e, &c.args, &smart_account)\n                \
+                 || check_call_2(e, &c.args, &smart_account)))\n            \
+                 || (fn_0_ok\n                \
+                 && (check_call_1(e, &c.args, &smart_account)\n                    \
+                 || check_call_3(e, &c.args, &smart_account)))\n            \
+                 || (fn_1_ok && check_call_4(e, &c.args, &smart_account));\n"
+            ),
+            "{source}"
+        );
+        assert_eq!(
+            compilability::tuple_check_defects(
+                &source,
+                &["transfer", "approve", "transfer", "approve", "burn"]
+            ),
+            Vec::<String>::new()
+        );
+    }
+
     #[test]
     fn a_filled_import_line_may_reach_exactly_max_width() {
         // `    A…A, B…B,` is 4 + 46 + 2 + 47 + 1 = 100 columns: rustfmt's `max_width` is
@@ -4514,7 +5436,7 @@ mod tests {
 
         let rule = render_rule_with(vec![external_signer()], PredicateKind::AnyOf, true);
         assert!(rule.has_external_signer());
-        let (root, contract) = emit_lib(&rule, &ozpb_domain::sha256(b"input"));
+        let (root, contract) = emit_lib(&rule, &ozpb_domain::sha256(b"input"), "");
         let source = format!("{root}\n{contract}");
         assert!(
             source.contains("const SIGNER_0_KEY: [u8; 2] = [0xaa, 0xbb];\n"),
@@ -4555,7 +5477,7 @@ mod tests {
             (false, PredicateKind::AnyOfCurrentRuleSigners),
         ] {
             let rule = render_rule_with(vec![delegate()], kind.clone(), strict);
-            let (root, contract) = emit_lib(&rule, &ozpb_domain::sha256(b"input"));
+            let (root, contract) = emit_lib(&rule, &ozpb_domain::sha256(b"input"), "");
             let source = format!("{root}\n{contract}");
             let documented = error_bullets(&docs_of(&source, "enforce"))
                 .iter()

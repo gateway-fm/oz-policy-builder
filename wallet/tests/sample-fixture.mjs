@@ -1,6 +1,7 @@
 import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, TransactionBuilder, hash, xdr } from '@stellar/stellar-sdk';
 import { fixture } from './approval-fixture.mjs';
-import { NETWORK_ID } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 export function sampleTransfer(mutate = () => {}, version = 'legacy') {
   const f = fixture();
   const recipient = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 11)).publicKey();

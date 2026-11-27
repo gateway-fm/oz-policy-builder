@@ -260,6 +260,49 @@ test('a helper refusal 7001-7009 is a failed case, never a policy denial', () =>
   }
 });
 
+// stellar-rpc 30.0.1 returns the host error alone ("Error strings no longer include the event log",
+// its release notes) and the diagnostic events only in `events`; 30.0.0 printed the log into the error
+// too. These are the same denial's structured events, as the SDK parses them.
+const diagnosticEvent = (by, topics, data, inSuccessfulContractCall = false) => new xdr.DiagnosticEvent({
+  inSuccessfulContractCall,
+  event: new xdr.ContractEvent({ ext: xdr.ExtensionPoint.v0(), contractId: new Address(by).toScAddress().contractId,
+    type: xdr.ContractEventType.diagnostic, body: xdr.ContractEventBody.v0(new xdr.ContractEventV0({ topics, data })) }),
+});
+const scError = (code) => xdr.ScVal.scvError(xdr.ScError.sceContract(code));
+function denialEvents({ code = 6, raisedBy = POLICY, account = ACCOUNT, helperCode = null } = {}) {
+  const events = [
+    diagnosticEvent(raisedBy, [xdr.ScVal.scvSymbol('error'), scError(code)],
+      xdr.ScVal.scvVec([xdr.ScVal.scvString('failing with contract error'), xdr.ScVal.scvU32(code)])),
+    diagnosticEvent(ACCOUNT, [xdr.ScVal.scvSymbol('log')], xdr.ScVal.scvVec([xdr.ScVal.scvString('VM call trapped with HostError'),
+      xdr.ScVal.scvSymbol('__check_auth'), scError(code)])),
+    diagnosticEvent(SAC, [xdr.ScVal.scvSymbol('error'), xdr.ScVal.scvError(xdr.ScError.sceAuth(xdr.ScErrorCode.scecInvalidAction))],
+      xdr.ScVal.scvVec([xdr.ScVal.scvString('failed account authentication with error'), new Address(account).toScVal(), scError(code)])),
+  ];
+  if (helperCode !== null) events.push(diagnosticEvent(HELPER, [xdr.ScVal.scvSymbol('error'), scError(helperCode)],
+    xdr.ScVal.scvVec([xdr.ScVal.scvString('failing with contract error'), xdr.ScVal.scvU32(helperCode)])));
+  return events;
+}
+const HOST_ONLY = 'HostError: Error(Auth, InvalidAction)';
+
+test('stellar-rpc 30.0.1: a denial with the host error alone is read from the structured events', () => {
+  assert.deepEqual(evaluateDenial({ error: HOST_ONLY, events: denialEvents() }, DENIAL_CONTEXT, { code: 6 }),
+    { result: 'deny', enforcer: POLICY, code: 6, host: HOST_ONLY });
+  // The same attribution as the printed log: the policy's own code inside this account's failed authentication.
+  assert.equal(evaluateDenial({ error: HOST_ONLY, events: denialEvents({ raisedBy: SAC }) }, DENIAL_CONTEXT).result, 'failed');
+  assert.equal(evaluateDenial({ error: HOST_ONLY, events: denialEvents({ account: C(9) }) }, DENIAL_CONTEXT).result, 'failed');
+  assert.equal(evaluateDenial({ error: HOST_ONLY, events: denialEvents({ code: 7 }) }, DENIAL_CONTEXT, { code: 6 }).result, 'failed');
+  assert.equal(evaluateDenial({ error: HOST_ONLY, events: [] }, DENIAL_CONTEXT).reason, 'not_a_policy_denial');
+  assert.equal(evaluateDenial({ error: HOST_ONLY }, DENIAL_CONTEXT).reason, 'not_a_policy_denial');
+  // A helper refusal in the structured events alone settles nothing about the policy.
+  assert.deepEqual(evaluateDenial({ error: 'HostError: Error(Contract, #7004)', events: denialEvents({ helperCode: 7004 }) }, DENIAL_CONTEXT),
+    { result: 'failed', reason: 'helper_refusal', code: 7004, host: 'HostError: Error(Contract, #7004)' });
+});
+
+test('stellar-rpc 30.0.0: a printed denial must agree with the structured events it is returned with', () => {
+  assert.equal(evaluateDenial({ error: NESTED_DENIAL, events: denialEvents() }, DENIAL_CONTEXT).result, 'deny');
+  assert.equal(evaluateDenial({ error: NESTED_DENIAL, events: denialEvents({ code: 7 }) }, DENIAL_CONTEXT).result, 'failed');
+});
+
 test('an account error is not a policy denial', () => {
   for (const code of [3002, 3005, 3016]) {
     const text = [`HostError: Error(Auth, InvalidAction)`, '', 'Event log (newest first):',
@@ -538,4 +581,24 @@ test('cancellation during a failed spawn still waits for close and cleans up', a
   }, { proc }), /cancelled/);
   assert.equal(existsSync(keys), false);
   assert.deepEqual(proc.exits, [143]);
+});
+
+// The other harness flows (derived denials, invocations, protocol invocations, subscription
+// controls) attribute a denial through `denialCode`, which reads the structured events where
+// stellar-rpc 30.0.1 left no printed log, and the printed log where there is one, requiring both
+// to agree when both are there.
+test('denialCode reads a denial from either shape, and both must agree', async () => {
+  const { denialCode } = await import('./lib.mjs');
+  assert.equal(denialCode(NESTED_DENIAL, [], ACCOUNT, POLICY), 6, '30.0.0: the printed log alone');
+  assert.equal(denialCode(HOST_ONLY, denialEvents(), ACCOUNT, POLICY), 6, '30.0.1: the events alone');
+  assert.equal(denialCode(NESTED_DENIAL, denialEvents(), ACCOUNT, POLICY), 6, 'both, agreeing');
+  assert.equal(denialCode(NESTED_DENIAL, denialEvents({ code: 7 }), ACCOUNT, POLICY), null, 'both, disagreeing');
+  assert.equal(denialCode(HOST_ONLY, [], ACCOUNT, POLICY), null, 'neither');
+  assert.equal(denialCode(HOST_ONLY, denialEvents({ raisedBy: SAC }), ACCOUNT, POLICY), null, 'another contract');
+  const { readFileSync } = await import('node:fs');
+  for (const file of ['derived-denials.mjs', 'invoke.mjs', 'protocol-invoke.mjs', 'subscription-controls.mjs']) {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
+    assert.match(source, /denialCode\(/, file);
+    assert.doesNotMatch(source, /[^.\w]policyDenial\(/, `${file} reads the printed log only through denialCode`);
+  }
 });

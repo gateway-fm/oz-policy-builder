@@ -3,11 +3,12 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { AgentHandoff, AgentRefusal, PAIR_TTL_MS, CONNECTION_TTL_MS, DRAFT_TTL_MS } from '../server/agent-handoff.mjs';
 import { proposalFixture } from './proposal-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 
 const digest = (text) => createHash('sha256').update(text).digest('hex');
 function fixture() {
   const f = proposalFixture(); let now = 0;
-  const bridge = new AgentHandoff({ now: () => now });
+  const bridge = new AgentHandoff({ now: () => now, network: WALLET_NETWORKS.testnet });
   const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'a'.repeat(64) };
   const pair = () => bridge.pair({ wallet: f.wallet, delegate });
   const paired = pair(); const connection = bridge.connect(paired.pairingCode);

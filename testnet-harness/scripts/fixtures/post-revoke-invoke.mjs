@@ -19,7 +19,21 @@ const run = { account, policy, sac, rule_id: 1, owner: { kind: 'ed25519', verifi
   lifecycle: { removals: [{ rule_id: 1, event: 'verified', rule_readback: 'absent' }] } };
 if (mode === 'unrecorded removal') delete run.lifecycle;
 let saved; let submissions = 0; let simulations = 0; let exitCode = 0; let keyReads = 0;
-class SimulationError extends Error { constructor(_stage, error) { super('simulated refusal'); this.error = error; } }
+class SimulationError extends Error {
+  constructor(_stage, error, events = []) { super('simulated refusal'); this.error = error; this.events = events; }
+}
+// stellar-rpc 30.0.1 returns the host error alone and the diagnostic events only in `events`.
+const HOST_ONLY = 'HostError: Error(Auth, InvalidAction)';
+const diagnosticEvent = (by, topics, data) => new sdk.xdr.DiagnosticEvent({ inSuccessfulContractCall: false,
+  event: new sdk.xdr.ContractEvent({ ext: sdk.xdr.ExtensionPoint.v0(), contractId: new sdk.Address(by).toScAddress().contractId,
+    type: sdk.xdr.ContractEventType.diagnostic, body: sdk.xdr.ContractEventBody.v0(new sdk.xdr.ContractEventV0({ topics, data })) }) });
+const scError = (code) => sdk.xdr.ScVal.scvError(sdk.xdr.ScError.sceContract(code));
+const denialEvents = (code, enforcer) => [
+  diagnosticEvent(enforcer, [sdk.xdr.ScVal.scvSymbol('error'), scError(code)],
+    sdk.xdr.ScVal.scvVec([sdk.xdr.ScVal.scvString('failing with contract error'), sdk.xdr.ScVal.scvU32(code)])),
+  diagnosticEvent(sac, [sdk.xdr.ScVal.scvSymbol('error'), sdk.xdr.ScVal.scvError(sdk.xdr.ScError.sceAuth(sdk.xdr.ScErrorCode.scecInvalidAction))],
+    sdk.xdr.ScVal.scvVec([sdk.xdr.ScVal.scvString('failed account authentication with error'), new sdk.Address(account).toScVal(), scError(code)])),
+];
 const transferArgs = [new sdk.Address(account).toScVal(), new sdk.Address(key.publicKey()).toScVal(), lib.i128(10n)];
 const rpc = {
   NETWORK_PASSPHRASE: sdk.Networks.TESTNET, RPC_URL: 'https://unused.invalid', SimulationError,
@@ -40,6 +54,10 @@ const rpc = {
     if (permitted) return { result: 'permit', ledger: 501 };
     const code = scope ? 6 : wrongChallenge ? 3114 : mode === 'exhausted policy' ? 7 : 3000;
     const enforcer = scope ? policy : wrongChallenge ? verifier : mode === 'account refusal' ? account : policy;
+    if (mode.endsWith('host-only')) {
+      return Object.defineProperty({ result: 'deny', ledger: 501, error: HOST_ONLY }, 'events',
+        { value: denialEvents(code, enforcer), enumerable: false });
+    }
     return { result: 'deny', ledger: 501,
       error: `topics:[error, Error(Auth, InvalidAction)], data:["failed account authentication with error", ${account}, Error(Contract, #${code})]\n`
       + `contract:${enforcer}, topics:[error, Error(Contract, #${code})], data:["failing with contract error", ${code}]` };
@@ -72,6 +90,7 @@ if (mode.includes('conflicting')) {
   assert.equal(saved.invocations[0].hash, undefined);
   if (permitted) assert.equal(saved.invocations[0].observation, 'enforcing_simulation');
   if (mode === 'account refusal') assert.equal(saved.invocations[0].enforcer, account);
+  if (mode.endsWith('host-only')) assert.deepEqual([saved.invocations[0].code, saved.invocations[0].host], [6, HOST_ONLY]);
   assert.equal(simulations, 1);
 }
 assert.equal(submissions, 0);
