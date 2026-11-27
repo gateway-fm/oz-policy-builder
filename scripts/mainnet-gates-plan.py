@@ -129,32 +129,10 @@ EXIT_CODE = r"(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])"
 END_OF_COMMAND = r"[ \t]*(?:[;#]|$)"
 
 
-def errexit_changes(text):
-    """[(offset, on)] for each `set` line that turns `-e` on or off. Only an unindented line
-    turns it on, since an indented one may sit in a function or subshell; any line turns it
-    off."""
-    changes = []
-    for line in re.finditer(r"^([ \t]*)set\s+([^;\n]*)", text, flags=re.M):
-        words = line.group(2).split()
-        for index, word in enumerate(words):
-            if word in {"-", "--"}:
-                break
-            if word in {"-o", "+o"}:
-                on = word[0] == "-" and words[index + 1:index + 2] == ["errexit"]
-                off = word[0] == "+" and words[index + 1:index + 2] == ["errexit"]
-            elif re.fullmatch(r"[-+][A-Za-z]+", word) and "e" in word[1:]:
-                on, off = word[0] == "-", word[0] == "+"
-            else:
-                continue
-            if off or (on and not line.group(1)):
-                changes.append((line.start(), on))
-    return changes
-
-
-def failure_end(text, match, errexit, end):
+def failure_end(text, match, end):
     """Where the failure handling of the `grep` at `match` ends, if a failed grep stops the script
     with a non-zero status; else None. That handling is `|| exit [N]`, a `|| { ... }` block
-    whose last command is `exit N`, or nothing at all under `set -e`; N is 1 to 255. A block
+    whose last command is `exit N`, where N is 1 to 255. A block
     with `continue`, `break` or `return`, or whose `exit` is conditional, does not count, nor do
     `|| true`, `|| :`, `&&` or a pipe."""
     after = text[match.end():end]
@@ -169,8 +147,6 @@ def failure_end(text, match, errexit, end):
                 not any(re.match(r"(?:continue|break|return)\b", c) for c in commands):
             return match.end() + group.end()
         return None
-    if errexit and re.match(r"[ \t]*(?:;[ \t]*(?!then\b|do\b)|#|$)", after, flags=re.M):
-        return match.end()
     return None
 
 
@@ -196,7 +172,6 @@ def release_requirements(script):
         pending = ""
     text = "\n".join(logical)
     binaries = [(m.start(), m.group(1)) for m in re.finditer(r"--test\s+(\w+)", text)]
-    changes = errexit_changes(text)
 
     def last(pairs, offset, default):
         return next((value for start, value in reversed(pairs) if start < offset), default)
@@ -210,23 +185,51 @@ def release_requirements(script):
             continue
         body = re.compile(r"\s*").match(text, loop.end()).end()
         check = LOOP_CHECK.match(text, body, done.start())
-        stop = check and failure_end(text, check, last(changes, body, False), done.start())
+        stop = check and failure_end(text, check, done.start())
         if stop and re.fullmatch(r"[\s;]*", text[stop:done.start()]):
             required.update((binary, name) for name in loop.group(1).split())
     for check in NAMED_CHECK.finditer(text):
         binary = last(binaries, check.start(), None)
         if binary is None or check.start() > 0 and text[check.start() - 1] != "\n":
             continue
-        stop = failure_end(text, check, last(changes, check.start(), False), len(text))
+        stop = failure_end(text, check, len(text))
         if stop is not None and re.match(END_OF_COMMAND, text[stop:], flags=re.M):
             required.add((binary, check.group(2)))
     return required
 
 
+def workflow_required(properties):
+    """Recognize the unconditional, blocking job and step settings used for gate checks."""
+    return all(value in {"always()", "${{ always() }}"} for value in properties.get("if", [])) and \
+        all(value == "false" for value in properties.get("continue-on-error", []))
+
+
 def runs_line(text, command):
-    """Whether a workflow runs `command` as a step or a line of a step's script, not a comment."""
-    pattern = rf"^\s*(?:-\s*)?(?:run:\s*)?{re.escape(command)}\s*$"
-    return re.search(pattern, text, flags=re.M) is not None
+    """Find a command in a blocking run step using this repository's workflow layout."""
+    jobs = re.search(r"^jobs:[ \t]*\n((?:[ \t].*\n?|\n|#.*\n?)*)", text, flags=re.M)
+    if jobs is None:
+        return False
+    for job in re.split(r"^  [\w-]+:[ \t]*\n", jobs.group(1), flags=re.M)[1:]:
+        entries = dict(re.findall(r"^    ([\w-]+):[ \t]*([^\n]*)", job, flags=re.M))
+        if not workflow_required({key: [value.strip()] for key, value in entries.items()}):
+            continue
+        steps = re.search(r"^    steps:[ \t]*\n((?:      .*\n?|\n)*)", job, flags=re.M)
+        if steps is None:
+            continue
+        for step in re.split(r"^      - ", steps.group(1), flags=re.M)[1:]:
+            step = "        " + step
+            properties = {}
+            for key, value in re.findall(r"^        ([\w-]+):[ \t]*([^\n]*)", step, flags=re.M):
+                properties.setdefault(key, []).append(value.strip())
+            if not workflow_required(properties):
+                continue
+            if properties.get("run") == [command]:
+                return True
+            block = re.search(r"^        run: \|[-+]?[ \t]*\n((?:          .*\n?|\n)*)",
+                              step, flags=re.M)
+            if block and any(line.strip() == command for line in block.group(1).splitlines()):
+                return True
+    return False
 
 
 def wallet_titles(source):
