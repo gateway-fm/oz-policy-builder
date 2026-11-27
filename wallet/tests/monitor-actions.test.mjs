@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Asset, Networks } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { installable, signInstall, verified } from './install-fixture.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 async function monitoredInstallation() {
   const f = await installable();
   assert.equal((await f.actions.status({})).capabilities.monitoring, false);

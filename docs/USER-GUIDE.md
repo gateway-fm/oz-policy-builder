@@ -71,7 +71,7 @@ You sign; nothing is automatic.
    `/oz-policy-builder:policy-builder-install` yourself and import its proposal.
 2. **Review proposal from Claude.** The wallet records the transaction again, regenerates the grant
    and refuses any difference.
-3. Confirm the policy's deployment (a testnet fee; no authority yet) and refresh the authority
+3. Confirm the policy's deployment (a network fee; no authority yet) and refresh the authority
    review. The remaining dry-run layers now run against the deployed policy
    ([report fields](DRY-RUN-PREPARATION.md#executed-layers-and-acceptance)):
 
@@ -79,7 +79,7 @@ You sign; nothing is automatic.
    | --- | --- | --- |
    | `account_wasm` | The reference cases through the pinned account Wasm and your policy Wasm | `Run local execution checks`, or `ozpb dry-run` with the native worker and the delegate's key file |
    | `captured_target` | The call against target state captured from the network | the same |
-   | `live_enforcement` | The policy deciding the real call on testnet, in a simulation never submitted | the wallet's live check, after you consent with the passkey |
+   | `live_enforcement` | The policy deciding the real call on the session's network, in a simulation never submitted | the wallet's live check, after you consent with the passkey |
 
    All four layers run only for the wallet's grant shape, one exact native XLM transfer.
 4. **Prepare installation**, read its consent statement, and approve with the passkey
@@ -105,23 +105,40 @@ the cap refusing it ([using the grant](POLLYWALLET-INTEGRATION.md#using-the-gran
 - **The grant:** the wallet's `Check installed grant now` (CLI: `ozpb check-installed-grant`)
   compares the rule, the code and the modelled authority with what was installed. It reports
   `unchanged`, `inactive`, `drift` or `unavailable`, and only when you run it
-  ([monitoring](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring)).
-- **The registry:** `ozpb registry monitor` with the hashes your grant relies on tells you when one
-  is revoked ([incident response](INCIDENT-RESPONSE.md#a-a-hash-you-rely-on-is-revoked-in-the-registry)).
+  ([monitoring](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring)). Run the CLI
+  command from cron with the installation's recorded commitment and a ledger floor, and its exit
+  status alerts
+  ([watching an installed grant](INCIDENT-RESPONSE.md#watching-an-installed-grant)).
+- **The registry:** `ozpb registry monitor` tells you when something your grant relies on is
+  revoked. Watch the account's, the owner verifier's and any reviewed policy's code hashes with
+  `--wasm-hash`, and the generated policy's template family with `--template` (its spec's
+  `template_family`): a generated policy has no registry entry of its own, so its family is what
+  you can watch; a revocation of the family reaches every build of it
+  ([incident response](INCIDENT-RESPONSE.md#a-a-hash-you-rely-on-is-revoked-in-the-registry)).
 
 ## 9. Revoke
 
 Expiry and the call cap stop a grant on their own; revocation removes its rule now. In the wallet,
-`Prepare revocation` and approve with the passkey. The wallet revokes only grants its running
-session installed ([revocation](POLLYWALLET-INTEGRATION.md#revocation)). What to do in an incident:
-[incident response](INCIDENT-RESPONSE.md).
+`Prepare revocation` for a grant this session installed, or, after a restart, attach the account
+and use **Remove a grant an earlier session installed**, which lists the account's rules as stored
+and removes the one you choose; approve either with the passkey. The wallet removes only
+grant-shaped rules, never your owner rule or a recovery or admin rule
+([revocation](POLLYWALLET-INTEGRATION.md#revocation),
+[an earlier session's grant](POLLYWALLET-INTEGRATION.md#removing-an-earlier-sessions-grant)). What
+to do in an incident: [incident response](INCIDENT-RESPONSE.md).
 
 ## On mainnet
 
-The steps are the same; the wallet is what changes. In this tree the wallet backend and the testnet
-harness act only on testnet and the MCP development launcher configures only a testnet source, so
-installing on mainnet is part of the mainnet wallet integration. Recording a mainnet transaction
-by hash works against a mainnet RPC endpoint, but synthesis needs a mainnet registry signed under
-roots you pin: the development root is refused off testnet, and the
-[mainnet registry](../registry/mainnet/README.md) stays an unsigned draft until its key ceremony
-([registry governance](REGISTRY-GOVERNANCE.md)).
+The wallet's steps are the same: its backend runs a mainnet session from a mainnet operator
+configuration and a production build of the page
+([mainnet sessions](POLLYWALLET-INTEGRATION.md#mainnet-sessions)). The testnet harness stays on
+testnet. The agent's side is narrower. The development launcher behind the plugin configures
+only testnet, so a mainnet MCP server is one you configure yourself, and the direct handoff of
+step 6.1 reaches only a testnet wallet: on mainnet, import the confirmed proposal by hand, or
+record and generate in the wallet itself. Either way the wallet drives the mainnet installation
+([MCP on mainnet](MCP-WALKTHROUGH.md#6-on-mainnet)). Synthesis on mainnet
+needs a mainnet registry signed under roots you pin: the development root is refused off testnet,
+and the [mainnet registry](../registry/mainnet/README.md) stays an unsigned draft until its key
+ceremony ([registry governance](REGISTRY-GOVERNANCE.md)). The prerequisites, every mainnet write
+with its simulated fee, the caps and what to keep as evidence are in
+[Installing on mainnet](MAINNET-INSTALL.md).

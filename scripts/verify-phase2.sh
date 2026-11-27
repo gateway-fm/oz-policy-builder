@@ -54,8 +54,16 @@ if not wasm.is_file() or wasm.read_bytes()[:8] != b"\x00asm\x01\x00\x00\x00":
     sys.exit("W3 build did not produce a WebAssembly module in the fresh output directory")
 print("W3 Wasm build produced a module (compilation evidence, not live execution)")
 PY
+
+    echo "== Range policy: the compiled Wasm agrees with the evaluator on the range cases =="
+    # The native differential run (verify-phase1 step 4) covers the crate as host code; this runs
+    # the same derived cases against the Wasm the CLI builds from it.
+    stellar contract build --locked --manifest-path contracts/range-transfer-policy/Cargo.toml \
+        --out-dir "$WASM_DIR"
+    ( cd contracts && OZPB_RANGE_POLICY_WASM="$WASM_DIR/generated_range_transfer_r0.wasm" \
+        cargo test --locked -p ozpb-differential --test range_generated_suite -- --ignored )
 else
-    echo "OFFLINE: W3 Wasm build not run; Phase 1 release-only checks were also omitted"
+    echo "OFFLINE: W3 and range Wasm builds not run; Phase 1 release-only checks were also omitted"
 fi
 
 echo "== the gate left tracked files as it found them =="

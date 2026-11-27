@@ -6,9 +6,10 @@ import { AgentHandoff } from '../server/agent-handoff.mjs';
 import { createWalletServer } from '../server/http.mjs';
 import { WalletSession } from '../server/session.mjs';
 import { proposalFixture } from './proposal-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 
 async function fixture(t) {
-  const f = proposalFixture(); const handoff = new AgentHandoff(); let privileged = 0; let release = null;
+  const f = proposalFixture(); const handoff = new AgentHandoff({ network: WALLET_NETWORKS.testnet }); let privileged = 0; let release = null;
   const pairing = handoff.pair({ wallet: f.wallet, delegate: { address: f.proposal.decisions.delegate, capabilityId: 'b'.repeat(64) } });
   const session = new WalletSession({ origin: 'http://localhost:3000', host: 'localhost:3000', secret: 'a'.repeat(64) });
   const server = createWalletServer({ session, handoff, actions: { status: async () => ({ ready: true }), install: async () => { privileged++; return {}; },

@@ -1,9 +1,10 @@
 import { Buffer } from 'buffer';
-import { Address, Networks, buildAuthorizationEntryPreimage, hash, xdr } from '#wallet-stellar-sdk';
+import { Address, buildAuthorizationEntryPreimage, hash, xdr } from '#wallet-stellar-sdk';
 import { freezeCopy } from './approval.mjs';
 import { decodeEnvelope } from './assembly.mjs';
 import { decodeBase64Url, encodeBase64Url } from './base64url.mjs';
 import { directAddressCredentials } from './auth-credentials.mjs';
+import { networkById } from './networks.mjs';
 
 const refuse = () => { throw new Error('wallet signature refused; refresh and approve again'); };
 const digest = (value) => Buffer.from(hash(value));
@@ -13,7 +14,7 @@ const field = (name, val) => new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(name)
 /**
  * The owner passkey's signature of exactly `checked.authEntriesXdr[0]`, the one unsigned owner
  * entry the wallet showed: same entry, owner rule and commitment as the approval, a user-verified
- * WebAuthn assertion at `origin` over this entry's testnet challenge, by the full credential.
+ * WebAuthn assertion at `origin` over this entry's challenge on the approval's network, by the full credential.
  * Returns the signed entry; any difference refuses.
  */
 async function verifiedOwnerEntry({ approval, checked, signedAuthEntriesXdr, origin }) {
@@ -54,7 +55,7 @@ async function verifiedOwnerEntry({ approval, checked, signedAuthEntriesXdr, ori
   if (url.origin !== origin || !['http:', 'https:'].includes(url.protocol)
     || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password) refuse();
   const client = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(clientBytes));
-  const preimage = buildAuthorizationEntryPreimage(entry, checked.expirationLedger, Networks.TESTNET);
+  const preimage = buildAuthorizationEntryPreimage(entry, checked.expirationLedger, networkById(approval.networkId).passphrase);
   const challenge = encodeBase64Url(digest(Buffer.concat([digest(preimage.toXDR()), ruleIds.toXDR()])));
   if (client.type !== 'webauthn.get' || client.challenge !== challenge || client.origin !== origin
     || (client.crossOrigin !== undefined && client.crossOrigin !== false) || client.topOrigin !== undefined

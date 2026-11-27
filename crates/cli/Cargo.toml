@@ -40,6 +40,10 @@ tempfile = { workspace = true }
 nix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
+# Tests only: the hermetic stub builder, so the publication tests can drive `verify-published`
+# to both exit statuses without a toolchain. The CLI's own flags still cannot select it
+# (`build_flags_can_never_select_the_unattestable_stub_builder`).
+ozpb-build-runner = { workspace = true }
 # The registry rehearsal synthesizes a recording that carries the observed account code, which the
 # import format cannot express; the shared fixture is that recording.
 ozpb-synthesizer = { workspace = true }

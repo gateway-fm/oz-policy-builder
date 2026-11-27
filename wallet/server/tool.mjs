@@ -13,12 +13,15 @@ const STDERR_PREFIX = 256;
 
 /** Fixed operator executable only. The API handler constructs arguments from a closed schema. */
 export async function runTool(executable, args, options = {}) {
-  const { maxOutput = 16 * 1024 * 1024, timeoutMs = 900_000, env = {}, signal, codes = [] } = options;
+  // `statuses`: non-zero exit statuses that carry a result (the registry monitor's); the call then
+  // resolves `{ status, output }` for them and for 0, instead of the output alone.
+  const { maxOutput = 16 * 1024 * 1024, timeoutMs = 900_000, env = {}, signal, codes = [], statuses = null } = options;
   if (process.platform === 'win32' || !isAbsolute(executable) || !Array.isArray(args)
     || !args.every((arg) => typeof arg === 'string') || !Number.isSafeInteger(maxOutput)
     || maxOutput < 1 || maxOutput > 16 * 1024 * 1024 || !Number.isSafeInteger(timeoutMs)
     || timeoutMs < 1 || timeoutMs > 900_000 || signal?.aborted || !Array.isArray(codes)
-    || !codes.every((code) => typeof code === 'string' && CODE.test(code))) throw failure();
+    || !codes.every((code) => typeof code === 'string' && CODE.test(code))
+    || (statuses !== null && (!Array.isArray(statuses) || !statuses.every((n) => Number.isSafeInteger(n) && n > 1 && n < 128)))) throw failure();
   const childEnv = {};
   for (const key of ENVIRONMENT) {
     const value = env[key] ?? (['PATH', 'HOME', 'RUSTUP_HOME', 'CARGO_HOME', 'TMPDIR'].includes(key) ? process.env[key] : undefined);
@@ -69,11 +72,13 @@ export async function runTool(executable, args, options = {}) {
     // a killed process, or one that overflowed its stdout, reports none.
     child.on('close', (status) => {
       if (done) return;
-      if (status !== 0) { fail(Number.isSafeInteger(status) && status > 0 ? refusal() : undefined); return; }
+      const carried = statuses !== null && statuses.includes(status);
+      if (status !== 0 && !carried) { fail(Number.isSafeInteger(status) && status > 0 ? refusal() : undefined); return; }
       done = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
-      resolve(Buffer.concat(out).toString('utf8'));
+      const output = Buffer.concat(out).toString('utf8');
+      resolve(statuses === null ? output : { status, output });
     });
   });
 }

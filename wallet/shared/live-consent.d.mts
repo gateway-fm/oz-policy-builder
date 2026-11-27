@@ -7,13 +7,16 @@ export const LIVE_RUN_MIN_LEDGERS: number;
 export const LIVE_MAX_PERMIT_STROOPS: bigint;
 export const LIVE_CASES: readonly ['target:original:0', 'target:argument-denial:0'];
 export const LIVE_LABELS: readonly string[];
+export type DelegateHolder = { readonly label: string; readonly evidence: string; readonly key: string };
+export const DELEGATE_HOLDERS: { readonly automation: DelegateHolder; readonly operator: DelegateHolder };
+export function delegateHolder(networkId: string, options?: { operatorFunded?: boolean }): DelegateHolder;
 export type LiveGrant =
   | { readonly supported: true; readonly account: string; readonly delegate: string; readonly recipient: string;
     readonly amount: string; readonly maxCalls: number }
   | { readonly supported: false; readonly reason: string };
 export interface ConsentDisplay {
   readonly schema: 'ozpb-live-consent/v1';
-  readonly network: 'testnet';
+  readonly network: 'testnet' | 'mainnet';
   readonly network_id: string;
   readonly current_ledger: number;
   readonly signature_expiration_ledger: number;
@@ -29,11 +32,11 @@ export interface LiveOwnerChecked {
   readonly expirationLedger: number;
   readonly authorityCommitment: string;
 }
-export function liveGrant(spec: unknown): LiveGrant;
-export function liveShape(input: { spec: unknown; intent: unknown; wallet: unknown }): LiveGrant;
+export function liveGrant(spec: unknown, networkId: string): LiveGrant;
+export function liveShape(input: { spec: unknown; intent: unknown; wallet: unknown; networkId: string }): LiveGrant;
 export function liveCases(input: {
   approval: Approval; spec: unknown; helper: string; policyCodeHash: string; expectedRuleId: number; signatureExpirationLedger: number;
 }): readonly [LiveCase, LiveCase];
-export function consentDisplay(cases: readonly LiveCase[], options: { currentLedger: number }): ConsentDisplay;
+export function consentDisplay(cases: readonly LiveCase[], options: { currentLedger: number; operatorFunded?: boolean }): ConsentDisplay;
 export function statementHash(display: ConsentDisplay): string;
 export function checkLiveOwnerEntry(input: { approval: Approval; cases: readonly LiveCase[]; ownerEntryXdr: string }): LiveOwnerChecked;

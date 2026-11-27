@@ -14,6 +14,6 @@ export interface ProposalReview {
   readonly grantsMatch: true;
   readonly hashesMatch: boolean;
 }
-export function parseGrantProposal(text: string, accountAddress: string): GrantProposal;
+export function parseGrantProposal(text: string, accountAddress: string, networkId: string): GrantProposal;
 export function checkProposalSpec(proposal: GrantProposal, spec: unknown): void;
 export function checkProposalArtifact(proposal: GrantProposal, artifact: unknown): ProposalReview;

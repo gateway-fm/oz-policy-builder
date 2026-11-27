@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Address, Asset, Keypair, Networks, StrKey, xdr } from '@stellar/stellar-sdk';
 import { installCall } from '../shared/assembly.mjs';
-import { LIVE_SIGNATURE_LEDGERS, checkLiveOwnerEntry, consentDisplay, liveCases, liveGrant, liveShape } from '../shared/live-consent.mjs';
+import { DELEGATE_HOLDERS, LIVE_SIGNATURE_LEDGERS, checkLiveOwnerEntry, consentDisplay, delegateHolder, liveCases, liveGrant, liveShape }
+  from '../shared/live-consent.mjs';
+import { readFileSync } from 'node:fs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const SAC = Asset.native().contractId(Networks.TESTNET);
 const ACCOUNT = StrKey.encodeContract(Buffer.alloc(32, 41));
@@ -14,7 +18,7 @@ const RECIPIENT = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 46)).publicKey();
 const N = 1030;
 
 function spec({ amount = '1000000', state = [{ call_count_per_installation: { max_calls: 1 } }] } = {}) {
-  return { smart_account: { address: ACCOUNT }, rules: [{ context: { contract: SAC }, state,
+  return { network_id: NETWORK_ID, smart_account: { address: ACCOUNT }, rules: [{ context: { contract: SAC }, state,
     authorization: { signers: [{ delegated: { address: DELEGATE } }] },
     allowed_calls: [{ fn: 'transfer', args: [{ i: 0, c: { eq_address: { value: 'SELF' } } },
       { i: 1, c: { eq_address: { value: RECIPIENT } } }, { i: 2, c: { eq_i128: { value: amount } } }] }] }] };
@@ -23,7 +27,7 @@ function approval(change = (intent) => intent) {
   const intent = change({ operation: 'add_context_rule', account_contract: ACCOUNT, context_contract: SAC, rule_name: 'live-check',
     valid_until_ledger: 5000, delegate_signers: [{ kind: 'delegated', address: DELEGATE }],
     policies: [{ policy_index: 0, address: POLICY, install_params: { kind: 'generated' } }] });
-  return { intent, ownerRuleId: 0, commitment: 'c'.repeat(64),
+  return { networkId: NETWORK_ID, intent, ownerRuleId: 0, commitment: 'c'.repeat(64),
     wallet: { contractId: ACCOUNT, verifier: VERIFIER, publicKey: `04${'11'.repeat(64)}`, credentialId: 'AQ' } };
 }
 const cases = (a = approval(), expiry = N) => liveCases({ approval: a, spec: spec(), helper: HELPER, policyCodeHash: 'b'.repeat(64),
@@ -74,9 +78,9 @@ test('the consent statement allows an expiry at most 30 ledgers after the ledger
 });
 
 test('the shape is one exact native transfer of at most 1,000,000 stroops, with a call cap, installing exactly the reviewed grant', () => {
-  assert.equal(liveGrant(spec()).supported, true);
-  assert.equal(liveGrant(spec({ amount: '1000001' })).supported, false, 'the adjacent denial would exceed the helper bound');
-  assert.equal(liveGrant(spec({ state: [] })).supported, false);
+  assert.equal(liveGrant(spec(), NETWORK_ID).supported, true);
+  assert.equal(liveGrant(spec({ amount: '1000001' }), NETWORK_ID).supported, false, 'the adjacent denial would exceed the helper bound');
+  assert.equal(liveGrant(spec({ state: [] }), NETWORK_ID).supported, false);
   const wallet = approval().wallet;
   for (const change of [
     (i) => ({ ...i, rule_name: 'a-rule-name-of-21-byt' }), (i) => ({ ...i, valid_until_ledger: null }),
@@ -85,9 +89,54 @@ test('the shape is one exact native transfer of at most 1,000,000 stroops, with 
     (i) => ({ ...i, context_contract: POLICY }), (i) => ({ ...i, account_contract: POLICY }),
   ]) {
     const a = approval(change);
-    assert.equal(liveShape({ spec: spec(), intent: a.intent, wallet }).supported, false);
+    assert.equal(liveShape({ spec: spec(), intent: a.intent, wallet, networkId: NETWORK_ID }).supported, false);
     assert.throws(() => cases(a), /refused/);
   }
   const [permit, denial] = cases();
   assert.deepEqual([permit.amount, denial.amount], ['1000000', '1000001']);
+});
+
+test('on mainnet the consent names the agent as the delegate key\'s holder, and says what that allows', () => {
+  const MAINNET = WALLET_NETWORKS.mainnet;
+  const mainnetSpec = spec();
+  mainnetSpec.network_id = MAINNET.networkId;
+  mainnetSpec.rules[0].context.contract = MAINNET.nativeAsset;
+  const mainnetApproval = { ...approval((intent) => ({ ...intent, context_contract: MAINNET.nativeAsset })), networkId: MAINNET.networkId };
+  const mainnetCases = liveCases({ approval: mainnetApproval, spec: mainnetSpec, helper: HELPER, policyCodeHash: 'b'.repeat(64),
+    expectedRuleId: 1, signatureExpirationLedger: N });
+  const display = consentDisplay(mainnetCases, { currentLedger: N - LIVE_SIGNATURE_LEDGERS });
+  assert.doesNotMatch(JSON.stringify(display), /in-memory|discarded/);
+  assert.equal(display.delegate.key, 'the agent\'s key, held by the agent and by this backend from the operator\'s file');
+  assert.match(display.warning, new RegExp(`the delegate ${DELEGATE}, the agent's own key`));
+  assert.match(display.warning, new RegExp(`the agent could submit the installation itself before ledger ${N}`));
+  assert.equal(display.labels[3], 'delegate_is_agent_key_from_operator_file');
+  // Testnet keeps the backend's own in-memory key, and its labels.
+  const testnet = consentDisplay(cases(), { currentLedger: N - LIVE_SIGNATURE_LEDGERS });
+  assert.equal(testnet.labels[3], 'delegate_is_wallet_in_memory_automation_key');
+  assert.match(testnet.delegate.key, /in-memory automation key, discarded when it stops/);
+  assert.doesNotMatch(testnet.warning, /the agent/);
+  // The live evidence names the holder the same way, by the session's funding model: mainnet is always operator-funded.
+  assert.equal(delegateHolder(WALLET_NETWORKS.testnet.networkId).evidence, 'wallet_in_memory_automation_key');
+  assert.equal(delegateHolder(MAINNET.networkId).evidence, 'agent_key_from_operator_file');
+  assert.equal(delegateHolder(MAINNET.networkId, { operatorFunded: false }).evidence, 'agent_key_from_operator_file');
+  assert.deepEqual(Object.keys(DELEGATE_HOLDERS).sort(), ['automation', 'operator']);
+  const liveCheck = readFileSync(new URL('../server/live-check.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(liveCheck, /'wallet_in_memory_automation_key'/, 'the evidence label is derived from the session, not fixed');
+  assert.match(liveCheck, /delegateHolder\(/);
+});
+
+test('an operator-funded testnet session names the agent as the delegate key\'s holder, as mainnet does', () => {
+  const display = consentDisplay(cases(), { currentLedger: N - LIVE_SIGNATURE_LEDGERS, operatorFunded: true });
+  assert.equal(display.network, 'testnet');
+  assert.doesNotMatch(JSON.stringify(display), /in-memory|discarded/);
+  assert.equal(display.delegate.key, 'the agent\'s key, held by the agent and by this backend from the operator\'s file');
+  assert.match(display.warning, new RegExp(`the delegate ${DELEGATE}, the agent's own key`));
+  assert.match(display.warning, new RegExp(`the agent could submit the installation itself before ledger ${N}`));
+  assert.match(display.warning, /operator's testnet RPC endpoint/);
+  assert.equal(display.labels[3], 'delegate_is_agent_key_from_operator_file');
+  assert.equal(delegateHolder(NETWORK_ID, { operatorFunded: true }), DELEGATE_HOLDERS.operator);
+  // Only a literal `true` opts in; the statement hashes differ, so a browser and backend that disagree never match.
+  assert.equal(consentDisplay(cases(), { currentLedger: N - LIVE_SIGNATURE_LEDGERS, operatorFunded: 'yes' }).labels[3],
+    'delegate_is_wallet_in_memory_automation_key');
+  assert.notDeepEqual(display, consentDisplay(cases(), { currentLedger: N - LIVE_SIGNATURE_LEDGERS }));
 });

@@ -1,5 +1,6 @@
-import { Asset, Networks, StrKey } from '#wallet-stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID, freezeCopy } from './approval.mjs';
+import { StrKey } from '#wallet-stellar-sdk';
+import { ACCOUNT_WASM, freezeCopy } from './approval.mjs';
+import { networkById } from './networks.mjs';
 
 export const MAX_PROPOSAL_BYTES = 16 * 1024;
 const HASH = /^[0-9a-f]{64}$/;
@@ -65,12 +66,16 @@ function readJson(text) {
   return result;
 }
 
-/** The wallet's supported import is one exact native-asset transfer, capped and expiring. */
-export function parseGrantProposal(text, accountAddress) {
+/**
+ * The wallet's supported import is one exact native-asset transfer, capped and expiring, on
+ * `networkId`, the session's network: a proposal for any other network is refused.
+ */
+export function parseGrantProposal(text, accountAddress, networkId) {
   try {
+    const network = networkById(networkId);
     const p = readJson(text);
     exact(p, ['schema', 'network_id', 'transaction_hash', 'decisions', 'expected_grant', 'spec_hash']);
-    if (p.schema !== 'ozpb-grant-proposal/v1' || p.network_id !== NETWORK_ID
+    if (p.schema !== 'ozpb-grant-proposal/v1' || p.network_id !== network.networkId
       || !isHash(p.transaction_hash) || !isHash(p.spec_hash)
       || typeof accountAddress !== 'string' || !StrKey.isValidContract(accountAddress)) refuse();
     const d = p.decisions;
@@ -83,7 +88,7 @@ export function parseGrantProposal(text, accountAddress) {
     const r = one(p.expected_grant.rules);
     exact(r, ['context', 'calls', 'authorization', 'valid_until_ledger', 'max_calls', 'policy_kinds']);
     exact(r.context, ['type', 'contract', 'target_code_hash']);
-    if (r.context.type !== 'CallContract' || r.context.contract !== Asset.native().contractId(Networks.TESTNET)
+    if (r.context.type !== 'CallContract' || r.context.contract !== network.nativeAsset
       || r.context.target_code_hash !== null || r.valid_until_ledger !== d.valid_until_ledger
       || r.max_calls !== d.max_calls || one(r.policy_kinds) !== 'gen:scope+count') refuse();
     const authorization = { kind: 'any_of', strict_signer_set: true, signers: [{ delegated: { address: d.delegate } }] };

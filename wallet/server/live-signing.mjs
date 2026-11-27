@@ -1,4 +1,4 @@
-// The live signing capabilities: the wallet's in-memory automation delegate signing on testnet,
+// The live signing capabilities: the wallet's in-memory automation delegate signing on the session's network,
 // either one case of the live-enforcement check (docs/ATOMIC-LIVE-HELPER.md), or one use of a grant
 // the owner installed (`createUseCapability`). These are the only paths by which that key signs
 // anything a live network accepts, and they sign nothing they did not build.
@@ -12,24 +12,24 @@
 //     (address-bound credentials; the account's own signature is the AuthPayload, whose delegated
 //     proof is empty);
 //   - the delegate's own entry for `account.__check_auth(sha256(signature_payload || xdr(rule ids)))`,
-//     which is the only thing the key signs: the preimage of that entry, in the testnet network.
+//     which is the only thing the key signs: the preimage of that entry, in the session's network.
 //
-// Its network allowlist is testnet alone. The offline execution capability (native-protocol.mjs)
+// A capability is bound to the session's network (testnet or mainnet), chosen once at startup, and signs
+// for no other; the allowlist of networks any live capability may sign for is testnet and mainnet. The offline execution capability (native-protocol.mjs)
 // signs only preimages in the derived offline network, so neither can sign in the other's domain.
 // A capability is minted for one consented check (`approved`): the account, recipient, rule, the
 // two amounts and the one expiry the owner saw, which lies at most LIVE_SIGNATURE_LEDGERS past the
 // ledger read when the statement was prepared. It signs each of the two amounts once and nothing else.
 import { randomBytes } from 'node:crypto';
-import { Address, Asset, Networks, StrKey, hash, nativeToScVal, xdr } from '@stellar/stellar-sdk';
+import { Address, StrKey, hash, nativeToScVal, xdr } from '@stellar/stellar-sdk';
 import { LIVE_SIGNATURE_LEDGERS } from '../shared/live-consent.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 
 const sha256 = (bytes) => Buffer.from(hash(bytes));
-const networkId = (passphrase) => sha256(Buffer.from(passphrase)).toString('hex');
-/** The networks a live case may be signed for. */
-export const LIVE_NETWORK_IDS = Object.freeze([networkId(Networks.TESTNET)]);
+/** The networks a live case may ever be signed for; each capability signs for its session's network alone. */
+export const LIVE_NETWORK_IDS = Object.freeze([WALLET_NETWORKS.testnet.networkId, WALLET_NETWORKS.mainnet.networkId]);
 /** The helper executes at most the 1,000,000-stroop sample permit plus its one-stroop adjacent denial. */
 export const LIVE_MAX_AMOUNT = 1_000_001n;
-const SAC = Asset.native().contractId(Networks.TESTNET);
 const STRUCTURE = ['network_id', 'account', 'asset', 'recipient', 'amount', 'expected_rule_id', 'nonce', 'signature_expiration_ledger'];
 const MAX_SIGNATURES = 2;
 const I64_MIN = -(1n << 63n), I64_MAX = (1n << 63n) - 1n;
@@ -54,12 +54,13 @@ const int64 = (text) => {
 
 const APPROVED = ['network_id', 'account', 'recipient', 'expected_rule_id', 'signature_expiration_ledger', 'read_ledger', 'amounts'];
 /** The consented check a capability is minted for, refused unless it is itself a bounded live case. */
-function checkApproved(input, delegate) {
+function checkApproved(input, delegate, network) {
   if (!input || typeof input !== 'object' || Object.keys(input).length !== APPROVED.length
     || APPROVED.some((field) => !Object.hasOwn(input, field)) || !Array.isArray(input.amounts) || input.amounts.length !== 2) refuse();
   const [permit, denial] = input.amounts;
-  const shape = (amount) => checkStructure({ network_id: input.network_id, account: input.account, asset: SAC, recipient: input.recipient,
-    amount, expected_rule_id: input.expected_rule_id, nonce: '0', signature_expiration_ledger: input.signature_expiration_ledger }, delegate);
+  const shape = (amount) => checkStructure({ network_id: input.network_id, account: input.account, asset: network.nativeAsset,
+    recipient: input.recipient, amount, expected_rule_id: input.expected_rule_id, nonce: '0',
+    signature_expiration_ledger: input.signature_expiration_ledger }, delegate, network);
   shape(permit); shape(denial);
   if (BigInt(denial) !== BigInt(permit) + 1n || !u32(input.read_ledger, 1)
     || input.signature_expiration_ledger <= input.read_ledger
@@ -67,12 +68,19 @@ function checkApproved(input, delegate) {
   return Object.freeze({ ...input, amounts: Object.freeze([permit, denial]) });
 }
 
-function checkStructure(input, delegate) {
+/** The session's network profile, checked: one of the live networks. */
+function liveNetwork(network) {
+  if (!network || !Object.isFrozen(network) || !LIVE_NETWORK_IDS.includes(network.networkId)
+    || Object.values(WALLET_NETWORKS).find((known) => known.networkId === network.networkId) !== network) refuse();
+  return network;
+}
+
+function checkStructure(input, delegate, network) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || ArrayBuffer.isView(input)
     || Object.getPrototypeOf(input) !== Object.prototype || Object.keys(input).length !== STRUCTURE.length
     || STRUCTURE.some((field) => !Object.hasOwn(input, field))) refuse();
   const s = input;
-  if (typeof s.network_id !== 'string' || !LIVE_NETWORK_IDS.includes(s.network_id) || s.asset !== SAC
+  if (typeof s.network_id !== 'string' || s.network_id !== network.networkId || s.asset !== network.nativeAsset
     || typeof s.account !== 'string' || !StrKey.isValidContract(s.account)
     || typeof s.recipient !== 'string' || !(StrKey.isValidEd25519PublicKey(s.recipient) || StrKey.isValidContract(s.recipient))
     || new Set([s.account, s.asset, s.recipient, delegate]).size !== 4
@@ -85,10 +93,11 @@ function checkStructure(input, delegate) {
  * The live capability of one in-memory key (`publicKey`, `sign`, `verify`) for one consented check.
  * Only `DelegateCapabilities.live` creates it; the result exposes the address and `authorizeTransfer`.
  */
-export function createLiveCapability(key, approvedCheck) {
+export function createLiveCapability(key, approvedCheck, sessionNetwork) {
+  const network = liveNetwork(sessionNetwork);
   const address = key.publicKey();
   if (!StrKey.isValidEd25519PublicKey(address)) refuse();
-  const approved = checkApproved(approvedCheck, address);
+  const approved = checkApproved(approvedCheck, address, network);
   const remaining = new Set(approved.amounts);
   const nonces = new Set();
   let signatures = 0;
@@ -96,11 +105,11 @@ export function createLiveCapability(key, approvedCheck) {
     address,
     authorizeTransfer(structure) {
       try {
-        const s = checkStructure(structure, address);
+        const s = checkStructure(structure, address, network);
         if (signatures >= MAX_SIGNATURES || nonces.has(s.nonce) || !remaining.has(structure.amount)
           || ['network_id', 'account', 'recipient', 'expected_rule_id', 'signature_expiration_ledger']
             .some((field) => structure[field] !== approved[field])) refuse();
-        const signed = transferEntries(key, s);
+        const signed = transferEntries(key, s, network);
         nonces.add(s.nonce);
         remaining.delete(structure.amount);
         signatures++;
@@ -110,10 +119,11 @@ export function createLiveCapability(key, approvedCheck) {
   });
 }
 
-/** Sign the preimage this module built, only if it is a plain authorization preimage on an allowed network. */
-function signLive(key, preimage) {
-  if (preimage.type !== 'envelopeTypeSorobanAuthorization'
-    || !LIVE_NETWORK_IDS.includes(Buffer.from(preimage.sorobanAuthorization.networkId.value).toString('hex'))) refuse();
+/** Sign the preimage this module built, only if it is a plain authorization preimage on the capability's network. */
+function signLive(key, preimage, network) {
+  const id = preimage.type === 'envelopeTypeSorobanAuthorization'
+    ? Buffer.from(preimage.sorobanAuthorization.networkId.value).toString('hex') : null;
+  if (!LIVE_NETWORK_IDS.includes(id) || id !== network.networkId) refuse();
   const digest = sha256(preimage.toXDR());
   const signature = Buffer.from(key.sign(digest));
   if (signature.length !== 64 || !key.verify(digest, signature)) refuse();
@@ -121,9 +131,9 @@ function signLive(key, preimage) {
 }
 
 /** Both of the delegate's entries for one checked transfer structure `s`; the key signs only the second. */
-function transferEntries(key, s) {
+function transferEntries(key, s, network) {
   const address = key.publicKey();
-  const network = Buffer.from(s.network_id, 'hex');
+  const networkBytes = Buffer.from(s.network_id, 'hex');
   const transfer = invocation(s.asset, 'transfer', [new Address(s.account).toScVal(), new Address(s.recipient).toScVal(),
     nativeToScVal(s.amount, { type: 'i128' })]);
   const ruleIds = xdr.ScVal.scvVec([xdr.ScVal.scvU32(s.expected_rule_id)]);
@@ -136,13 +146,13 @@ function transferEntries(key, s) {
     credentials: xdr.SorobanCredentials.sorobanCredentialsAddressV2(credentials), rootInvocation: transfer });
   // The host's signature payload for an address-bound entry, and what a delegated signer authorizes.
   const payload = sha256(xdr.HashIdPreimage.envelopeTypeSorobanAuthorizationWithAddress(
-    new xdr.HashIdPreimageSorobanAuthorizationWithAddress({ networkId: network, nonce: s.nonce,
+    new xdr.HashIdPreimageSorobanAuthorizationWithAddress({ networkId: networkBytes, nonce: s.nonce,
       signatureExpirationLedger: s.signature_expiration_ledger, invocation: transfer, address: credentials.address })).toXDR());
   const digest = sha256(Buffer.concat([payload, ruleIds.toXDR()]));
   const checkAuth = invocation(s.account, '__check_auth', [xdr.ScVal.scvBytes(digest)]);
   const delegateNonce = randomBytes(8).readBigInt64BE();
   const signature = signLive(key, xdr.HashIdPreimage.envelopeTypeSorobanAuthorization(new xdr.HashIdPreimageSorobanAuthorization({
-    networkId: network, nonce: delegateNonce, signatureExpirationLedger: s.signature_expiration_ledger, invocation: checkAuth })));
+    networkId: networkBytes, nonce: delegateNonce, signatureExpirationLedger: s.signature_expiration_ledger, invocation: checkAuth })), network);
   const delegateEntry = new xdr.SorobanAuthorizationEntry({
     credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(new xdr.SorobanAddressCredentials({
       address: new Address(address).toScAddress(), nonce: delegateNonce, signatureExpirationLedger: s.signature_expiration_ledger,
@@ -166,14 +176,15 @@ const USE_APPROVED = ['network_id', 'account', 'recipient', 'expected_rule_id', 
  * once. The policy, not this capability, decides whether the account may still make it. Only
  * `DelegateCapabilities.use` creates it.
  */
-export function createUseCapability(key, approvedUse) {
+export function createUseCapability(key, approvedUse, sessionNetwork) {
+  const network = liveNetwork(sessionNetwork);
   const address = key.publicKey();
   if (!StrKey.isValidEd25519PublicKey(address) || !approvedUse || typeof approvedUse !== 'object'
     || Object.keys(approvedUse).length !== USE_APPROVED.length || USE_APPROVED.some((field) => !Object.hasOwn(approvedUse, field))) refuse();
   const approved = Object.freeze({ ...approvedUse });
-  checkStructure({ network_id: approved.network_id, account: approved.account, asset: SAC, recipient: approved.recipient,
+  checkStructure({ network_id: approved.network_id, account: approved.account, asset: network.nativeAsset, recipient: approved.recipient,
     amount: approved.amount, expected_rule_id: approved.expected_rule_id, nonce: '0',
-    signature_expiration_ledger: approved.signature_expiration_ledger }, address);
+    signature_expiration_ledger: approved.signature_expiration_ledger }, address, network);
   if (!u32(approved.read_ledger, 1) || approved.signature_expiration_ledger <= approved.read_ledger
     || approved.signature_expiration_ledger - approved.read_ledger > USE_SIGNATURE_LEDGERS) refuse();
   let signed = false;
@@ -181,11 +192,11 @@ export function createUseCapability(key, approvedUse) {
     address,
     authorizeTransfer(structure) {
       try {
-        const s = checkStructure(structure, address);
+        const s = checkStructure(structure, address, network);
         if (signed || ['network_id', 'account', 'recipient', 'amount', 'expected_rule_id', 'signature_expiration_ledger']
           .some((field) => structure[field] !== approved[field])) refuse();
         signed = true;
-        return transferEntries(key, s);
+        return transferEntries(key, s, network);
       } catch { return refuse(); }
     },
   });

@@ -9,7 +9,7 @@ import { WalletController } from '../overlay/files/src/policy-builder/client/con
 import { LIVE_CONSENT_MIN_LEDGERS, LIVE_RUN_MIN_LEDGERS } from '../shared/live-consent.mjs';
 
 const hash = (c) => c.repeat(64);
-const pins = { networkId: hash('1'), accountWasm: hash('2'), verifierWasm: hash('3') };
+const pins = { network: 'testnet', networkId: hash('1'), accountWasm: hash('2'), verifierWasm: hash('3') };
 const wallet = { contractId: 'account', credentialId: 'AQ', publicKey: '04key', verifier: 'verifier' };
 const INSTALL_DISPLAY = { owner_signs: { function: 'add_context_rule' }, grant: { rule_id: 1, delegate: 'delegate' },
   fee: { prepared_fee_stroops: 1100, max_fee_stroops: 10000000 }, warning: 'Once installed, the delegate can act without your passkey.' };
@@ -32,7 +32,7 @@ function fixture() {
     ] }, files: [] },
     'prepare-deploy': { action: { id: 'deploy1', expires_in_seconds: 120 }, summary: { specHash: hash('a'), wasmHash: hash('b') } },
     'confirm-deploy': { deploymentId: 'deployment1', policyAddress: 'policy1', wasmHash: hash('b'), bindingSetHash: hash('c') },
-    review: { reviewId: 'review1', wallet, verification, expected: { specHash: hash('a'), bindingSetHash: hash('c') },
+    review: { reviewId: 'review1', wallet, verification, expected: { networkId: pins.networkId, specHash: hash('a'), bindingSetHash: hash('c') },
       intent: { policies: [{ address: 'policy1', wasm_hash: hash('b') }] }, ownerRuleXdr: 'owner' },
     assemble: { action: { id: hash('5'), expires_in_seconds: 120 }, verification, assembly: {}, ownerRuleXdr: 'owner', limits: {},
       display: INSTALL_DISPLAY },
@@ -94,6 +94,22 @@ test('deploy consent is separate and install validates and shows its consent bef
   await assert.rejects(f.controller.install(), /wallet action refused/);
   await assert.rejects(f.controller.prepareInstall(), /wallet action refused/, 'one installation attempt per review');
 });
+test('the browser derives both consents with the funding model the backend reports: operator-funded or not', async () => {
+  for (const ownerFunded of [true, false, undefined]) {
+    const f = liveFixture();
+    if (ownerFunded !== undefined) f.replies.status.feePayer = { address: `G${'P'.repeat(55)}`, ownerFunded };
+    const seen = [];
+    const display = f.validators.consentDisplay();
+    f.validators.consentDisplay = (_cases, options) => { seen.push(['live', options.operatorFunded]); return display; };
+    f.validators.installConsent = (input) => { seen.push(['install', input.operatorFunded]); return INSTALL_DISPLAY; };
+    await livePrepared(f);
+    await f.controller.prepareLive();
+    await f.controller.prepareInstall();
+    await f.controller.install();
+    assert.deepEqual(seen, [['live', ownerFunded === true], ['install', ownerFunded === true], ['install', ownerFunded === true]], String(ownerFunded));
+  }
+});
+
 test('install consent the browser derives must equal the backend display, or no passkey is asked', async () => {
   for (const change of [
     (f) => { f.validators.installConsent = () => ({ ...INSTALL_DISPLAY, grant: { rule_id: 2, delegate: 'delegate' } }); },
@@ -119,6 +135,26 @@ test('a lost install response cannot cause an automatic or manual retry', async 
   await assert.rejects(f.controller.prepareInstall(), /wallet action refused/);
   await assert.rejects(f.controller.install(), /wallet action refused/);
   assert.equal(f.calls.filter(([name]) => name === 'submit').length, 1);
+});
+test('an installation the backend refused before sending keeps the review and says why; one that may have been sent does not', async () => {
+  for (const [name, again] of [['refused before sending', true], ['may have been sent', false]]) {
+    const f = fixture();
+    await prepared(f);
+    await f.controller.prepareInstall();
+    f.replies.submit = Object.assign(new Error('refused'), { reason: 'payer_unfunded' });
+    // Whether the backend offers installation again is what tells the two apart.
+    f.replies.status = { ...f.replies.status, capabilities: { ...f.replies.status.capabilities, install: again } };
+    const refusal = await f.controller.install().then(() => null, (error) => error);
+    assert.equal(refusal?.reason, again ? 'payer_unfunded' : undefined, name);
+    assert.equal(f.controller.state.installAttempted, !again, name);
+    assert.equal(f.controller.state.review !== null, again, name);
+    if (again) {
+      f.replies.submit = { receipt: { hash: hash('e') }, installation: INSTALLATION };
+      await f.controller.prepareInstall();
+      await f.controller.install();
+      assert.equal(f.controller.state.installation.installationId, hash('6'), name);
+    } else await assert.rejects(f.controller.prepareInstall(), /wallet action refused/, name);
+  }
 });
 test('cancelling the install consent asks no passkey and keeps the review', async () => {
   const f = fixture();
@@ -235,7 +271,7 @@ function sampleFixture() {
   f.replies['submit-sample'] = { transactionHash: hash('e'), receipt: { hash: hash('e') } };
   f.validators.reviewSample = (input) => {
     assert.deepEqual(input, { wallet, descriptor: { recipient: 'payer', amountStroops: '1000000',
-      ownerRuleXdr: 'created-owner' }, ownerRuleXdr: 'created-owner' });
+      ownerRuleXdr: 'created-owner' }, ownerRuleXdr: 'created-owner', networkId: pins.networkId });
     f.calls.push(['reviewSample', input]);
     return approval;
   };
@@ -379,6 +415,16 @@ test('a refusal keeps the reason the backend named, and only a plain word', asyn
     f.replies.assemble = Object.assign(new Error('refused'), { reason });
     await assert.rejects(f.controller.prepareInstall(), (error) => /wallet action refused/.test(error.message) && error.reason === kept);
   }
+});
+test('a deployment refused by a cap passes on the operator setting and the simulated cost', async () => {
+  const f = fixture();
+  await f.controller.connect();
+  f.controller.attachWallet(wallet);
+  await f.controller.record(hash('d'));
+  await f.controller.generate({ delegateAddress: 'delegate', maxCalls: 2, validUntilLedger: 123, grantName: 'grant' });
+  const limit = { setting: 'maxUploadFeeStroops', simulatedFeeStroops: '190000000', neededStroops: '190000000' };
+  f.replies['prepare-deploy'] = Object.assign(new Error('refused'), { reason: 'fee_cap', limit });
+  await assert.rejects(f.controller.prepareDeploy(), (error) => error.reason === 'fee_cap' && JSON.stringify(error.limit) === JSON.stringify(limit));
 });
 test('after a sample submission was attempted, no reason is passed on: it cannot be tried again', async () => {
   const f = sampleFixture();
@@ -851,6 +897,8 @@ test('new recording and generation retain confirmed and uncertain installation r
       await f.controller.prepareInstall();
       if (uncertain) {
         f.replies.submit = new Error('lost response');
+        // As the backend reports an attempt that may have left: installation is not offered again.
+        f.replies.status = { ...f.replies.status, capabilities: { ...f.replies.status.capabilities, install: false } };
         await assert.rejects(f.controller.install(), /refused/);
       } else await f.controller.install();
       const owner = f.controller.state.installOwner;

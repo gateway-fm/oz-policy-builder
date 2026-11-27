@@ -16,3 +16,7 @@ for (const mode of ['approved', 'default']) {
     });
   }
 }
+
+test('installer refuses a run journal whose spec is not the run directory\'s own spec.json', () => {
+  execFileSync(process.execPath, ['--experimental-vm-modules', fixture, 'foreign-spec'], { stdio: 'pipe' });
+});

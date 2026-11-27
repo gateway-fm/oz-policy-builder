@@ -7,8 +7,8 @@ function fixture(kind = 'soroswap_swap') {
   const rules = kind === 'blend_claim' ? [0] : [0, 1];
   const run = { account: C(1), payer: StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 9)), valid_until_ledger: 280,
     walkthrough: { kind, grant_duration_ledgers: 180, ...(kind === 'blend_claim' ? { accrual_ledgers: 2,
-      owner_transaction: { ledger: 276 } } : { operator_decisions: { schema: 'ozpb-soroswap-operator-decisions/v2',
-      output_floor: { min: '100000', intent: 'floor' }, transfer_cap: { max: '1000000', intent: 'cap' },
+      owner_transaction: { ledger: 276 } } : { operator_decisions: { schema: 'ozpb-soroswap-operator-decisions/v3',
+      output_floor: { min: '100000', intent: 'floor' }, transfer_cap: { max: '1000000', intent: 'cap', no_floor_acknowledged: true },
       adapter_deadline: 'keep_recorded_deadline', source_sha256: 'cd'.repeat(32) } }),
     bundle: { status: 'installed', entries: rules.map((rule_index) => ({ rule_index, policy: C(2 + rule_index),
       installation: { rule_id: 8 + rule_index, transaction: 'aa'.repeat(32) } })) } } };

@@ -21,6 +21,43 @@ verification decode these values, check that their keys agree and their presence
 change kind, and derive entry type and contract address from the key. These changes remain
 explanatory evidence; they do not automatically become policy constraints.
 
+## Which authorization entries are evidence
+
+An executed envelope carries the authorization entries its submitter attached, and the network
+checks only some of them. The host authenticates an address credential when a `require_auth`
+call reaches that entry's invocation tree. A transaction still succeeds when an entry is never
+reached, and that entry's signature is never verified (soroban-env-host 30, `test/auth.rs`:
+"Correct call with an unused extra contract signature"). So anyone can attach an entry naming
+another account and a payment out of it to their own successful transaction.
+
+`authorizations` therefore holds an executed `Address`, `AddressV2` or `AddressWithDelegates`
+credential only when the selected operation's meta shows its nonce consumed. The proof is a
+created temporary contract-data entry under the entry's address, keyed `LedgerKeyNonce` with the
+entry's nonce. The host's `consume_nonce` is the only writer of that key, and it runs only after
+the signature has verified. Contract code cannot write it: `LedgerKeyNonce` has no `Val` form.
+Every other entry is reported in `evidence_notes` as
+`authorization entry <index> for <address> is not authorization evidence: <reason>`, with its
+index in the operation's `auth` list. Such an entry is never an authorizer that synthesis can
+derive or select. This covers:
+
+- an entry whose nonce the meta does not show consumed. The rule reads the meta alone: a failed
+  network transaction's meta records no operation changes, so none of its address credentials
+  is kept, and neither is any of an executed recording without meta;
+- two entries with the same address and nonce. The host consumes a nonce once, so at most one
+  of them was checked, and the meta cannot say which.
+
+A `SourceAccount` credential has no nonce. The operation's source account signed the
+transaction that carries it, and that signature is its authorization, so it is always kept. Its
+authorizer is the operation's own source account when the operation names one, otherwise the
+(inner) transaction's source. The fee-bump fee payer is never the authorizer.
+
+A simulation's entries are kept as returned. Record mode emits one for each address whose
+`require_auth` the simulated call reached, unsigned and with a placeholder nonce. They describe
+what the call would require, and no entry in them claims a signature.
+
+A consumed nonce proves only that the network checked the entry. Under `rpc_reported` it is
+still the endpoint's report, and under `self_supplied` the importer's.
+
 ## Acquisition context
 
 Live RPC recordings include `acquisition.protocol_version`, `decoder_version`, and
@@ -46,6 +83,12 @@ format; imports that already include a transaction result produce fully checkabl
 An unavailable historical result must remain unavailable, rather than being reconstructed
 from a claimed success label.
 
+A `recording/v2` artifact recorded before authorization entries were checked against the meta
+no longer verifies if it lists an entry that is now a note, or attributes a source-account
+credential to the transaction's source when the operation names its own. Verification reports
+`E_EVIDENCE_INCOHERENT` for its `authorizations`. Record the transaction again, or reimport its
+raw evidence.
+
 Changing the schema changes recording hashes and downstream derived identities. Historical
 published artifacts keep their original bytes and meaning. Current synthetic examples can be
 regenerated from their source fixtures and reviewed as a complete derived chain.
@@ -59,11 +102,12 @@ instances. `manifest.json` names each case's transaction, ledger and coverage, a
 windows the search scanned.
 `crates/source-rpc/tests/mainnet_corpus.rs` replays them through `get_transaction` and `record`.
 It compares every recorded authorizer, invocation tree and authorized argument with the
-envelope's own XDR.
+envelope's own XDR. Every address credential in the corpus has its nonce consumed in its
+operation's meta, so every entry is recorded as authorization evidence.
 
 | Case | What the recorder does with it |
 |---|---|
-| `sac-transfer-source-account` | fee-bumped on purpose: the source-account credential resolves to the inner source, never the fee payer; Stellar Asset Contract executable; one typed transfer |
+| `sac-transfer-source-account` | fee-bumped on purpose: the source-account credential resolves to the inner transaction's source (the operation names none), never the fee payer; Stellar Asset Contract executable; one typed transfer |
 | `classic-address-credential` | `Address` credential of a G-account that did not submit the transaction |
 | `smart-account-credential` | account built on OpenZeppelin `stellar-accounts` authorizing a call that moves native XLM out of it under a spending-limit policy; its Wasm hash is observed |
 | `nested-auth-tree` | a swap whose authorized root reaches a token transfer; every contract in the tree observed |
@@ -107,5 +151,5 @@ A refresh changes more than the anchors. `getLedgerEntries` returns current stat
 observed ledgers move. Two endpoints can also return different meta bytes for the same
 transaction: diagnostic events carry node-local timings, and the order of ledger changes in an
 operation can differ. The authorizations and their fingerprints are unchanged, but recording
-hashes are not. When mainnet moves to protocol 30, a refresh must also update
-`CAPTURED_PROTOCOL` in `mainnet_corpus.rs`.
+hashes are not. Mainnet now runs protocol 30 (reported on 25 November 2026), so a refresh must
+also update `CAPTURED_PROTOCOL` in `mainnet_corpus.rs`.

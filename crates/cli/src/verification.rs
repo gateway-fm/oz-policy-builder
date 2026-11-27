@@ -134,12 +134,12 @@ impl Command {
 /// Read the complete generated crate, except Cargo.lock and the separately supplied
 /// Wasm/manifest artifacts. The toolkit compares this exact path set with regeneration.
 #[derive(Debug)]
-struct ClaimedFiles {
-    files: BTreeMap<String, String>,
-    unrepresentable: Vec<String>,
+pub(crate) struct ClaimedFiles {
+    pub(crate) files: BTreeMap<String, String>,
+    pub(crate) unrepresentable: Vec<String>,
 }
 
-fn read_generated_files(
+pub(crate) fn read_generated_files(
     generated_dir: &Path,
     wasm: &Path,
     manifest: &Path,

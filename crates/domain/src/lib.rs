@@ -48,7 +48,12 @@ pub mod domains {
     pub const SIGNER_SET: &str = "ozpb:v1:signer-set";
     pub const REGISTRY_SNAPSHOT: &str = "ozpb:v1:registry-snapshot";
     pub const CODEGEN_INPUT: &str = "ozpb:v1:codegen-input";
-    pub const BUILD_MANIFEST: &str = "ozpb:v1:build-manifest";
+    /// Schema 2 of the build manifest: schema 1 plus the canonicalization version, build target
+    /// and producer record. The digit is the structure's schema version, as everywhere here.
+    pub const BUILD_MANIFEST: &str = "ozpb:v2:build-manifest";
+    /// The generator's template source — the emitter half of `crates/codegen` and the lockfile it
+    /// copies — keyed by repository path. Recorded in a BuildManifest's producer record.
+    pub const TEMPLATE_PACK: &str = "ozpb:v1:template-pack";
     pub const POLICY_BINDING_SET: &str = "ozpb:v1:policy-binding-set";
     /// The full typed request for a state-dependent installed-policy check.
     pub const POLICY_CHECK_REQUEST: &str = "ozpb:v1:policy-check-request";
@@ -108,6 +113,7 @@ pub mod domains {
         REGISTRY_SNAPSHOT,
         CODEGEN_INPUT,
         BUILD_MANIFEST,
+        TEMPLATE_PACK,
         POLICY_BINDING_SET,
         POLICY_CHECK_REQUEST,
         DRY_RUN_REQUEST,

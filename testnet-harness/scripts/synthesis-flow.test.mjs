@@ -193,7 +193,7 @@ for (const binary of ['./fake ozpb', 'fake ozpb']) {
     for (const name of ['registry.json', 'roots.json']) writeFileSync(join(f.dir, name), '{}');
     const result = f.execute({ OZPB_BIN: binary, PATH: `${f.dir}:${process.env.PATH}`,
       OZPB_SIGNED_REGISTRY_SNAPSHOT: './registry.json', OZPB_REGISTRY_ROOTS_FILE: './roots.json',
-      OZPB_REGISTRY_MIN_VERSION: '3' }, f.dir);
+      OZPB_REGISTRY_MIN_VERSION: '6' }, f.dir);
     assert.equal(result.status, 0, result.stderr);
     const args = f.commands().find((c) => c.command === 'synthesize').args;
     assert.equal(args[args.indexOf('--signed-registry') + 1], join(realpathSync(f.dir), 'registry.json'));

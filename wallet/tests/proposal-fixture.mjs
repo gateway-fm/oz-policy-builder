@@ -1,6 +1,8 @@
 import { Asset, Networks, StrKey } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID } from '../shared/approval.mjs';
+import { ACCOUNT_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { fixture } from './approval-fixture.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 export function proposalFixture() {
   const wallet = fixture().wallet;
