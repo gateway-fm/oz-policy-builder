@@ -8,6 +8,8 @@ export interface RemovalApproval {
   readonly commitment: string;
   readonly configurationChange?: { readonly recordedRuleXdr: string; readonly observedRuleXdr: string };
   readonly installation: { readonly account: string; readonly ruleId: number; readonly transactionHash: string };
+  /** An earlier session's removal: the account's rules as listed, from which the bound policies are derived. */
+  readonly listedRules?: ReadonlyArray<{ readonly id: number; readonly xdr: string }>;
 }
 export const REMOVAL_MAX_FEE_STROOPS: 10000000;
 export function removalCall(account: string, ruleId: number): xdr.InvokeContractArgs;

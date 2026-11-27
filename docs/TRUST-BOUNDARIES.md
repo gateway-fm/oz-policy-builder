@@ -8,11 +8,13 @@ Audit status is stated in [SECURITY.md](../SECURITY.md).
 
 ## What is guaranteed
 
-- **Nothing happens without you.** The toolkit library, the MCP server and the agent never sign,
-  submit, deploy or install; the CLI's `ozpb dry-run` signs only requests for an offline execution
-  network. Deploying a policy needs your explicit consent; installing it needs your own account
-  signature over the exact transaction you reviewed. The wallet backend, the testnet harness and
-  the demo script submit transactions with disposable testnet keys, and only when you run them.
+- **Nothing happens without you.** The toolkit library, the MCP server and the Claude session
+  never sign, submit, deploy or install; the CLI's `ozpb dry-run` signs only requests for an
+  offline execution network. Deploying a policy needs your explicit consent; installing it needs your own account
+  signature over the exact transaction you reviewed. The testnet harness and the demo script
+  submit transactions on testnet with disposable keys; the wallet backend does so with disposable
+  keys on testnet and, in a [mainnet session](POLLYWALLET-INTEGRATION.md#mainnet-sessions) or its
+  testnet rehearsal, with the operator's own fee-payer key. Each acts only when you run it.
 - **Exactly what you approved.** The grant permits the recorded calls, deep-equal, plus only the
   widenings you decided or a registry-bound adapter derived, each tagged with where it came from
   ([scoping decisions](SCOPING-DECISIONS.md)).
@@ -42,26 +44,32 @@ Audit status is stated in [SECURITY.md](../SECURITY.md).
 - **Builds are attested by reproduction only.** A real build is labelled `local-unattested`; the
   pinned account Wasm reproduces byte-for-byte only on Apple Silicon.
 - **A consistently lying RPC endpoint is not detected.**
-- **Wallet revocation is bound to its session.** The wallet can revoke only a grant its running
-  backend installed; after a restart nothing in this tree can have the wallet account's passkey
-  sign the removal ([after a restart](POLLYWALLET-INTEGRATION.md#after-a-restart),
-  [how to revoke](INCIDENT-RESPONSE.md#how-to-revoke-a-grant)).
+- **The wallet removes grant-shaped rules only.** With the owner's passkey it removes a grant its
+  running backend installed or, after a restart, one an earlier session installed, read from the
+  account as stored. It refuses the owner rule, a rule naming the owner's passkey, a
+  `Default`-context or policy-less rule, and a rule on the account's own calls or on a policy
+  contract the account binds; those need the account's own management
+  ([an earlier session's grant](POLLYWALLET-INTEGRATION.md#removing-an-earlier-sessions-grant),
+  [how to revoke](INCIDENT-RESPONSE.md#how-to-revoke-a-grant)). A restarted backend does not read
+  the earlier session's replay obligations, so wait as
+  [after a restart](POLLYWALLET-INTEGRATION.md#after-a-restart) says before installing again.
 
 ## Who holds which key
 
 | Key | Held by | Can | Cannot |
 | --- | --- | --- | --- |
 | Account owner (a passkey in the wallet; an ed25519 key in harness runs) | You, through the wallet | Install and revoke grants; anything the owner rule allows | — |
-| Delegate (automation) key | The wallet backend, in memory; or your 0600 file for `ozpb dry-run`, which signs only offline-domain requests | Sign calls the grant permits | Change the account or reset the grant — the authority check refuses a grant whose delegate could, at the ledger it reads |
-| Fee payer | The wallet backend: a disposable testnet key, in memory | Pay fees and submit | Authorize anything on your account |
+| Delegate (automation) key | Testnet wallet: a key the backend generates and holds in memory. Mainnet wallet, and its testnet rehearsal: the agent's own key, which the backend reads from the operator's 0600 file (`delegateKeyPath`) and holds in memory; installation requires it, and whoever can read that file holds the agent's key. `ozpb dry-run`: your 0600 file, signing only offline-domain requests | Sign calls the grant permits | Change the account or reset the grant — the authority check refuses a grant whose delegate could, at the ledger it reads |
+| Fee payer | The wallet backend. Testnet: a disposable key it generates, in memory. Mainnet, and its testnet rehearsal: the operator's key, read from a 0600 file (`feePayerKeyPath`) and held in memory | Pay fees and submit, within the configured fee caps on mainnet and in its rehearsal | Authorize anything on your account: the backend refuses an envelope whose authorization entries name it |
 | Registry custodian keys | Custodians, m-of-n, on separate devices | Sign registry snapshot roots | Touch any account |
 | Development registry root | Anyone: it is published | Sign testnet development snapshots | Be accepted for any network but testnet |
-| None: the agent, the MCP server (local or hosted) and the toolkit library | No account, owner, delegate or fee-payer key | Prepare unsigned XDR at most | Sign, submit, deploy or install |
+| None: the Claude session, the MCP server (local or hosted) and the toolkit library | No account, owner, delegate or fee-payer key (on mainnet the delegate is the agent's own key, held as the delegate row says, never by these) | Prepare unsigned XDR at most | Sign, submit, deploy or install |
 | Wallet pairing code | The agent session | Deliver a draft the wallet regenerates | Start any wallet action |
 
 Custody details: [registry keys](REGISTRY-GOVERNANCE.md#roles),
 [the delegate key file](NATIVE-EXECUTION.md#running-the-layers-from-the-cli),
 [the wallet's keys](POLLYWALLET-INTEGRATION.md#start-the-local-backend),
+[the wallet's keys on mainnet](POLLYWALLET-INTEGRATION.md#mainnet-sessions),
 [the handoff](AGENT-WALLET-HANDOFF.md#authority-and-data-boundaries).
 
 ## What the registry signature covers

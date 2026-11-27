@@ -125,8 +125,7 @@ export async function runDerivedDenials(runDirectory, overrides = {}) {
     requireThat(run.subscription?.installation_readback === 'matched' && positiveLedger(run.authority_check?.rechecked_at_ledger),
       'derived denials require the checked composed installation');
   }
-  const specPath = join(dir, 'spec.json');
-  requireThat(resolve(run.spec ?? '') === specPath, 'run does not name its own spec');
+  const specPath = rpc.runSpecPath(dir, run);
   const spec = parseJsonExact(readFileSync(specPath, 'utf8'));
   const pipeline = parseJsonExact(readFileSync(join(dir, protocol ? 'protocol-pipeline.json' : 'pipeline.json'), 'utf8'));
   const specHash = pipeline.spec_hash;

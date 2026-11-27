@@ -278,6 +278,82 @@ impl fmt::Display for TemplateFamily {
     }
 }
 
+/// A key the generated crate states about itself in its SEP-46 `contractmetav0` section.
+///
+/// A closed set rather than a string: the keys are the emitter's own vocabulary, never input.
+/// SEP-46 defines no registry of keys and leaves each SEP to define its own; none of the keys
+/// the verification SEPs define fits a generated contract (SEP-55's `source_repo` would send a
+/// verifier looking for a build attestation of this Wasm that no repository has, and SEP-58's
+/// `source_sha256` names a source archive this crate is not published as), so ours are
+/// namespaced with `ozpb_`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetaKey {
+    /// The generator and its codegen version, e.g. `oz-policy-builder/codegen@1`.
+    Generator,
+    /// The template family the policy was assembled from.
+    TemplateFamily,
+    /// The normalized codegen-input hash, hex — the pre-build identity of the grant shape.
+    CodegenInput,
+}
+
+impl MetaKey {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MetaKey::Generator => "ozpb_generator",
+            MetaKey::TemplateFamily => "ozpb_template_family",
+            MetaKey::CodegenInput => "ozpb_codegen_input",
+        }
+    }
+}
+
+/// The longest meta value emitted: a hex digest, or a template-family identifier at its own
+/// limit. Bounding it also bounds the line, so both layouts in [`contract_meta_entry`] stay
+/// within `MAX_WIDTH`.
+const MAX_META_VALUE_BYTES: usize = 64;
+
+/// A value for a `contractmeta!` entry.
+///
+/// `contractmeta!` takes string literals, so a value is emitted *inside* a literal, and an
+/// unvalidated one could close it: a quote ends the literal and turns what follows into Rust, a
+/// backslash changes what the literal means, and a newline or `*/` breaks the line structure a
+/// reviewer reads. The charset below is the one every emitted value is drawn from — hex
+/// digests, template-family identifiers, the generator's name — and contains none of those, so
+/// nothing is escaped: a value that would need escaping is refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetaValue(String);
+
+impl MetaValue {
+    pub fn new(raw: &str) -> Result<Self, CodegenError> {
+        let ok = !raw.is_empty()
+            && raw.len() <= MAX_META_VALUE_BYTES
+            && raw.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b'@')
+            });
+        if ok {
+            Ok(MetaValue(raw.to_string()))
+        } else {
+            Err(CodegenError::Internal(format!(
+                "contract meta value {raw:?} is outside the render-safe charset"
+            )))
+        }
+    }
+}
+
+/// One `soroban_sdk::contractmeta!` entry, laid out the way rustfmt lays it out under the
+/// shipped configuration: on one line while the whole line fits [`MAX_WIDTH`], otherwise one
+/// argument per line with no trailing comma (measured against the pinned rustfmt at 100 and
+/// 101 columns).
+pub fn contract_meta_entry(key: MetaKey, value: &MetaValue) -> String {
+    let key = key.as_str();
+    let value = &value.0;
+    let one_line = format!("soroban_sdk::contractmeta!(key = \"{key}\", val = \"{value}\");");
+    if one_line.chars().count() <= MAX_WIDTH {
+        format!("{one_line}\n")
+    } else {
+        format!("soroban_sdk::contractmeta!(\n    key = \"{key}\",\n    val = \"{value}\"\n);\n")
+    }
+}
+
 /// An `i128` literal. Validated by round-tripping through `i128`, so only a canonical
 /// decimal form is accepted and the rendered text is derived from the parsed value's own
 /// string form, never from caller text.
@@ -290,6 +366,16 @@ impl I128Literal {
             Ok(value) if value.to_string() == raw => Ok(I128Literal(value)),
             _ => Err(CodegenError::I128(raw.to_string())),
         }
+    }
+
+    /// `i128::MIN`: no `i128` lies below it, so a floor here refuses nothing.
+    pub fn is_type_min(&self) -> bool {
+        self.0 == i128::MIN
+    }
+
+    /// `i128::MAX`: no `i128` lies above it, so a cap here refuses nothing.
+    pub fn is_type_max(&self) -> bool {
+        self.0 == i128::MAX
     }
 }
 
@@ -396,6 +482,11 @@ pub enum RenderConstraint {
     EqI128(I128Literal),
     LeI128(I128Literal),
     GeI128(I128Literal),
+    /// Inclusive `min..=max`; the spec's validation guarantees `min <= max`.
+    RangeI128 {
+        min: I128Literal,
+        max: I128Literal,
+    },
     EqScval(ByteArray),
     AnyValue,
 }
@@ -484,6 +575,10 @@ impl RenderRule {
                             Constraint::GeI128 { min } => {
                                 RenderConstraint::GeI128(I128Literal::new(min)?)
                             }
+                            Constraint::RangeI128 { min, max } => RenderConstraint::RangeI128 {
+                                min: I128Literal::new(min)?,
+                                max: I128Literal::new(max)?,
+                            },
                             Constraint::EqScval { xdr_base64 } => {
                                 RenderConstraint::EqScval(ByteArray::from_base64(xdr_base64)?)
                             }

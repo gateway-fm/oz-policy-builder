@@ -120,17 +120,23 @@ root. Without it the run stops before setup.
 
 ```json
 {
-  "schema": "ozpb-soroswap-operator-decisions/v2",
+  "schema": "ozpb-soroswap-operator-decisions/v3",
   "output_floor": { "min": "100000", "intent": "…" },
-  "transfer_cap": { "max": "1000000", "intent": "…" },
+  "transfer_cap": { "max": "1000000", "intent": "…", "no_floor_acknowledged": true },
   "adapter_deadline": "keep_recorded_deadline"
 }
 ```
 
 It refuses any other key, a floor below 2 (its control lowers it by one), a transfer cap below the
-fixed input or above 10 000 000, a missing intent, and anything but that exact deadline
-acceptance. The committed `testnet-harness/soroswap-decisions.json` holds the values of the
-earlier runs.
+fixed input or above 10 000 000, a missing intent, a transfer cap without
+`no_floor_acknowledged: true`, and anything but that exact deadline acceptance. The transfer
+amount is a signed `i128` and a cap bounds it from above only, so synthesis refuses a cap whose
+open floor nobody accepted ([scoping decisions](SCOPING-DECISIONS.md#widenings-you-may-choose));
+the transfer rule's policy then refuses no negative amount, which is left to the native asset
+contract. Runs journaled under v2, which predates that decision, still export as evidence. The
+committed `testnet-harness/soroswap-decisions.json` holds the values of the earlier runs; moving
+it to v3 changed its bytes, so its SHA-256 no longer equals the `71707f18…` those runs journaled,
+though every value is unchanged.
 
 It then re-reads the pinned router's code, its factory and the native-XLM →
 `CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F` pair, the pair's tokens and
@@ -167,7 +173,7 @@ complete spec. This document names them by role, because the account numbers rul
   exact pair.
 
 The router rule's input bound is `adapter_derived` from `soroswap-router@2`; its deadline
-remains `observed_exact` from the recorded call. The [committed development registry](TARGET-ADAPTERS.md#current-binding-development-registry-version-5-carried-into-6) (version 6, which carries version 5's binding unchanged) binds this adapter to the router's exact code. That binding is a development-registry assertion, not governance, and the
+remains `observed_exact` from the recorded call. The [committed development registry](TARGET-ADAPTERS.md#current-binding-development-registry-version-5-carried-into-6) (version 7, which carries version 5's binding unchanged) binds this adapter to the router's exact code. That binding is a development-registry assertion, not governance, and the
 router's Wasm was not reproduced from source ([target adapters](TARGET-ADAPTERS.md#reproduction-attempt)).
 The harness writes only the operator's two decisions into the synthesis inputs, as
 `user_widened` with their intents: the output floor and the transfer cap. `protocol-synthesis.mjs`

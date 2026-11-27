@@ -170,6 +170,30 @@ for (const mutation of ['source identity', 'source key', 'call', 'nested', 'sign
   });
 }
 
+test('testnet funding that fails or reads back late is tried again, and says why when it gives up', async (t) => {
+  let fetches = 0;
+  let failing = true;
+  const { network } = networkFixture(t, (server) => {
+    const original = server.getAccount;
+    server.getAccount = async (address) => { if (failing) throw new Error('account not found'); return original(address); };
+  }, { fetchImpl: async () => { fetches++; if (fetches === 1) throw new Error('friendbot unavailable'); return new Response('{}'); } });
+  await assert.rejects(() => network.fundPayer(), (error) => error.reason === 'payer_unfunded');
+  assert.equal(network.canSubmit, false);
+  // A later step tries again: Friendbot is asked once more, and the account now reads back.
+  failing = false;
+  await network.fundPayer();
+  assert.equal(network.canSubmit, true);
+  assert.equal(fetches, 2);
+  // An account that reads back only after a few tries is funded on the first call.
+  let lag = 2;
+  const late = networkFixture(t, (server) => {
+    const original = server.getAccount;
+    server.getAccount = async (address) => { if (lag-- > 0) throw new Error('not yet'); return original(address); };
+  });
+  await late.network.fundPayer();
+  assert.equal(late.network.canSubmit, true);
+});
+
 test('startup and reads never fund; wrong network prevents Friendbot and transaction submission', async (t) => {
   const { network, calls } = networkFixture(t, (server) => { server.getNetwork = async () => ({ passphrase: Networks.PUBLIC }); });
   assert.deepEqual(calls, []);

@@ -10,6 +10,7 @@ the reader it is mainly written for.
 - [SCOPING-DECISIONS.md](SCOPING-DECISIONS.md) — every decision that shapes a grant and what it means for safety.
 - [TRUST-BOUNDARIES.md](TRUST-BOUNDARIES.md) — what is guaranteed, who holds which key, where trust is checked.
 - [INCIDENT-RESPONSE.md](INCIDENT-RESPONSE.md) — what to do when something a grant relies on is revoked or compromised.
+- [PUBLISHING.md](PUBLISHING.md) — publish a generated policy under its Wasm hash, and check an installed one against its source.
 - [MCP-WALKTHROUGH.md](MCP-WALKTHROUGH.md) — the MCP server and Claude skill, and what each tool needs.
 - [WALKTHROUGH-SEP41.md](WALKTHROUGH-SEP41.md) — W2: a SEP-41 subscription with the reviewed spending limit.
 - [WALKTHROUGH-PROTOCOLS.md](WALKTHROUGH-PROTOCOLS.md) — W3: a bounded Soroswap swap, and W1: a Blend claim.
@@ -21,6 +22,7 @@ the reader it is mainly written for.
 - [AGENT-WALLET-HANDOFF.md](AGENT-WALLET-HANDOFF.md) — direct local delivery of a confirmed proposal from Claude to the wallet.
 - [INSTALL-ASSEMBLY.md](INSTALL-ASSEMBLY.md) — the unsigned install transaction and what a wallet must check before signing.
 - [LIVE-POLICY-CHECK.md](LIVE-POLICY-CHECK.md) — predicting one call against an installed rule.
+- [wire-contract.json](wire-contract.json) — every MCP tool's request and response JSON Schema and the `E_*` codes, as this tree serves them; TypeScript types for the install tools are in [`wallet/shared/install-wire.d.mts`](../wallet/shared/install-wire.d.mts).
 - [DRY-RUN-PREPARATION.md](DRY-RUN-PREPARATION.md) — the four dry-run layers and the report's acceptance fields.
 - [NATIVE-EXECUTION.md](NATIVE-EXECUTION.md) — the account-Wasm layer's native worker and `ozpb dry-run`.
 - [CAPTURED-TARGET-EXECUTION.md](CAPTURED-TARGET-EXECUTION.md) — the captured-target layer.
@@ -30,6 +32,7 @@ the reader it is mainly written for.
 ## Self-hosters and operators
 
 - [SELF-HOSTING.md](SELF-HOSTING.md) — run the MCP endpoint yourself for trusted clients.
+- [VERSIONING.md](VERSIONING.md) — what a release number promises, what counts as breaking, and the release gate.
 - [ISOLATED-BUILDS.md](ISOLATED-BUILDS.md) — disposable build workers on a separate host.
 - [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md) — which SDK, accounts and protocol versions each part pins, and why.
 - [PROTOCOL-30-VALIDATION.md](PROTOCOL-30-VALIDATION.md) — protocol 30 compatibility observations.
@@ -42,6 +45,7 @@ the reader it is mainly written for.
 ## Security auditors
 
 - [AUDIT-SCOPE.md](AUDIT-SCOPE.md) — the entry point: components, threat model, known limits, gates.
+- [AUDIT-REMEDIATION.md](AUDIT-REMEDIATION.md) — each audit finding's fix, regression test and status.
 - [MAINNET-GATES.md](MAINNET-GATES.md) — each acceptance gate before mainnet use, its status and the tests CI runs for it.
 - [../SECURITY.md](../SECURITY.md) — disclosure policy, and what is deliberately not claimed.
 - [architecture.md](architecture.md) — the full technical architecture and delivery plan.
@@ -49,6 +53,7 @@ the reader it is mainly written for.
 - [CANONICAL-HASHING.md](CANONICAL-HASHING.md) — the hash specification an independent implementation follows.
 - [RECORDING-EVIDENCE.md](RECORDING-EVIDENCE.md) — the recording format and what a recording hash does and does not prove.
 - [SECURITY-EXCEPTIONS.md](SECURITY-EXCEPTIONS.md) — advisories accepted temporarily, with their expiry.
+- [SAST-TRIAGE.md](SAST-TRIAGE.md) — each static-analysis finding: fixed, not exploitable (and why), or a false positive.
 - [TESTNET-EVIDENCE.md](TESTNET-EVIDENCE.md) — first-milestone testnet evidence.
 - [TESTNET-EVIDENCE-TRANCHE-2.md](TESTNET-EVIDENCE-TRANCHE-2.md) — second-milestone runs, and how to capture a new one.
 
@@ -62,7 +67,7 @@ the reader it is mainly written for.
 
 - [TRANCHE-1-VERIFICATION.md](TRANCHE-1-VERIFICATION.md) — reproduce the first milestone.
 - [TRANCHE-2-VERIFICATION.md](TRANCHE-2-VERIFICATION.md) — the second milestone's checks and evidence crosswalk.
-- [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md) — the third milestone's verification record (accepted deviations are recorded there).
+- [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md) — the third milestone's crosswalk: each contracted item, what this tree implements, what remains, and the owner's acceptance of deviations.
 
 ## Contributors
 
@@ -70,7 +75,7 @@ the reader it is mainly written for.
 - [EXTENDING.md](EXTENDING.md) — adding a constraint kind, a target adapter or a wallet integration.
 - [CHANGE-REVIEW-PLAN.md](CHANGE-REVIEW-PLAN.md) — how changes to evidence, authority and installation are reviewed.
 - [../CONTRIBUTING.md](../CONTRIBUTING.md) — DCO, gates, commit messages and documentation rules.
-- [release-notes/](release-notes/) — breaking changes, security fixes and additions per release.
+- [release-notes/](release-notes/) — breaking changes, security fixes and additions per release, classified by [VERSIONING.md](VERSIONING.md).
 
 [`examples/`](examples/) holds runnable inputs, and [`evidence/`](evidence/) the published run
 summaries the evidence records cite.

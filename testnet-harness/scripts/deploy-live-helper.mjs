@@ -467,7 +467,7 @@ async function main() {
       '--to', run.recipient, '--expect', 'permit', '--bundle', join(runDir, 'import-bundle.json')]);
     await runStep('synthesis-flow.mjs', ['--run-dir', runDir]);
     run = rpc.readJson(join(runDir, 'run.json'));
-    const spec = parseJsonExact(readFileSync(run.spec, 'utf8'));
+    const spec = parseJsonExact(readFileSync(rpc.runSpecPath(runDir, run), 'utf8'));
     const policyDir = join(runDir, 'policy');
     const manifest = parseJsonExact(readFileSync(join(policyDir, 'build-manifest.json'), 'utf8'));
     const policyWasm = readFileSync(join(policyDir, readdirWasm(policyDir)));

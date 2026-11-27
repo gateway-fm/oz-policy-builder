@@ -121,7 +121,7 @@ test('the adapter binding is labeled by who can sign the registry, not by where 
     writeFileSync(join(trust, 'roots.json'), JSON.stringify({ threshold: 1, keys }));
     writeFileSync(join(trust, 'registry.json'), '{}');
     Object.assign(f.env, { OZPB_SIGNED_REGISTRY_SNAPSHOT: join(trust, 'registry.json'),
-      OZPB_REGISTRY_ROOTS_FILE: join(trust, 'roots.json'), OZPB_REGISTRY_MIN_VERSION: '4' });
+      OZPB_REGISTRY_ROOTS_FILE: join(trust, 'roots.json'), OZPB_REGISTRY_MIN_VERSION: '6' });
     f.execute();
     assert.equal(JSON.parse(readFileSync(join(f.dir, 'protocol-pipeline.json'))).adapter.registry, label);
   }

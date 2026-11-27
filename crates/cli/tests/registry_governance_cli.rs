@@ -91,61 +91,75 @@ impl Custodians {
 
     /// Sign `snapshot` with the custodian's key file, into a detached signature.
     fn sign(&self, snapshot: &Path, id: &str, out: &Path) {
-        ok(
-            ozpb([
-                "registry".as_ref(),
-                "sign".as_ref(),
-                "--snapshot".as_ref(),
-                snapshot.as_os_str(),
-                "--key-id".as_ref(),
-                id.as_ref(),
-                "--key-file".as_ref(),
-                self.key(id).as_os_str(),
-                "--out".as_ref(),
-                out.as_os_str(),
-            ]),
-            "sign",
-        );
+        ok(self.sign_with_key_file(snapshot, id, out), "sign");
     }
 
-    /// Sign the printed root outside the CLI, as a device holding the key would, and hand the
-    /// signature in by hex.
+    fn sign_with_key_file(&self, snapshot: &Path, id: &str, out: &Path) -> Output {
+        ozpb([
+            "registry".as_ref(),
+            "sign".as_ref(),
+            "--snapshot".as_ref(),
+            snapshot.as_os_str(),
+            "--key-id".as_ref(),
+            id.as_ref(),
+            "--key-file".as_ref(),
+            self.key(id).as_os_str(),
+            "--out".as_ref(),
+            out.as_os_str(),
+        ])
+    }
+
     fn sign_externally(&self, snapshot: &Path, id: &str, out: &Path) {
+        let (printed, handed_in) = self.hand_in_device_signature(snapshot, id, out);
+        // A finished snapshot: nothing pending, and no warning beside the root.
+        assert_eq!(printed.summary["pending_review"], serde_json::json!([]));
+        assert!(printed.stderr.is_empty(), "{}", printed.stderr);
+        ok(handed_in, "external signature");
+    }
+
+    /// Print the root, sign it outside the CLI as a device holding the key would, and hand the
+    /// signature in by hex: what `--print-root` showed the custodian, and the hand-in's output.
+    fn hand_in_device_signature(&self, snapshot: &Path, id: &str, out: &Path) -> (Printed, Output) {
         use ed25519_dalek::Signer;
-        let printed = ok(
-            ozpb([
-                "registry".as_ref(),
-                "sign".as_ref(),
-                "--snapshot".as_ref(),
-                snapshot.as_os_str(),
-                "--print-root".as_ref(),
-            ]),
-            "print root",
-        );
-        let root = hex::decode(printed["root"].as_str().unwrap()).unwrap();
+        let output = ozpb([
+            "registry".as_ref(),
+            "sign".as_ref(),
+            "--snapshot".as_ref(),
+            snapshot.as_os_str(),
+            "--print-root".as_ref(),
+        ]);
+        let printed = Printed {
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            summary: ok(output, "print root"),
+        };
+        let root = hex::decode(printed.summary["root"].as_str().unwrap()).unwrap();
         let seed = std::fs::read_to_string(self.key(id)).unwrap();
         let seed = stellar_strkey::ed25519::PrivateKey::from_string(seed.trim()).unwrap();
         let key = ed25519_dalek::SigningKey::from_bytes(&seed.0);
         let signature = hex::encode(key.sign(&root).to_bytes());
         let public = hex::encode(key.verifying_key().to_bytes());
-        ok(
-            ozpb([
-                "registry",
-                "sign",
-                "--snapshot",
-                snapshot.to_str().unwrap(),
-                "--key-id",
-                id,
-                "--public-key",
-                &public,
-                "--signature",
-                &signature,
-                "--out",
-                out.to_str().unwrap(),
-            ]),
-            "external signature",
-        );
+        let handed_in = ozpb([
+            "registry",
+            "sign",
+            "--snapshot",
+            snapshot.to_str().unwrap(),
+            "--key-id",
+            id,
+            "--public-key",
+            &public,
+            "--signature",
+            &signature,
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+        (printed, handed_in)
     }
+}
+
+/// What `registry sign --print-root` showed: the summary on stdout and anything on stderr.
+struct Printed {
+    summary: serde_json::Value,
+    stderr: String,
 }
 
 fn combine(unsigned: &Path, signatures: &[&Path], roots: &Path, out: &Path) -> Output {
@@ -263,7 +277,9 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         assert!(!String::from_utf8_lossy(&output.stderr).contains(secret.trim()));
     }
 
-    // The draft as committed, with its review reference still pending, is not combined.
+    // The draft as committed, with its review reference still pending, is not signed — with a key
+    // file, or by handing in a device's signature — so the custodians learn of it before anyone's
+    // signature is spent on it, not at combine.
     let mut pending = committed_draft();
     pending.network_id = ozpb_domain::NetworkId::from_passphrase(TESTNET);
     pending.valid_from_unix = now() - 3_600;
@@ -272,19 +288,32 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
     write_json(&pending_path, &pending);
     let pending_a = work.path().join("pending.custodian-a.sig.json");
     let pending_c = work.path().join("pending.custodian-c.sig.json");
-    custodians.sign(&pending_path, "custodian-a", &pending_a);
-    custodians.sign(&pending_path, "custodian-c", &pending_c);
     refused(
-        &combine(
-            &pending_path,
-            &[&pending_a, &pending_c],
-            &roots,
-            &work.path().join("pending.signed.json"),
-        ),
-        "combine a draft with a pending review reference",
+        &custodians.sign_with_key_file(&pending_path, "custodian-a", &pending_a),
+        "sign a draft with a pending review reference",
         "pending review reference",
     );
-    // Signed some other way, it does not pass verify either.
+    // A device signs whatever root it is given before the hand-in can refuse, so the printed root
+    // itself names what is pending and warns that no signature over it is accepted.
+    let (printed, handed_in) =
+        custodians.hand_in_device_signature(&pending_path, "custodian-c", &pending_c);
+    let template = "template/policy-templates/scope@1";
+    assert_eq!(
+        printed.summary["pending_review"],
+        serde_json::json!([template])
+    );
+    assert!(
+        printed.stderr.contains("root for review only") && printed.stderr.contains(template),
+        "{}",
+        printed.stderr
+    );
+    refused(
+        &handed_in,
+        "hand in a device's signature over a draft with a pending review reference",
+        "pending review reference",
+    );
+    assert!(!pending_a.exists() && !pending_c.exists());
+    // Signed some other way, it is neither combined nor verified.
     let key = |id: &str| {
         let seed = std::fs::read_to_string(custodians.key(id)).unwrap();
         let seed = stellar_strkey::ed25519::PrivateKey::from_string(seed.trim()).unwrap();
@@ -301,6 +330,28 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         pending,
     )
     .unwrap();
+    for (id, path) in [("custodian-a", &pending_a), ("custodian-c", &pending_c)] {
+        write_json(
+            path,
+            &ozpb_registry::governance::DetachedSignature {
+                schema: ozpb_registry::governance::DETACHED_SIGNATURE_SCHEMA.to_string(),
+                key_id: id.to_string(),
+                public_key: hex::encode(key(id).verifying_key().to_bytes()),
+                root: ozpb_registry::snapshot_root(&signed_pending.snapshot).unwrap(),
+                signature: signed_pending.signatures[id].clone(),
+            },
+        );
+    }
+    refused(
+        &combine(
+            &pending_path,
+            &[&pending_a, &pending_c],
+            &roots,
+            &work.path().join("pending.signed.json"),
+        ),
+        "combine a draft with a pending review reference",
+        "pending review reference",
+    );
     let signed_pending_path = work.path().join("pending.signed.json");
     write_json(&signed_pending_path, &signed_pending);
     refused(
@@ -500,6 +551,10 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
             expected,
         );
     }
+    // A flag the parser cannot take is a usage error, exit 2: no status, nothing was checked.
+    let output = monitor(&checkpoint_v1_path, &["--expiry-window-days", "fourteen"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
     let head_path = work.path().join("checkpoint-v2.json");
     write_json(&head_path, &head);
     let output = monitor(&head_path, &[]);
@@ -665,8 +720,8 @@ fn a_production_shaped_testnet_registry_runs_end_to_end() {
         "E_REGISTRY_SIGNATURE",
     );
 
-    // 9. Revoking the template family is the revocation that reaches a generated policy: a
-    //    consumer watching the family hears of it (exit 6), and synthesis refuses the family.
+    // 9. Revoking the template family reaches every generated policy built from it: a consumer
+    //    watching the family hears of it (exit 6), and synthesis refuses the family.
     let family = "policy-templates/scope@1";
     let changes_v4 = work.path().join("changes-v4.json");
     write_json(
@@ -752,6 +807,10 @@ fn the_committed_mainnet_log_awaits_its_key_ceremony() {
     );
     assert_eq!(printed["version"], "1");
     assert_eq!(
+        printed["pending_review"],
+        serde_json::json!(["template/policy-templates/scope@1"])
+    );
+    assert_eq!(
         printed["network_id"],
         ozpb_domain::NetworkId::from_passphrase(MAINNET).0.to_hex()
     );
@@ -800,5 +859,72 @@ fn the_committed_mainnet_log_awaits_its_key_ceremony() {
         ]),
         "replay of an unsigned log",
         "no signed snapshot",
+    );
+}
+
+/// `--min-version` is a floor whichever checkpoint `verify` checks against. A checkpoint older
+/// than the floor — the roots file's own, or one given with `--checkpoint` — is the combination
+/// every consumer refuses (`E_REGISTRY_ROLLBACK` before any read), so the gate before distribution
+/// refuses it too, instead of ignoring the floor and printing a checkpoint no consumer accepts.
+#[test]
+fn verify_refuses_a_checkpoint_older_than_the_floor() {
+    let examples = repo().join("docs/examples");
+    let signed = examples.join("registry.signed.json");
+    let roots = examples.join("registry-roots.json");
+    let work = tempfile::tempdir().unwrap();
+    let verify = |roots: &Path, extra: &[&str]| {
+        let mut args: Vec<String> = [
+            "registry",
+            "verify",
+            "--signed",
+            signed.to_str().unwrap(),
+            "--registry-roots",
+            roots.to_str().unwrap(),
+            "--network",
+            TESTNET,
+        ]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+        args.extend(extra.iter().map(|arg| arg.to_string()));
+        ozpb(args)
+    };
+    let checkpoint = ok(verify(&roots, &[]), "verify the development snapshot");
+    let version: u64 = checkpoint["version"].as_str().unwrap().parse().unwrap();
+    let checkpoint_path = work.path().join("checkpoint.json");
+    write_json(&checkpoint_path, &checkpoint);
+    let mut pinned: serde_json::Value = read(&roots);
+    pinned["checkpoint"] = checkpoint.clone();
+    let pinned_path = work.path().join("roots-with-checkpoint.json");
+    write_json(&pinned_path, &pinned);
+
+    let above = (version + 1).to_string();
+    refused(
+        &verify(&pinned_path, &["--min-version", &above]),
+        "verify under a roots checkpoint older than the floor",
+        "E_REGISTRY_ROLLBACK",
+    );
+    refused(
+        &verify(
+            &roots,
+            &[
+                "--checkpoint",
+                checkpoint_path.to_str().unwrap(),
+                "--min-version",
+                &above,
+            ],
+        ),
+        "verify against a given checkpoint older than the floor",
+        "E_REGISTRY_ROLLBACK",
+    );
+    // Control: at the checkpoint's own version the floor admits it, so the refusals above are the
+    // floor's and not the checkpoint's.
+    let at = version.to_string();
+    assert_eq!(
+        ok(
+            verify(&pinned_path, &["--min-version", &at]),
+            "floor at the checkpoint"
+        ),
+        checkpoint
     );
 }

@@ -97,6 +97,11 @@ export class WalletController {
   #capability(name) {
     if (this.#state.status?.capabilities?.[name] !== true) throw refused();
   }
+  /**
+   * The session's funding model, as the backend reports it (mainnet always is operator-funded): the
+   * consents name the delegate key's holder by it, so the browser derives them with the backend's.
+   */
+  #operatorFunded(status = this.#state.status) { return status?.feePayer?.ownerFunded === true; }
   #bindings() {
     return { specHash: this.#state.artifact?.specHash, wasmHash: this.#state.artifact?.wasmHash,
       bindingSetHash: this.#state.deployment?.bindingSetHash };
@@ -442,7 +447,7 @@ export class WalletController {
       if (capabilities?.accountCheck !== true && capabilities?.liveCheck !== true) throw refused();
       const result = await this.#request('create-delegate', {});
       if (!HASH.test(result?.capabilityId) || !/^G[A-Z2-7]{55}$/.test(result.address ?? '')) throw refused();
-      // On mainnet the backend reports whether the delegate's account exists; the owner funds it.
+      // Where the wallet creates no delegate account (mainnet), the backend reports whether it exists; the owner funds it.
       const account = result.account && typeof result.account.exists === 'boolean'
         ? { exists: result.account.exists, minimumStroops: String(result.account.minimumStroops) } : null;
       this.#set({ delegate: { capabilityId: result.capabilityId, address: result.address, ...(account ? { account } : {}) } });
@@ -489,7 +494,7 @@ export class WalletController {
       const cases = this.#validators.liveCases({ approval: review.approval, spec: artifact.spec, helper: inputs.helper,
         policyCodeHash: inputs.policyCodeHash, expectedRuleId: inputs.expectedRuleId,
         signatureExpirationLedger: inputs.signatureExpirationLedger });
-      const display = this.#validators.consentDisplay(cases, { currentLedger: inputs.currentLedger });
+      const display = this.#validators.consentDisplay(cases, { currentLedger: inputs.currentLedger, operatorFunded: this.#operatorFunded() });
       const statementSha256 = this.#validators.statementHash(display);
       if (statementSha256 !== result.live.statementSha256 || JSON.stringify(display) !== JSON.stringify(result.live.display)) throw refused();
       const consentLedgers = display.signature_expiration_ledger - LIVE_CONSENT_MIN_LEDGERS - inputs.currentLedger;
@@ -568,7 +573,7 @@ export class WalletController {
         const checked = this.#validators.validateAssembly({ approval: review.approval,
           assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr, limits: result.limits });
         const display = this.#validators.installConsent({ approval: review.approval, checked, spec: artifact.spec,
-          maxFeeStroops: status.maxFeeStroops, ruleId: this.#ruleId(review.verification) });
+          maxFeeStroops: status.maxFeeStroops, ruleId: this.#ruleId(review.verification), operatorFunded: this.#operatorFunded(status) });
         if (JSON.stringify(display) !== JSON.stringify(result.display)) throw refused();
         this.#set({ installPreview: { action: result.action, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
           limits: result.limits, display }, windows: this.#windows('install', this.#window(started, result.action)) });
@@ -598,7 +603,7 @@ export class WalletController {
       const checked = this.#validators.validateAssembly({ approval: review.approval, assembly: installPreview.assembly,
         ownerRuleXdr: installPreview.ownerRuleXdr, limits: installPreview.limits });
       const display = this.#validators.installConsent({ approval: review.approval, checked, spec: artifact.spec,
-        maxFeeStroops: status.maxFeeStroops, ruleId: this.#ruleId(review.verification) });
+        maxFeeStroops: status.maxFeeStroops, ruleId: this.#ruleId(review.verification), operatorFunded: this.#operatorFunded(status) });
       if (JSON.stringify(display) !== JSON.stringify(installPreview.display)) throw refused();
       const signedAuthEntriesXdr = await this.#sign({ approval: review.approval, checked });
       const signed = await this.#validators.validateSignedAuthorization({ approval: review.approval,
@@ -613,8 +618,14 @@ export class WalletController {
       } catch (error) {
         // A confirmed transaction the backend could not verify, or whose response was lost, is still
         // listed there: the status read adopts it, so that it can be seen and removed. The attempt
-        // cannot be repeated, so its reason is not passed on.
-        await this.#statusWhenFree();
+        // cannot be repeated, so its reason is not passed on. Unless nothing left: the fee payer refused
+        // before signing (it cannot pay, a cap), and the backend offers installation again. Then the
+        // review is kept, the reason passed on, and a new entry follows once this one has expired.
+        const refreshed = (await this.#statusWhenFree()) !== null;
+        if (refreshed && this.#state.status?.capabilities?.install === true && !this.#confirmed(display.grant.rule_id)) {
+          this.#set({ installAttempted: false, installRuleId: null, installOwner: null, review });
+          throw error;
+        }
         throw refused();
       }
       await this.#status().catch(() => {});
@@ -841,20 +852,22 @@ export class WalletController {
       const { wallet, accountRules } = this.#state;
       const listed = accountRules?.rules?.find((rule) => rule.id === ruleId);
       const owner = accountRules?.rules?.find((rule) => rule.owner);
-      // Only a grant-shaped rule is offered; the validators check its bytes again (shared/revoke.mjs isGrantRule).
+      // Only a grant-shaped rule is offered; the validators check its bytes again (shared/revoke.mjs isGrantRule),
+      // against the policies the listed rules bind, derived here from their bytes rather than the backend's `grant`.
       if (!wallet || !listed || listed.owner || !listed.grant || !owner) throw refused();
       const status = await this.#status();
       const started = this.#started();
       const result = await this.#request('prepare-earlier-revoke', { wallet, ruleId });
       if (!HASH.test(result?.action?.id ?? '') || result.ruleXdr !== listed.xdr || result.limits?.maxFeeStroops !== status.maxFeeStroops) throw refused();
       const approval = this.#validators.reviewRemoval({ wallet, ownerRuleId: owner.id, ownerRuleXdr: result.ownerRuleXdr,
-        networkId: this.#pins.networkId, installation: { account: wallet.contractId, ruleId, transactionHash: null, ruleXdr: listed.xdr } });
+        networkId: this.#pins.networkId, installation: { account: wallet.contractId, ruleId, transactionHash: null, ruleXdr: listed.xdr },
+        listedRules: accountRules.rules });
       const checked = this.#validators.validateRemovalAssembly({ approval, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
         limits: result.limits });
       const display = this.#validators.revokeConsent({ approval, checked, maxFeeStroops: status.maxFeeStroops });
       if (JSON.stringify(display) !== JSON.stringify(result.display)) throw refused();
       this.#set({ earlierRevokePreview: { action: result.action, assembly: result.assembly, ownerRuleXdr: result.ownerRuleXdr,
-        ownerRuleId: owner.id, ruleId, ruleXdr: listed.xdr, limits: result.limits, display },
+        ownerRuleId: owner.id, ruleId, ruleXdr: listed.xdr, listedRules: approval.listedRules, limits: result.limits, display },
       windows: this.#windows('earlierRevoke', this.#window(started, result.action)) });
     });
   }
@@ -868,7 +881,8 @@ export class WalletController {
       if (!open) throw expired();
       const approval = this.#validators.reviewRemoval({ wallet, ownerRuleId: preview.ownerRuleId, ownerRuleXdr: preview.ownerRuleXdr,
         networkId: this.#pins.networkId,
-        installation: { account: wallet.contractId, ruleId: preview.ruleId, transactionHash: null, ruleXdr: preview.ruleXdr } });
+        installation: { account: wallet.contractId, ruleId: preview.ruleId, transactionHash: null, ruleXdr: preview.ruleXdr },
+        listedRules: preview.listedRules });
       const checked = this.#validators.validateRemovalAssembly({ approval, assembly: preview.assembly, ownerRuleXdr: preview.ownerRuleXdr,
         limits: preview.limits });
       if (JSON.stringify(this.#validators.revokeConsent({ approval, checked, maxFeeStroops: status.maxFeeStroops }))

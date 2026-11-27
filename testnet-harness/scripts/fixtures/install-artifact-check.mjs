@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import vm from 'node:vm';
 import * as sdk from '@stellar/stellar-sdk';
 import { cliSpecHash } from '../check-runner.mjs';
+import { runSpecPath } from '../rpc.mjs';
 
 const mode = process.argv[2];
 const sourceUrl = new URL('../install.mjs', import.meta.url);
@@ -61,7 +62,7 @@ try {
   const rpc = {
     NETWORK_PASSPHRASE: sdk.Networks.TESTNET, POLICY_WASM_UPLOAD_FEE: 150_000_000n,
     args: () => opts,
-    readJson: (path) => JSON.parse(readFileSync(path, 'utf8')),
+    readJson: (path) => JSON.parse(readFileSync(path, 'utf8')), runSpecPath,
     loadKey: () => { keyReads++; return {}; },
     log: () => {},
     assertTestnet: async () => { reachedNetwork = true; throw new Error('STOP_BEFORE_NETWORK'); },
@@ -72,7 +73,7 @@ try {
     ...process.env,
     // Only the authority runner's configuration sees these values. It must never execute.
     OZPB_BIN: 'unused-authority-runner', OZPB_REGISTRY_ROOTS_FILE: 'unused-roots',
-    OZPB_REGISTRY_MIN_VERSION: '1', OZPB_RPC_SOURCES_FILE: 'unused-sources',
+    OZPB_REGISTRY_MIN_VERSION: '6', OZPB_RPC_SOURCES_FILE: 'unused-sources',
     OZPB_SIGNED_REGISTRY_SNAPSHOT: join(dir, 'registry.json'),
   } } });
   const module = new vm.SourceTextModule(source, { context });
