@@ -10,6 +10,7 @@ import { DelegateCapabilities } from '../server/native-execution.mjs';
 import { deploymentFixture } from './actions-fixture.mjs';
 import { RECIPIENT } from './captured-execution-fixture.mjs';
 import { denialSimulation, permitChanges, permitSimulation, withProbe } from './live-enforcement-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 
 export const HELPER = StrKey.encodeContract(Buffer.alloc(32, 0x4c));
 export const START_LEDGER = 1000;
@@ -59,16 +60,16 @@ export async function passkeySign({ privateKey, wallet, ownerRuleId, ownerEntryX
  * `entries` the envelope's authorization entries and `P` the identities to build with.
  */
 export async function liveReviewed({ maxCalls = 1, amount = '1000000', respond, helperState, policyHash, readiness, nextId = 1, live = { helper: HELPER },
-  ledger = START_LEDGER, liveUntil = ledger + 100_000, onSimulate = () => {}, native = null, intentChange = () => {} } = {}) {
+  ledger = START_LEDGER, liveUntil = ledger + 100_000, onSimulate = () => {}, native = null, intentChange = () => {}, network = {}, priorAuthorizationExpiry } = {}) {
   const keys = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
   const publicKey = Buffer.from(await webcrypto.subtle.exportKey('raw', keys.publicKey)).toString('hex');
-  const delegates = new CountingCapabilities();
+  const delegates = new CountingCapabilities(WALLET_NETWORKS.testnet);
   const f = deploymentFixture((d) => {
     d.f.wallet.publicKey = publicKey;
     d.f.intent.authority.verdict.authority_list[0].requirement.signers[0].public_key = publicKey;
     d.f.ownerRuleXdr = d.f.ruleXdr();
     intentChange(d.f.intent);
-  }, { live, delegates, native });
+  }, { live, delegates, native, network, priorAuthorizationExpiry });
   const delegate = await f.actions['create-delegate']({});
   const grantSigners = [{ kind: 'delegated', address: delegate.address }];
   f.f.intent.delegate_signers = grantSigners;

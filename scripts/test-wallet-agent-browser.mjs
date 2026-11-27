@@ -4,19 +4,22 @@ import { createHash } from 'node:crypto';
 import { chromium } from '../testnet-harness/browser/node_modules/playwright/index.mjs';
 import { AgentHandoff } from '../wallet/server/agent-handoff.mjs';
 import { createWalletActions } from '../wallet/server/actions.mjs';
+import { TESTNET_FEES } from '../wallet/server/network.mjs';
+import { WALLET_NETWORKS } from '../wallet/shared/networks.mjs';
 import { proposalFixture } from '../wallet/tests/proposal-fixture.mjs';
 
 const origin = process.argv[2] ?? 'http://localhost:3000';
 if (!/^http:\/\/localhost:[0-9]{1,5}$/.test(origin)) throw new Error('Expected a localhost UI origin');
 const channel = process.env.OZPB_BROWSER_CHANNEL;
 if (channel && !['chrome', 'chromium'].includes(channel)) throw new Error('Unsupported browser channel');
-const f = proposalFixture(), handoff = new AgentHandoff(), calls = [];
+const f = proposalFixture(), handoff = new AgentHandoff({ network: WALLET_NETWORKS.testnet }), calls = [];
 const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'b'.repeat(64) };
 let imports = 0, reads = 0;
 const actions = createWalletActions({ handoff, session: {}, native: {},
-  delegates: { create: () => delegate, check: (cap, address) => {
+  delegates: { available: true, create: () => delegate, check: (cap, address) => {
     assert.equal(cap, delegate.capabilityId); assert.equal(address, delegate.address);
-  } }, network: { ensureDelegateAccount: async () => {}, assertTestnet: async () => { reads++; },
+  } }, network: { profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0',
+    ensureDelegateAccount: async () => {}, assertNetwork: async () => { reads++; },
     requireInstance: async () => { reads++; }, latestLedger: async () => 123 },
   toolchain: { record: async () => { imports++; return f.record; }, generate: async () => f.artifact } });
 const allowed = new Set(['status', 'create-delegate', 'pair-agent', 'agent-inbox', 'review-agent-proposal',

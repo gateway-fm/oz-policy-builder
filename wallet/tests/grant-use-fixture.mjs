@@ -3,9 +3,10 @@
 // two entries, and the RPC's raw enforce-mode responses to it (a refusal by the policy's call cap,
 // or a permit).
 import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, StrKey, TransactionBuilder, hash, nativeToScVal, xdr } from '@stellar/stellar-sdk';
-import { NETWORK_ID } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { createUseCapability } from '../server/live-signing.mjs';
 import { diagnostic, errorEvent, fnCall, signaturePayload } from './live-enforcement-fixture.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const sym = (s) => xdr.ScVal.scvSymbol(s);
 const u32 = (n) => xdr.ScVal.scvU32(n);
@@ -31,7 +32,7 @@ export function useIntent(change = {}) {
 export function useEntries({ key, intent }, nonce = '777') {
   const capability = createUseCapability(key, { network_id: intent.network_id, account: intent.account, recipient: intent.recipient,
     expected_rule_id: intent.rule_id, amount: intent.amount, signature_expiration_ledger: intent.signature_expiration_ledger,
-    read_ledger: intent.signature_expiration_ledger - 20 });
+    read_ledger: intent.signature_expiration_ledger - 20 }, WALLET_NETWORKS.testnet);
   const signed = capability.authorizeTransfer({ network_id: intent.network_id, account: intent.account, asset: SAC, recipient: intent.recipient,
     amount: intent.amount, expected_rule_id: intent.rule_id, nonce, signature_expiration_ledger: intent.signature_expiration_ledger });
   return [signed.transferEntryXdr, signed.delegateEntryXdr].map((entry) => xdr.SorobanAuthorizationEntry.fromXDR(entry, 'base64'));

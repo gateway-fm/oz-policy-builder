@@ -63,9 +63,24 @@ deliberately **not** claimed here, and are documented as boundaries rather than 
   (`--http`) server the number of builds running at once. It is not a multi-tenant sandbox
   and is not offered as one.
 - The library and the MCP server never sign, submit, or deploy, and hold no account, owner or
-  fee-payer keys. The demo script, the testnet harness and the local wallet backend do, on
-  testnet only, with disposable keys they generate; the wallet's owner signs with the user's
-  own passkey.
+  fee-payer keys. The demo script, the testnet harness and the local wallet backend do on
+  testnet, with disposable keys they generate, the wallet's automation delegate included. In a
+  mainnet session, and in a testnet session the operator configures with its own fee payer key
+  to rehearse one, the local wallet backend generates no signing key and holds two the operator
+  supplies, each read at startup from a 0600 file the operator owns and kept in process memory:
+  - The operator's fee payer key (`feePayerKeyPath`), used only as the source and fee payer of
+    the backend's transactions, within per-transaction and session fee caps; it is never
+    printed, returned or journaled, and never a signer on an account.
+  - The agent's own key (`delegateKeyPath`), the delegate the grant names. Installing a grant
+    requires it: the account-Wasm, captured-target and live checks, three of the four layers
+    installation requires, sign as the delegate. The live check's delegate signature is a real
+    authorization on the session's network until its expiry, 12 ledgers after the check is prepared; with the
+    owner's signature it is a submittable transfer, so installation waits until that ledger has
+    passed. Without the file the wallet holds no delegate key and installation stays closed
+    (`delegate_key_unavailable`). Whoever can read that file, or the backend's memory, holds the
+    agent's key.
+
+  The wallet's owner signs with the user's own passkey.
 - `ozpb dry-run` holds the spec delegate's key, read only from a
   0600 file owned by the caller, never from an argument or the environment, and cleared on a
   best-effort basis when the run ends (a moved value can leave a stack copy). It signs only the
@@ -107,7 +122,9 @@ development registry version 6 revokes the earlier v0.7.2 build. The revocation 
 version 6 is the floor: versions 1 to 5 still recognize the old build, and a caller can supply
 its own signed snapshot, so operators must set `OZPB_REGISTRY_MIN_VERSION=6` (the CLI's
 `--registry-min-version 6`, the wallet's `registryMinimumVersion: 6`) or persist a version-6
-checkpoint. The shipped configurations and documented commands do. Accounts created on testnet
+checkpoint. The shipped configurations and documented commands do. This floor is the
+development registry's: a mainnet operator pins the production registry, whose own chain starts at
+version 1 and whose genesis already revokes the 0.7.2 build, and sets that registry's floor. Accounts created on testnet
 from the old code, including by the harness, the demo and the wallet, are then refused and are
 not upgraded in place: recreate them from the current code. Execution and the wallet accept only
 the pinned code whatever the floor. Details are in

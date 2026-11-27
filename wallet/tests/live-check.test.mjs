@@ -10,6 +10,24 @@ import { denialSimulation, permitChanges, permitSimulation, withProbe } from './
 const layerOf = (result) => result.verification.layers.find((layer) => layer.layer === 'live_enforcement');
 const base64Entries = (text) => /AAAA[A-Za-z0-9+/]{200,}/.test(text);
 
+test('a restarted wallet waits past prior expiry on both the clock and live snapshot before releasing an entry', async () => {
+  const f = await liveReviewed({ priorAuthorizationExpiry: () => START_LEDGER });
+  const input = { reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId };
+  await assert.rejects(() => f.actions['prepare-live'](input), { reason: 'signatures_still_valid' });
+
+  f.state.ledger++;
+  f.state.readLedger = START_LEDGER;
+  const consent = ({ action, statementSha256 }) => f.actions['consent-live']({ id: action.id, statementSha256 });
+  const stale = await f.actions['prepare-live'](input);
+  await assert.rejects(() => consent(stale.live), { reason: 'signatures_still_valid' });
+  assert.equal(f.records.length, 0);
+
+  f.state.readLedger = f.state.ledger;
+  const fresh = await f.actions['prepare-live'](input);
+  assert.ok((await consent(fresh.live)).ownerEntryXdr);
+  assert.equal(f.records.length, 1);
+});
+
 test('without a configured helper, the live layer is not offered', async () => {
   const { actions } = setup();
   assert.equal((await actions.status({})).capabilities.liveCheck, false);
@@ -228,6 +246,29 @@ test('the browser and backend derive the same statement; it binds the expiry, th
   assert.equal(HELPER, inputs.helper);
 });
 
+test('an operator-funded testnet session\'s live statement and evidence name the agent\'s key from the operator\'s file', async () => {
+  const { MAINNET_FEE_DEFAULTS } = await import('../server/config.mjs');
+  const f = await liveReviewed({ network: { operatorFunded: true, fees: MAINNET_FEE_DEFAULTS,
+    uploadCost: async () => ({ resourceFeeStroops: '5000', feeStroops: '5100', ledger: START_LEDGER }) } });
+  const { prepared, input } = await consented(f);
+  const display = prepared.live.display;
+  assert.equal(display.network, 'testnet');
+  assert.equal(display.labels[3], 'delegate_is_agent_key_from_operator_file');
+  assert.match(display.warning, /the agent's own key/);
+  // The browser derives the same statement from the session's funding model, which the status reports.
+  assert.equal((await f.actions.status({})).feePayer.ownerFunded, true);
+  const review = await f.actions.review({ deploymentId: f.deployed.deploymentId, wallet: f.f.wallet });
+  const { reviewIntent } = await import('../shared/approval.mjs');
+  const inputs = prepared.live.inputs;
+  const cases = liveCases({ approval: reviewIntent(review), spec: f.artifact.spec, helper: inputs.helper, policyCodeHash: inputs.policyCodeHash,
+    expectedRuleId: inputs.expectedRuleId, signatureExpirationLedger: inputs.signatureExpirationLedger });
+  assert.equal(statementHash(consentDisplay(cases, { currentLedger: inputs.currentLedger, operatorFunded: true })), prepared.live.statementSha256);
+  const live = layerOf(await f.actions['run-live'](input));
+  assert.equal(live.status, 'passed', JSON.stringify(live));
+  assert.equal(live.evidence.delegate, 'agent_key_from_operator_file');
+  assert.equal(live.evidence.labels[3], 'delegate_is_agent_key_from_operator_file');
+});
+
 test('the wallet pins the helper hash the real-Wasm host tests assert', async () => {
   const { readFileSync } = await import('node:fs');
   const source = readFileSync(new URL('../../execution-runtime/tests/atomic_helper.rs', import.meta.url), 'utf8');
@@ -243,6 +284,36 @@ test('a policy decision is never masked as unavailable by the other case needing
   const live = layerOf(await f.actions['run-live'](input));
   assert.equal(live.status, 'failed', 'a permitted adjacent amount is the candidate\'s own wrong decision');
   assert.deepEqual(live.evidence.cases.map((c) => c.outcome), ['failed', 'permit']);
+});
+
+test('a policy decision is never masked as unavailable by the other case returning no diagnostic events', async () => {
+  // stellar-rpc 30.0.1 without --preflight-enable-debug: no events, and a denial's host error alone.
+  const silentPermit = (entries, P) => withProbe(P, () => permitSimulation(permitChanges(entries), { entries, events: [] }));
+  const silentDenial = (entries, P) => ({ ...withProbe(P, () => denialSimulation(entries)), error: 'HostError: Error(Auth, InvalidAction)', events: [] });
+  const adjacentPermitted = (entries, P) => withProbe({ ...P, permitAmount: 1000001n },
+    () => permitSimulation(permitChanges(entries, { amount: 1000001n }), { entries, amount: 1000001n }));
+  const run = async (respond) => {
+    const f = await liveReviewed({ respond });
+    const { input } = await consented(f);
+    return layerOf(await f.actions['run-live'](input));
+  };
+  const masked = await run((kind, entries, P) => (kind === 'permit' ? silentPermit(entries, P) : adjacentPermitted(entries, P)));
+  assert.equal(masked.status, 'failed', 'a permitted adjacent amount is the candidate\'s own wrong decision');
+  assert.deepEqual(masked.evidence.cases.map((c) => [c.outcome, c.reason]),
+    [['failed', 'no_diagnostic_events'], ['permit', 'candidate_permitted']]);
+  // Unjudgeable beside the expected outcome, beside a response needing restoration, or both
+  // unjudgeable: the endpoint, not the candidate.
+  const restoring = (response) => ({ ...response, restorePreamble: { minResourceFee: '1' } });
+  for (const respond of [(kind, entries, P) => (kind === 'permit' ? silentPermit(entries, P) : null),
+    (kind, entries, P) => (kind === 'permit' ? null : silentDenial(entries, P)),
+    (kind, entries, P) => (kind === 'permit' ? silentPermit(entries, P) : silentDenial(entries, P)),
+    (kind, entries, P) => (kind === 'permit' ? silentPermit(entries, P) : restoring(withProbe(P, () => denialSimulation(entries)))),
+    (kind, entries, P) => (kind === 'permit'
+      ? restoring(withProbe(P, () => permitSimulation(permitChanges(entries), { entries }))) : silentDenial(entries, P))]) {
+    const live = await run(respond);
+    assert.equal(live.status, 'unavailable', JSON.stringify(live));
+    assert.match(live.detail, /no diagnostic events/);
+  }
 });
 
 test('a candidate missing on testnet is unavailable, not a failed candidate', async () => {

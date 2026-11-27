@@ -62,6 +62,7 @@ impl PolicyBuilderServer {
     ) -> Result<Json<AssembleInstallTransactionOutput>, CallToolResult> {
         let (trust, source, rpc_url, deadline, slot) =
             self.authority_setup(&input.intent_request, 0)?;
+        let text = self.rpc_error_text();
         let work_ct = ct.child_token();
         let build_config = cancel::build_config(&self.build_config, &work_ct);
         let reads = work_ct.clone();
@@ -84,7 +85,7 @@ impl PolicyBuilderServer {
                 &source.network_passphrase,
                 &request,
             )
-            .map_err(crate::rpc_tool_err)?;
+            .map_err(|error| crate::rpc_tool_err(error, text))?;
             ozpb_toolkit::install_assembly_output(&input, intent, observed)
         });
         Ok(Json(finish(work, deadline, &ct, &work_ct).await?))
@@ -137,7 +138,9 @@ impl PolicyBuilderServer {
                        RPC source) and, only when it returns no refusal and nothing unresolved, \
                        returns the exact add_context_rule arguments derived from the grant its \
                        authority_commitment covers, with that answer attached. A refusal or an \
-                       unresolved item is an error carrying every finding. Never says an account \
+                       unresolved item is an error carrying every finding. A rule that requires \
+                       its target's code has it read too, and other code there is refused \
+                       (E_TARGET_CODE_CHANGED). Never says an account \
                        is safe, never \
                        assembles, signs or submits: the user's wallet recomputes the check, \
                        matches every listed owner to the user's own keys or trusted identities, \

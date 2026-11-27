@@ -23,6 +23,8 @@ class EvidenceGateTests(unittest.TestCase):
         self.bin = self.root / "bin"
         self.scripts.mkdir()
         self.bin.mkdir()
+        # Release mode runs the range suite from the contracts workspace.
+        (self.root / "contracts").mkdir()
         for name in ["check-phase2-evidence.sh", "verify-phase2.sh",
                      "check-unmodeled-acknowledged.py", "layer1-unmodeled-acknowledged.txt"]:
             shutil.copyfile(SCRIPTS / name, self.scripts / name)
@@ -159,7 +161,7 @@ if mode != "missing":
         (self.bin / "stellar").unlink()
         result = self.run_gate("verify-phase2.sh", ("--offline",))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("W3 Wasm build not run", result.stdout)
+        self.assertIn("W3 and range Wasm builds not run", result.stdout)
         self.assertIn("not full Tranche 2 acceptance", result.stdout)
         self.assertIn("phase1 --offline", (self.root / "calls.log").read_text())
         self.assert_wrapper_runs_evidence(result)
@@ -185,6 +187,9 @@ if mode != "missing":
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("AUTOMATED PHASE 2 CHECKS PASSED (release mode)", result.stdout)
         self.assertIn("not full Tranche 2 acceptance", result.stdout)
+        # The compiled range policy's suite runs in the contracts workspace, against the Wasm.
+        range_calls = (self.root / "contracts" / "calls.log").read_text()
+        self.assertIn("--test range_generated_suite -- --ignored", range_calls)
         self.assert_wrapper_runs_evidence(result)
 
 

@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mjs';
 import { proposalFixture } from './proposal-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 test('proposal binds the exact permission while displaying different acquisition hashes', () => {
   const f = proposalFixture();
-  const parsed = parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId);
+  const parsed = parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId, NETWORK_ID);
   const receipt = checkProposalArtifact(parsed, f.artifact);
   assert.equal(receipt.agentSpecHash, f.proposal.spec_hash);
   assert.equal(receipt.walletSpecHash, f.artifact.specHash);
@@ -14,7 +16,7 @@ test('proposal binds the exact permission while displaying different acquisition
   assert.equal(Object.isFrozen(parsed.expected_grant.rules[0]), true);
   const reverse = (x) => Array.isArray(x) ? x.map(reverse) : x && typeof x === 'object'
     ? Object.fromEntries(Object.entries(x).reverse().map(([k, v]) => [k, reverse(v)])) : x;
-  checkProposalArtifact(parseGrantProposal(JSON.stringify(reverse(f.proposal)), f.wallet.contractId), f.artifact);
+  checkProposalArtifact(parseGrantProposal(JSON.stringify(reverse(f.proposal)), f.wallet.contractId, NETWORK_ID), f.artifact);
 });
 
 const badProposals = {
@@ -44,13 +46,13 @@ const badProposals = {
 };
 for (const [name, change] of Object.entries(badProposals)) test(`proposal refuses ${name}`, () => {
   const f = proposalFixture(); change(f.proposal);
-  assert.throws(() => parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId), /proposal refused/);
+  assert.throws(() => parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId, NETWORK_ID), /proposal refused/);
 });
 
 test('artifact identifiers must be strings, without regex coercion', () => {
   for (const field of ['artifactId', 'specHash', 'wasmHash']) {
     const f = proposalFixture(); f.artifact[field] = [f.artifact[field]];
-    assert.throws(() => checkProposalArtifact(parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId), f.artifact), /proposal refused/);
+    assert.throws(() => checkProposalArtifact(parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId, NETWORK_ID), f.artifact), /proposal refused/);
   }
 });
 
@@ -61,7 +63,7 @@ test('proposal JSON refuses duplicate and reserved keys, lossy numbers, oversize
     text.replace('"max_calls":2', '"max_calls":2.0000000000000001'),
     text.replace('"max_calls":2', '"max_calls":2e0'), text.replace('"max_calls":2', '"__proto__":{},"max_calls":2'),
     ' '.repeat(17000) + text, '{"x":'.repeat(40) + '0' + '}'.repeat(40), text + '{}']) {
-    assert.throws(() => parseGrantProposal(raw, f.wallet.contractId), /proposal refused/);
+    assert.throws(() => parseGrantProposal(raw, f.wallet.contractId, NETWORK_ID), /proposal refused/);
   }
 });
 
@@ -79,5 +81,5 @@ for (const [name, change] of Object.entries({
   code: s => { s.rules[0].context.target_code_hash = { hash: 'f'.repeat(64) }; },
 })) test(`independent regeneration refuses changed ${name}`, () => {
   const f = proposalFixture(); change(f.spec);
-  assert.throws(() => checkProposalArtifact(parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId), f.artifact), /proposal refused/);
+  assert.throws(() => checkProposalArtifact(parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId, NETWORK_ID), f.artifact), /proposal refused/);
 });

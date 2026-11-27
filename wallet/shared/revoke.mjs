@@ -2,12 +2,13 @@
 // installed and recorded. Validated in the browser and the backend before the passkey is asked.
 import { Buffer } from 'buffer';
 import { Address, StrKey, hash, scValToNative, xdr } from '#wallet-stellar-sdk';
-import { NETWORK_ID, freezeCopy } from './approval.mjs';
+import { freezeCopy } from './approval.mjs';
+import { networkById, stroopsText } from './networks.mjs';
 import { decodeEnvelope, resources } from './assembly.mjs';
 import { directAddressCredentials } from './auth-credentials.mjs';
 import { decodeBase64Url } from './base64url.mjs';
 
-/** The fee payer's ceiling for the removal, as for every other wallet transaction. */
+/** The fee payer's ceiling for the removal, as for every other wallet transaction; a mainnet session's lower cap applies below it. */
 export const REMOVAL_MAX_FEE_STROOPS = 10_000_000;
 const refuse = () => { throw new Error('wallet revocation refused; refresh and review again'); };
 const integer = (n, min = 1, max = 0xffffffff) => Number.isSafeInteger(n) && n >= min && n <= max;
@@ -35,6 +36,59 @@ function ownerRuleMatches(wallet, ownerRuleId, raw) {
     || !(context === '["Default"]' || context === JSON.stringify(['CallContract', wallet.contractId]))) refuse();
 }
 
+/** A stored rule as the consent shows it, read from its exact bytes, which must be rule `ruleId`. */
+function decodeRule(raw, ruleId) {
+  if (typeof raw !== 'string' || raw.length > 32 * 1024) refuse();
+  const val = xdr.ScVal.fromXDR(raw, 'base64');
+  if (val.toXDR('base64') !== raw) refuse();
+  const rule = scValToNative(val);
+  if (rule?.id !== ruleId || !Array.isArray(rule.signers) || !Array.isArray(rule.policies)) refuse();
+  return { id: rule.id, name: rule.name, context: rule.context_type, validUntil: rule.valid_until ?? null,
+    signers: rule.signers.map((signer) => signer.map((part) => (part instanceof Uint8Array ? Buffer.from(part).toString('hex') : part))),
+    policies: rule.policies, signerIds: rule.signer_ids, policyIds: rule.policy_ids };
+}
+
+/** Whether a stored rule names this wallet's passkey among its signers, as the owner rule does. */
+function namesOwner(wallet, raw) {
+  const key = Buffer.concat([Buffer.from(wallet.publicKey, 'hex'), decodeBase64Url(wallet.credentialId)]).toString('hex');
+  const rule = scValToNative(xdr.ScVal.fromXDR(raw, 'base64'));
+  return (rule?.signers ?? []).some((signer) => signer?.[0] === 'External' && (signer[2] instanceof Uint8Array)
+    && Buffer.from(signer[2]).toString('hex').startsWith(Buffer.from(wallet.publicKey, 'hex').toString('hex')))
+    || JSON.stringify(rule?.signers ?? []).includes(key);
+}
+
+/** Whether `raw` is this wallet's owner rule `ruleId`: its passkey alone, no policies, on the account. */
+export function isOwnerRule(wallet, ruleId, raw) {
+  try { ownerRuleMatches(wallet, ruleId, raw); return true; } catch { return false; }
+}
+
+/**
+ * Whether stored rule `ruleId` is shaped as a grant: one contract's calls (a `CallContract` context)
+ * limited by at least one policy, as every grant this wallet installs is. A `Default`-context rule,
+ * or one with no policy, may be the owner's recovery or admin access, so an earlier session's
+ * removal never takes it; nor a rule on the account's own calls (`account`, a guardian or recovery
+ * rule) or on a policy contract, its own or one bound in another of the account's rules
+ * (`boundPolicies`): a grant this wallet installs never targets either.
+ */
+export function isGrantRule(raw, ruleId, { account = null, boundPolicies = [] } = {}) {
+  try {
+    const rule = decodeRule(raw, ruleId);
+    const target = Array.isArray(rule.context) && rule.context[0] === 'CallContract' ? rule.context[1] : null;
+    return StrKey.isValidContract(target) && rule.policies.length >= 1 && target !== account
+      && !rule.policies.includes(target) && !boundPolicies.includes(target);
+  } catch { return false; }
+}
+
+/** A stored rule as the page shows it (`decodeRule`), or null when its bytes are not rule `ruleId`. */
+export function ruleSummary(raw, ruleId) {
+  try { return freezeCopy(decodeRule(raw, ruleId)); } catch { return null; }
+}
+
+/** Every policy contract the account's listed rules (`{ id, xdr }` each) bind, for `isGrantRule`. */
+export function boundPolicies(rules) {
+  return rules.flatMap(({ id, xdr: raw }) => ruleSummary(raw, id)?.policies ?? []);
+}
+
 /** A current changed rule is shown explicitly and committed alongside the removal identity. */
 export function removalConfigurationChange(change, ruleId) {
   if (!change || Object.keys(change).sort().join(',') !== 'observedRuleXdr,recordedRuleXdr') refuse();
@@ -54,25 +108,47 @@ export function removalConfigurationChange(change, ruleId) {
 }
 
 /**
- * The removal approval: the wallet's own owner rule and passkey, bound to one recorded
- * installation (account, rule ID, installation transaction). Its commitment is what the
- * signature checks compare.
+ * The removal approval: the wallet's own owner rule and passkey, bound to one installation: a
+ * recorded one (account, rule ID, installation transaction), or one installed by an earlier session,
+ * which this backend holds no record of (account, rule ID and the rule's exact current bytes, read
+ * from the account, with no transaction). Such a rule must be shaped as a grant (`isGrantRule`), and
+ * must not be the owner rule nor name the owner's passkey. Whether it targets a policy another rule
+ * binds is derived here from `listedRules`, the account's rules as listed (`{ id, xdr }` each, this
+ * one among them with the same bytes), which the approval carries so every later review derives it
+ * again; a listing is not part of the commitment. Its commitment is what the signature checks compare.
  */
-export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation, configurationChange = null }) {
+export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation, configurationChange = null, listedRules = null,
+  networkId }) {
   try {
+    const network = networkById(networkId);
     if (!StrKey.isValidContract(wallet.contractId) || !StrKey.isValidContract(wallet.verifier)
       || !/^04[0-9a-f]{128}$/.test(wallet.publicKey) || !/^[A-Za-z0-9_-]{1,1366}$/.test(wallet.credentialId)
       || !integer(ownerRuleId, 0) || installation.account !== wallet.contractId || !integer(installation.ruleId)
-      || installation.ruleId === ownerRuleId || !/^[0-9a-f]{64}$/.test(installation.transactionHash)) refuse();
+      || installation.ruleId === ownerRuleId) refuse();
+    const earlier = installation.transactionHash === null;
+    if (earlier ? typeof installation.ruleXdr !== 'string' || configurationChange !== null || !Array.isArray(listedRules)
+      : !/^[0-9a-f]{64}$/.test(installation.transactionHash) || installation.ruleXdr !== undefined || listedRules !== null) refuse();
     ownerRuleMatches(wallet, ownerRuleId, ownerRuleXdr);
+    const listed = earlier ? listedRules.map(({ id, xdr: raw }) => ({ id, xdr: raw })) : null;
+    if (earlier) {
+      decodeRule(installation.ruleXdr, installation.ruleId);
+      // A listed rule that does not decode could bind the target unseen: the listing is refused.
+      if (listed.some(({ id, xdr: raw }) => !integer(id, 0) || ruleSummary(raw, id) === null)
+        || new Set(listed.map(({ id }) => id)).size !== listed.length
+        || listed.find(({ id }) => id === installation.ruleId)?.xdr !== installation.ruleXdr
+        || installation.ruleXdr === ownerRuleXdr || namesOwner(wallet, installation.ruleXdr)
+        || !isGrantRule(installation.ruleXdr, installation.ruleId, { account: wallet.contractId, boundPolicies: boundPolicies(listed) })) refuse();
+    }
     const changed = configurationChange === null ? null : removalConfigurationChange(configurationChange, installation.ruleId);
-    const preimage = ['wallet-revoke/v1', NETWORK_ID, wallet.contractId, wallet.verifier,
+    const preimage = ['wallet-revoke/v1', network.networkId, wallet.contractId, wallet.verifier,
       wallet.publicKey, wallet.credentialId, ownerRuleId, ownerRuleXdr, installation.ruleId, installation.transactionHash];
+    if (earlier) preimage.push('earlier_session', Buffer.from(hash(Buffer.from(installation.ruleXdr))).toString('hex'));
     if (changed) preimage.push('configuration_drift', changed.recordedRuleHash, changed.observedRuleHash);
     const commitment = Buffer.from(hash(Buffer.from(JSON.stringify(preimage)))).toString('hex');
-    return freezeCopy({ wallet, ownerRuleId, ownerRuleXdr, commitment,
-      ...(changed ? { configurationChange } : {}),
-      installation: { account: installation.account, ruleId: installation.ruleId, transactionHash: installation.transactionHash } });
+    return freezeCopy({ networkId: network.networkId, wallet, ownerRuleId, ownerRuleXdr, commitment,
+      ...(changed ? { configurationChange } : {}), ...(earlier ? { listedRules: listed } : {}),
+      installation: { account: installation.account, ruleId: installation.ruleId, transactionHash: installation.transactionHash,
+        ...(earlier ? { ruleXdr: installation.ruleXdr } : {}) } });
   } catch { return refuse(); }
 }
 
@@ -80,12 +156,13 @@ export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation,
 export function validateRemovalAssembly({ approval, assembly, ownerRuleXdr, limits }) {
   try {
     const fresh = reviewRemoval({ wallet: approval.wallet, ownerRuleId: approval.ownerRuleId, ownerRuleXdr,
-      installation: approval.installation, configurationChange: approval.configurationChange ?? null });
-    if (fresh.commitment !== approval.commitment || limits.maxFeeStroops !== REMOVAL_MAX_FEE_STROOPS || !sequence(limits.sourceSequence)
+      installation: approval.installation, configurationChange: approval.configurationChange ?? null,
+      listedRules: approval.listedRules ?? null, networkId: approval.networkId });
+    if (fresh.commitment !== approval.commitment || !integer(limits.maxFeeStroops, 100, REMOVAL_MAX_FEE_STROOPS) || !sequence(limits.sourceSequence)
       || !integer(limits.validityLedgers, 2, 120) || !integer(limits.currentLedger) || !integer(limits.ownerReadLedger)
       || limits.currentLedger < limits.ownerReadLedger || limits.currentLedger - limits.ownerReadLedger > 12
       || !StrKey.isValidEd25519PublicKey(limits.feePayer)
-      || assembly.network_id !== NETWORK_ID || assembly.fee_payer !== limits.feePayer
+      || assembly.network_id !== approval.networkId || assembly.fee_payer !== limits.feePayer
       || assembly.source_sequence !== limits.sourceSequence || assembly.simulation_auth_mode !== 'record'
       || assembly.evidence_trust !== 'rpc_reported' || assembly.state_dependent !== true || assembly.writes_committed !== false
       || !['none', 'automatic_within_invocation'].includes(assembly.restoration)) refuse();
@@ -101,7 +178,7 @@ export function validateRemovalAssembly({ approval, assembly, ownerRuleXdr, limi
     if (Buffer.from(hash(envelope.toXDR())).toString('hex') !== assembly.envelope_xdr_sha256 || envelope.v1.signatures.length) refuse();
     const tx = envelope.v1.tx;
     if (tx.sourceAccount.type !== 'keyTypeEd25519' || StrKey.encodeEd25519PublicKey(tx.sourceAccount.ed25519.value) !== limits.feePayer
-      || tx.seqNum !== BigInt(limits.sourceSequence) + 1n || !integer(tx.fee, 100, REMOVAL_MAX_FEE_STROOPS)
+      || tx.seqNum !== BigInt(limits.sourceSequence) + 1n || !integer(tx.fee, 100, limits.maxFeeStroops)
       || tx.fee !== assembly.fee_stroops || tx.memo.type !== 'memoNone' || tx.cond.type !== 'precondV2') refuse();
     const cond = tx.cond.v2;
     if ((cond.timeBounds && (cond.timeBounds.minTime !== 0n || cond.timeBounds.maxTime !== 0n))
@@ -130,16 +207,21 @@ export function validateRemovalAssembly({ approval, assembly, ownerRuleXdr, limi
 export function revokeConsent({ approval, checked, maxFeeStroops }) {
   try {
     const { account, ruleId, transactionHash } = approval.installation;
+    const network = networkById(approval.networkId);
     if (checked.authorityCommitment !== approval.commitment || checked.ownerRuleId !== approval.ownerRuleId
-      || maxFeeStroops !== REMOVAL_MAX_FEE_STROOPS || !integer(checked.feeStroops, 100, maxFeeStroops)) refuse();
+      || !integer(maxFeeStroops, 100, REMOVAL_MAX_FEE_STROOPS) || !integer(checked.feeStroops, 100, maxFeeStroops)) refuse();
     return freezeCopy({
-      schema: 'ozpb-revoke-consent/v1', network: 'testnet', network_id: NETWORK_ID,
+      schema: 'ozpb-revoke-consent/v1', network: network.name, network_id: network.networkId,
       owner_signs: { contract: account, function: 'remove_context_rule', args: [ruleId], context_rule_ids: [approval.ownerRuleId] },
-      installation: { rule_id: ruleId, transaction: transactionHash },
+      installation: { rule_id: ruleId, transaction: transactionHash,
+        // Installed by an earlier session: no record here, so the rule's current configuration is what is shown and removed.
+        ...(approval.installation.ruleXdr ? { from_earlier_session: true, rule: decodeRule(approval.installation.ruleXdr, ruleId) } : {}) },
       ...(approval.configurationChange ? { configurationChange: removalConfigurationChange(approval.configurationChange, ruleId) } : {}),
       transaction: { min_ledger: checked.minLedger, max_ledger: checked.maxLedger, signature_expiration_ledger: checked.expirationLedger },
-      fee: { prepared_fee_stroops: checked.feeStroops, max_fee_stroops: maxFeeStroops, paid_by: 'the local testnet fee payer, not this account' },
+      fee: { prepared_fee_stroops: checked.feeStroops, max_fee_stroops: maxFeeStroops, paid_by: `the local ${network.name} fee payer, not this account` },
       warning: (approval.configurationChange ? 'The rule configuration differs from the installation record. The current configuration shown below will be removed. ' : '')
+        + (approval.installation.ruleXdr ? 'This rule was not installed by this wallet session, which holds no record of it: the '
+          + 'configuration shown below is the rule as the account stores it now, and that is what will be removed. ' : '')
         + `Your passkey signs one transaction that removes rule ${ruleId} from account ${account}. Once it is confirmed, the `
         + 'delegate can no longer act under that rule. The account removes the rule\'s policies on a best effort basis: the wallet '
         + 'reports separately whether the policy still holds installation state for the rule. Your signature is valid until ledger '

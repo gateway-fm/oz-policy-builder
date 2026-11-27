@@ -349,6 +349,12 @@ fn constraint_satisfied(c: &Constraint, ctx: &EvalContext, value: &ArgValue) -> 
         (Constraint::GeI128 { min }, ArgValue::I128(actual)) => {
             min.parse::<i128>().map(|m| *actual >= m).unwrap_or(false)
         }
+        (Constraint::RangeI128 { min, max }, ArgValue::I128(actual)) => {
+            match (min.parse::<i128>(), max.parse::<i128>()) {
+                (Ok(low), Ok(high)) => low <= *actual && *actual <= high,
+                _ => false,
+            }
+        }
         (Constraint::EqScval { xdr_base64 }, actual) => exact_xdr_matches(xdr_base64, actual),
         // Explicit maximal widening: any value at this position satisfies (arity is
         // enforced by the caller before indexing).
@@ -721,6 +727,37 @@ mod tests {
             // high-blast-radius acknowledgement; bounds accept any radius.
             blast_radius: ozpb_domain::BlastRadius::High,
         }
+    }
+
+    #[test]
+    fn range_i128_permits_both_ends_and_denies_either_side() {
+        let v = spec_with_amount_constraint(
+            Constraint::RangeI128 {
+                min: "0".to_string(),
+                max: AMOUNT.to_string(),
+            },
+            widened(),
+        );
+        for (amount, expect_permit) in [
+            (i128::MIN, false),  // the whole negative half the floor closes
+            (-1, false),         // just below the floor (guards >= vs >)
+            (0, true),           // at the floor
+            (AMOUNT, true),      // at the cap (guards <= vs <)
+            (AMOUNT + 1, false), // just above the cap
+            (i128::MAX, false),
+        ] {
+            let mut inv = original_invocation();
+            inv.args[2] = ArgValue::I128(amount);
+            assert_eq!(
+                matches!(evaluate(&v, &base_ctx(), &inv), Verdict::Permit),
+                expect_permit,
+                "RangeI128 at {amount}"
+            );
+        }
+        // A range is numeric: an address at that position never satisfies it.
+        let mut inv = original_invocation();
+        inv.args[2] = ArgValue::Address(fixtures::MERCHANT.to_string());
+        assert!(!matches!(evaluate(&v, &base_ctx(), &inv), Verdict::Permit));
     }
 
     #[test]

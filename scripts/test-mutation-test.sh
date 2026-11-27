@@ -26,6 +26,7 @@ if [ "${1:-}" = mutants ] && [ "${2:-}" = --version ]; then
     exit 0
 fi
 printf '%s\n' "$*" >>"$(dirname "$0")/calls"
+printf '%s\n' "${FAKE_OUTPUT:-}"
 exit "${FAKE_STATUS:-0}"
 EOF
 printf '#!/bin/sh\nexit 0\n' >"$shim_dir/cargo-mutants"
@@ -57,7 +58,10 @@ expect() {
 calls() { cat "$shim_dir/calls" 2>/dev/null; }
 
 out="$(run 27.1.0 0)"; code=$?
-expect "a clean run passes" 0 "every mutant" "$code" "$out"
+expect "a clean run passes" 0 "every viable mutant" "$code" "$out"
+out="$(FAKE_OUTPUT='No mutants found under the active filters' run 27.1.0 0)"; code=$?
+expect "a full run with no viable mutants fails" 1 "no viable mutants were exercised" "$code" "$out"
+
 if ! calls | grep -q -- "--timeout 120"; then
     echo "FAIL: the default run does not bound each mutant with --timeout 120"
     fail=1
@@ -116,7 +120,7 @@ git_in_repo commit -q -m "change a core"
 rm -f "$shim_dir/calls"
 out="$(PATH="$shim_dir:$PATH" FAKE_VERSION=27.1.0 FAKE_STATUS=0 \
     bash "$repo_dir/scripts/mutation-test.sh" --in-diff base 2>&1)"; code=$?
-expect "a pull request changing a core is mutated" 0 "every mutant" "$code" "$out"
+expect "a pull request changing a core is mutated" 0 "every viable mutant" "$code" "$out"
 for flag in "--in-diff " "--timeout 120"; do
     if ! calls | grep -q -- "$flag"; then
         echo "FAIL: the pull-request run did not pass '$flag' to cargo-mutants: $(calls)"
