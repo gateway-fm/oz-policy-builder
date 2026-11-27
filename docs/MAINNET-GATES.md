@@ -79,12 +79,15 @@ names at least one check that runs in CI.
   script requires each test by name, in a `for test in` list whose body checks
   `grep -qx "test $test ... ok"` or in a `grep -qx 'test NAME ... ok'` check, after running that
   test's binary. The loop or check must sit at the top level of the script, unindented, and stop
-  it with a non-zero status when the test is missing: under `set -e`, or through `|| exit` or a
+  it with a non-zero status when the test is missing through `|| exit` or a
   `|| { ... }` block ending in `exit N`, N from 1 to 255. A loop body holds only that check. A
   check used as an `if` or `!` condition, or followed by `|| true`, `|| :`, `&&` or a pipe,
   requires nothing.
-- `ci-step` is a command a workflow runs; the checker verifies that a line of the workflow, not
-  a comment, still runs it. Which job, trigger or condition runs it is not checked.
+- `ci-step` is a command in a workflow's `run:` step. The checker recognizes a direct command
+  or an exact line in a literal script. It requires the job and step to omit
+  `continue-on-error:` or set it to `false`, and to omit `if:` or use `always()`.
+  Verify that the step ran successfully in the workflow run. The checker does not
+  evaluate workflow triggers, shell control flow or shell exit behavior.
 
 ```bash
 bash scripts/check-mainnet-gates.sh               # every ci test

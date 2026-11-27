@@ -103,9 +103,9 @@ FILES = {
         "set -euo pipefail\n"
         "# delta_holds is named here only in a comment, which requires nothing.\n"
         "cargo test --test account_wasm_invariants -- --ignored\n"
-        "for test in delta_holds; do grep -qx \"test $test ... ok\" log; done\n"
+        "for test in delta_holds; do grep -qx \"test $test ... ok\" log || exit 1; done\n"
         "cargo test --test policy_prediction -- --ignored\n"
-        "for test in other_holds; do grep -qx \"test $test ... ok\" log; done\n"
+        "for test in other_holds; do grep -qx \"test $test ... ok\" log || exit 1; done\n"
     ),
     ".github/workflows/nightly-live.yml": (
         "jobs:\n  pinned:\n    steps:\n"
@@ -300,7 +300,7 @@ class FixtureCheckerTests(unittest.TestCase):
 
     RELEASE = "scripts/test-pinned-account-authorization.sh"
     ERREXIT = "set -euo pipefail\n"
-    DELTA_LOOP = 'for test in delta_holds; do grep -qx "test $test ... ok" log; done\n'
+    DELTA_LOOP = 'for test in delta_holds; do grep -qx "test $test ... ok" log || exit 1; done\n'
 
     def test_a_release_check_that_cannot_fail_the_script_requires_nothing(self):
         # Each case leaves delta_holds' name in place while letting the script finish green
@@ -338,9 +338,10 @@ class FixtureCheckerTests(unittest.TestCase):
              "inside an if"),
             (self.ERREXIT, "if false; then\n    for test in delta_holds; do\n"
              '        grep -qx "test $test ... ok" log || exit 1\n    done\nfi\n', "loop inside an if"),
-            ("", self.DELTA_LOOP, "no set -e"),
+            ("", self.DELTA_LOOP.replace(" || exit 1", ""), "no set -e"),
             ("", "grep -qx 'test delta_holds ... ok' log\n", "plain without set -e"),
-            (self.ERREXIT + "set +e\n", self.DELTA_LOOP, "set +e"),
+            ("set -e; set +e\n", self.DELTA_LOOP.replace(" || exit 1", ""), "inline set +e"),
+            (self.ERREXIT, self.DELTA_LOOP.replace(" || exit 1", ""), "implicit errexit"),
         ]
         for errexit, loop, name in cases:
             with self.subTest(case=name):
@@ -361,8 +362,6 @@ class FixtureCheckerTests(unittest.TestCase):
              "|| { ... exit 1 } across lines"),
             ("", "grep -qx 'test delta_holds ... ok' \\\n    log || {\n"
                  "    echo missing >&2\n    exit 1\n}\n", "plain check with a group"),
-            ("set -o errexit\n", self.DELTA_LOOP, "set -o errexit"),
-            (self.ERREXIT, "grep -qx 'test delta_holds ... ok' log\n", "plain under set -e"),
         ]
         for errexit, loop, name in cases:
             with self.subTest(case=name):
@@ -381,6 +380,27 @@ class FixtureCheckerTests(unittest.TestCase):
     def test_a_ci_step_the_workflow_does_not_run_fails(self):
         self.edit(".github/workflows/ci.yml", "      - run: bash scripts/test-something.sh\n", "")
         self.assert_red(self.run_checker(), "test-something.sh")
+
+    def test_ci_step_must_run_in_a_blocking_workflow_step(self):
+        command = "bash scripts/test-something.sh"
+        cases = [
+            f"      - env:\n          INPUT: |\n            {command}",
+            f"      - run: {command}\n" "        if: ${{ false }}",
+            f"      - run: {command}\n        continue-on-error: true",
+        ]
+        for step in cases:
+            with self.subTest(step=step):
+                self.setUp()
+                self.edit(".github/workflows/ci.yml", f"      - run: {command}", step)
+                self.assert_red(self.run_checker(), command)
+
+    def test_ci_step_must_run_in_a_blocking_job(self):
+        for setting in ("if: false", "continue-on-error: true"):
+            with self.subTest(setting=setting):
+                self.setUp()
+                self.edit(".github/workflows/ci.yml", "  harness:\n",
+                          f"  harness:\n    {setting}\n")
+                self.assert_red(self.run_checker(), "--part wallet")
 
     def test_ci_must_run_this_self_test(self):
         self.edit(".github/workflows/ci.yml", "      - run: python3 scripts/test-check-mainnet-gates.py\n", "")
