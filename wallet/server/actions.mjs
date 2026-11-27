@@ -625,16 +625,17 @@ export function createWalletActions({ session, toolchain, network, native = null
         // And the operator's account must be able to pay the upload, unless stored, and the policy's creation now, before consent.
         await network.payerCovers(uploadFee + BigInt(fees.maxFeeStroops));
       }
-      return { action: session.issue('deploy', { artifactId: input.artifactId }), summary: {
+      const uploadAllowed = codeStored !== true;
+      return { action: session.issue('deploy', { artifactId: input.artifactId, uploadAllowed }), summary: {
         specHash: artifact.specHash, wasmHash: artifact.wasmHash, maxFeeStroops: fees.maxFeeStroops,
         maxUploadFeeStroops: fees.maxUploadFeeStroops,
-        maxTotalFeeStroops: (codeStored ? 0 : fees.maxUploadFeeStroops) + fees.maxFeeStroops,
+        maxTotalFeeStroops: (uploadAllowed ? fees.maxUploadFeeStroops : 0) + fees.maxFeeStroops,
         uploadSimulatedFeeStroops, codeStored, sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops,
       } };
     },
     'confirm-deploy': async (input) => {
       exact(input, ['id']);
-      return session.consume(input.id, 'deploy', async ({ artifactId }) => {
+      return session.consume(input.id, 'deploy', async ({ artifactId, uploadAllowed }) => {
         if (attemptedArtifacts.has(artifactId)) refuse();
         attemptedArtifacts.add(artifactId);
         // Refused before anything left (no funded payer, a cap), the artifact may be deployed again. A
@@ -645,7 +646,8 @@ export function createWalletActions({ session, toolchain, network, native = null
           const held = toolchain.artifact(artifactId);
           const artifact = held.response;
           await network.fundPayer();
-          const stored = (await network.codePresent(artifact.wasmHash)).present;
+          const stored = (await network.codePresent(artifact.wasmHash)).present === true;
+          if (!stored && uploadAllowed !== true) throw because('deployment_quote_stale');
           const upload = stored ? null : await attempt.send(() => network.upload(Buffer.from(held.wasmBase64, 'base64'), artifact.wasmHash));
           const deployed = await attempt.send(() => network.create(artifact.wasmHash, [], 'deploy-policy'));
           const deploymentId = id();

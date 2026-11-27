@@ -669,6 +669,29 @@ operatorTest('a creation-only retry, once the code is stored, is previewed and c
   assert.equal(f.calls.filter((call) => call === 'upload').length, 1);
 });
 
+operatorTest('a creation-only confirmation cannot upload code that disappeared after its preview', async (_t, network) => {
+  let stored = true;
+  const f = deploymentFixture(({ network: walletNetwork }) => {
+    walletNetwork.codePresent = async () => ({ present: stored, ledger: 123456 });
+  }, { network: { profile: network, operatorFunded: true, fees: MAINNET_FEE_DEFAULTS, spentStroops: '0',
+    uploadCost: async () => ({ resourceFeeStroops: '100000000', feeStroops: '100000000', ledger: 100 }) } });
+  const original = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+  assert.equal(original.summary.codeStored, true);
+  assert.equal(original.summary.maxTotalFeeStroops, MAINNET_FEE_DEFAULTS.maxFeeStroops);
+  stored = false;
+  await assert.rejects(() => f.actions['confirm-deploy']({ id: original.action.id }), { reason: 'deployment_quote_stale' });
+  assert.ok(!f.calls.includes('upload') && !f.calls.includes('deploy-policy'));
+  assert.equal(f.network.spentStroops, '0');
+  await assert.rejects(() => f.actions['confirm-deploy']({ id: original.action.id }), /refused|unavailable/);
+
+  const refreshed = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+  assert.equal(refreshed.summary.codeStored, false);
+  assert.equal(refreshed.summary.maxTotalFeeStroops,
+    MAINNET_FEE_DEFAULTS.maxFeeStroops + MAINNET_FEE_DEFAULTS.maxUploadFeeStroops);
+  await f.actions['confirm-deploy']({ id: refreshed.action.id });
+  assert.deepEqual(f.calls.filter((call) => ['upload', 'deploy-policy'].includes(call)), ['upload', 'deploy-policy']);
+});
+
 operatorTest('the account preview is refused before consent while the operator account cannot pay one transaction', async (_t, network) => {
   for (const [spendable, refused] of [[9_999_999n, true], [10_000_000n, false]]) {
     const asked = [];

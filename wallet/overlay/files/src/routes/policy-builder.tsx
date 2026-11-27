@@ -67,6 +67,7 @@ const REFUSED: Record<string, string> = {
   busy: "the wallet backend is still finishing an earlier step. Wait a few seconds, then try again.",
   rpc_too_slow: "the RPC answered too slowly for this step to be done safely (its reads must fit within about a minute), so the backend stopped before submitting anything. Try again; if it keeps happening, the operator needs a faster RPC endpoint.",
   evidence_stale: "the checks are more than 30 minutes old. Run them again: section 4, then the live check, then install.",
+  deployment_quote_stale: "the policy code is no longer available. Preview the deployment again to review the upload and its fee. Nothing was signed or sent.",
   signatures_still_valid: "signatures this wallet released earlier, by the live check or an installation entry, are still valid. Wait until their ledger has passed, then try again.",
   replay_journal_unavailable: "the local wallet could not verify an earlier authorization journal. Inspect or restore it before signing again.",
   account_changed: "your account changed while signatures this wallet released were valid. Do not install; find out what changed first.",
@@ -405,6 +406,8 @@ function PolicyBuilder() {
   const busy = creating || state?.busy || !state?.status;
   // A prepared review is open until its window ends; the page re-reads the clock while any review is shown.
   const windows = state?.windows ?? {};
+  const deploymentSummary = object(state?.deployPreview?.summary);
+  const creationOnly = deploymentSummary.codeStored === true;
   const reviewing = Boolean(state?.accountPreview || state?.samplePreview || state?.deployPreview || state?.livePreview
     || state?.installPreview || state?.revokePreview || state?.replacementPreview || state?.earlierRevokePreview);
   const [now, setNow] = useState(() => performance.now());
@@ -693,13 +696,18 @@ function PolicyBuilder() {
           onClick={() => void run((value) => value.prepareDeploy(), "Preparing the deployment…", "Next: Confirm exact policy deployment.")}>Preview deployment</button>
         {state?.deployPreview && <>
           <ReviewWindow until={windows.deploy} now={now} />
+          <p className="text-sm">At most {xlm(deploymentSummary.maxTotalFeeStroops)} for {creationOnly
+            ? "creating the policy contract from code already on-chain"
+            : "uploading the policy code and creating the policy contract"}.</p>
           {object(state.deployPreview.summary).uploadSimulatedFeeStroops !== null && object(state.deployPreview.summary).uploadSimulatedFeeStroops !== undefined
             && <p className="text-sm">Uploading the policy code costs about {xlm(object(state.deployPreview.summary).uploadSimulatedFeeStroops)} (simulated),
               at most {xlm(object(state.deployPreview.summary).maxUploadFeeStroops)}; this session has spent {xlm(object(state.deployPreview.summary).spentStroops)} of
               {" "}{xlm(object(state.deployPreview.summary).sessionSpendCapStroops)}.</p>}
           <button className={button} disabled={busy || !open("deploy", state.deployPreview)}
-            onClick={() => void run((value) => value.confirmDeploy(), "Deploying the policy: uploading its code and creating it (about 15 s)…",
-              "Policy deployed. Next: section 4, Refresh authority and review exact grant.", ["Upload the policy code", "Deploy the policy contract"])}>Confirm exact policy deployment</button>
+            onClick={() => void run((value) => value.confirmDeploy(), creationOnly ? "Creating the policy contract…"
+              : "Deploying the policy: uploading its code and creating it (about 15 s)…",
+              "Policy deployed. Next: section 4, Refresh authority and review exact grant.",
+              creationOnly ? ["Deploy the policy contract"] : ["Upload the policy code", "Deploy the policy contract"])}>Confirm exact policy deployment</button>
           <Details title="Exact deployment"><Evidence title="Deployment consent" value={state.deployPreview} /></Details>
         </>}
         {state?.deployment && <p className="text-sm"><Badge tone="pass">Deployed</Badge> <span className="break-all">{label(state.deployment.policyAddress)}</span></p>}
