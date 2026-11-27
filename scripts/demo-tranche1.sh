@@ -51,7 +51,7 @@ cd "$(dirname "$0")/.."
 NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
 RPC_URL="${OZPB_RPC_URL:-https://rpc.testnet.stellar.gateway.fm}"
 # The pinned OpenZeppelin account example; see ozpb_domain::pinned_upstream for provenance.
-PINNED_ACCOUNT_WASM=a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289
+PINNED_ACCOUNT_WASM=203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f
 PINNED_SPENDING_LIMIT=4e67aa6ca226d3c16106ff2d95f3b44a8efabc2f2a7655683957e3553ed6a40c
 
 for tool in stellar cargo python3 curl; do
@@ -241,7 +241,7 @@ synthesize() {   # $1 = account record; prints the synthesis JSON on stdout
         --bundle "$WORK/03-recording.json" --selected-authorizer "$ACCOUNT" \
         --account "$1" \
         --signed-registry docs/examples/registry.signed.json \
-        --registry-roots docs/examples/registry-roots.json --registry-min-version 4 \
+        --registry-roots docs/examples/registry-roots.json --registry-min-version 6 \
         --decisions "$WORK/04-decisions.json" \
         --template-family policy-templates/scope@1 \
         --spending-limit-capability "$PINNED_SPENDING_LIMIT"

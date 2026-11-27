@@ -46,7 +46,7 @@ This establishes local account authorization behavior, not the target's effects 
 
 The runtime pins SDK 30.0.0-rc.1 and stable host 30.0.0 in its own lockfile, and rejects source
 protocol versions other than 30. Generated policies use SDK 28.0.0 and the stellar-accounts 0.8.0 policy interface.
-The recognized account Wasm remains the separately pinned 0.7.2 implementation.
+The recognized account Wasm remains the separately pinned 0.7.3 implementation.
 See [dependency migration](SOROBAN-DEPENDENCIES.md) for the compatibility boundary.
 Only canonical XDR crosses this boundary. A shared [ABI vector](examples/native-runtime-abi.json)
 is checked against both the actual SDK-28 policy/account-library types and the runtime's SDK-30 wire
@@ -188,7 +188,7 @@ prints one four-layer report ([report fields](DRY-RUN-PREPARATION.md#executed-la
 
 ```sh
 ozpb dry-run --request dry-run-request.json \
-  --registry-roots registry-roots.json --registry-min-version 3 --rpc-sources rpc-sources.json \
+  --registry-roots registry-roots.json --registry-min-version 6 --rpc-sources rpc-sources.json \
   --native-worker /abs/path/ozpb-execution-runtime \
   --delegate-key-file delegate.key --account-wasm pinned-account.wasm \
   --source-ledger ledger.json [--capture-request capture-request.json]

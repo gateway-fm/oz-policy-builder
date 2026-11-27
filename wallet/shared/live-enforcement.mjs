@@ -21,8 +21,9 @@
 //     for the new rule, the candidate's installation marker, its counter used once, and every
 //     entry's nonce;
 //   - a denial is the candidate policy's own `NoTupleMatched` (6) inside the asset's failed
-//     authentication of the account, in the printed log and in the structured events alike. A helper
-//     refusal (7001–7009) or an account error is a failed case;
+//     authentication of the account, in the structured events and, where the RPC prints the event
+//     log into the error (stellar-rpc 30.0.0 and earlier; 30.0.1 returns the host error alone), in
+//     that log too. A helper refusal (7001–7009) or an account error is a failed case;
 //   - either way the response's diagnostic events record exactly this envelope, in order: one helper
 //     call with the approved candidate, then the account's `__check_auth` calls for the envelope's two
 //     account entries, once each, with their signature payloads, signatures and contexts; from
@@ -34,8 +35,9 @@
 // Pure: no signing, no network, no clock. The result is state-dependent simulation evidence about
 // testnet at the simulation ledger, never a submitted transaction.
 import { Buffer } from 'buffer';
-import { Address, Asset, Networks, StrKey, buildAuthorizationEntryPreimage, hash, nativeToScVal, scValToNative, xdr } from '#wallet-stellar-sdk';
-import { NETWORK_ID, freezeCopy } from './approval.mjs';
+import { Address, StrKey, buildAuthorizationEntryPreimage, hash, nativeToScVal, scValToNative, xdr } from '#wallet-stellar-sdk';
+import { freezeCopy } from './approval.mjs';
+import { networkById } from './networks.mjs';
 import { decodeEnvelope, installCall, signerScVal } from './assembly.mjs';
 import { directAddressCredentials } from './auth-credentials.mjs';
 
@@ -43,10 +45,10 @@ import { directAddressCredentials } from './auth-credentials.mjs';
 export const HELPER_ERROR_CODES = Object.freeze([7001, 7002, 7003, 7004, 7005, 7006, 7007, 7008, 7009]);
 /** The generated policy's `NoTupleMatched`: the call is outside every allowed tuple. */
 export const POLICY_NO_TUPLE_MATCHED = 6;
-/** stellar-accounts 0.7.2 `MAX_NAME_SIZE`: the longest rule name `add_context_rule` accepts. */
+/** stellar-accounts 0.7.3 `MAX_NAME_SIZE`: the longest rule name `add_context_rule` accepts. */
 const MAX_RULE_NAME_BYTES = 20;
-/** The helper derives the native asset of the executing network itself; so does this module. */
-const NATIVE_ASSET = Asset.native().contractId(Networks.TESTNET);
+/** The helper derives the native asset of the executing network itself; so does this module, from the case's network. */
+const nativeAsset = (networkId) => networkById(networkId).nativeAsset;
 
 class Refusal extends Error {
   constructor(reason, detail, extra = {}) {
@@ -83,8 +85,8 @@ function installIntent(c) {
 }
 
 /**
- * The approved case, checked and frozen. The asset is not an input: it is the testnet native asset
- * contract, the only one the helper transfers. Every party must be distinct, the delegate a classic
+ * The approved case, checked and frozen. The asset is not an input: it is the native asset contract
+ * of the case's network (testnet or mainnet), the only one the helper transfers. Every party must be distinct, the delegate a classic
  * account, and the owner's signer something other than the delegate.
  */
 export function liveCase(intent) {
@@ -92,7 +94,7 @@ export function liveCase(intent) {
     const c = intent;
     const contract = (text) => typeof text === 'string' && StrKey.isValidContract(text);
     const classic = (text) => typeof text === 'string' && StrKey.isValidEd25519PublicKey(text);
-    if (!c || typeof c !== 'object' || c.network_id !== NETWORK_ID || ![c.helper, c.account, c.policy].every(contract)
+    if (!c || typeof c !== 'object' || !networkById(c.network_id) || ![c.helper, c.account, c.policy].every(contract)
       || !classic(c.delegate) || !(contract(c.recipient) || classic(c.recipient))
       || typeof c.policy_code_hash !== 'string' || !/^[0-9a-f]{64}$/.test(c.policy_code_hash)
       || typeof c.amount !== 'string' || !/^[1-9][0-9]{0,37}$/.test(c.amount) || BigInt(c.amount) >= (1n << 127n)
@@ -102,7 +104,7 @@ export function liveCase(intent) {
       // The account refuses longer names (stellar-accounts `MAX_NAME_SIZE`); the bound also keeps
       // the name, which the host prints verbatim in its event log, too short to imitate an event.
       || typeof c.rule_name !== 'string' || Buffer.byteLength(c.rule_name) > MAX_RULE_NAME_BYTES) refuseCase();
-    const parties = [c.helper, c.account, c.policy, c.delegate, c.recipient, NATIVE_ASSET];
+    const parties = [c.helper, c.account, c.policy, c.delegate, c.recipient, nativeAsset(c.network_id)];
     if (new Set(parties).size !== parties.length) refuseCase();
     // A delegated owner is a classic account: a contract signer would need entries of its own below
     // its `__check_auth` entry, and no such entry is accepted.
@@ -111,7 +113,7 @@ export function liveCase(intent) {
       : { kind: c.owner_signer?.kind, verifier: c.owner_signer?.verifier, key_hex: c.owner_signer?.key_hex };
     if (same(signerScVal(owner), signerScVal({ kind: 'delegated', address: c.delegate }))) refuseCase();
     const checked = {
-      network_id: c.network_id, helper: c.helper, account: c.account, asset: NATIVE_ASSET, policy: c.policy,
+      network_id: c.network_id, helper: c.helper, account: c.account, asset: nativeAsset(c.network_id), policy: c.policy,
       policy_code_hash: c.policy_code_hash, delegate: c.delegate, recipient: c.recipient, amount: c.amount,
       expected_rule_id: c.expected_rule_id, owner_rule_id: c.owner_rule_id, owner_signer: owner, rule_name: c.rule_name,
       valid_until_ledger: c.valid_until_ledger, signature_expiration_ledger: c.signature_expiration_ledger,
@@ -160,8 +162,8 @@ function authPayload(credentials) {
 }
 
 /** The `signature_payload` the host hands the account for an entry: the hash of its signature preimage. */
-function signaturePayload({ entry, credentials }) {
-  return sha256(buildAuthorizationEntryPreimage(entry, credentials.signatureExpirationLedger, Networks.TESTNET).toXDR());
+function signaturePayload({ entry, credentials, networkId }) {
+  return sha256(buildAuthorizationEntryPreimage(entry, credentials.signatureExpirationLedger, networkById(networkId).passphrase).toXDR());
 }
 
 /** What a delegated signer authorizes for an account entry: `sha256(payload || xdr(rule ids))`. */
@@ -196,7 +198,7 @@ function checkAuthorizations(c, entries) {
       fail('sub_invocations', 'an account authorization carries sub-invocations; the account checks every context of the tree, executed or not');
     }
     const { ruleIds, signers } = authPayload(credentials);
-    const record = { entry, credentials, ruleIds };
+    const record = { entry, credentials, ruleIds, networkId: c.network_id };
     if (signers.some((s) => same(s.key, owner))) {
       if (signers.length !== 1 || (c.owner_signer.kind === 'delegated') !== (signers[0].proof.length === 0)) {
         fail('owner_signers', 'the owner\'s authorization names other signers or carries the wrong proof');
@@ -329,7 +331,7 @@ function balanceDeltas(c, changes) {
 }
 
 /**
- * The account's registry entry for one signer or policy (stellar-accounts 0.7.2 `register_signer` /
+ * The account's registry entry for one signer or policy (stellar-accounts 0.7.3 `register_signer` /
  * `register_policy`): either new, with count 1 and its lookup entry, or an existing one counted once more.
  */
 function registration(c, changes, { data, lookup, field, id, value }) {
@@ -494,6 +496,72 @@ const callsInto = (events, contract, fn) => events.filter((e) => e.host && e.top
   && e.topics[1].type === 'scvBytes' && Buffer.from(e.topics[1].bytes.value).toString('hex') === contractHex(contract)
   && same(e.topics[2], sym(fn)));
 
+/**
+ * An answer with no diagnostic events, and no printed log to read instead, says nothing about the
+ * call: stellar-rpc 30.0.1 returns them only when the endpoint runs with `--preflight-enable-debug`.
+ * Named as such, so the operator fixes the endpoint rather than reading it as a verdict.
+ */
+function requireEvents(simulation) {
+  if (!Array.isArray(simulation.events) || !simulation.events.length) {
+    fail('no_diagnostic_events', 'the RPC returned no diagnostic events; stellar-rpc 30.0.1 returns them only with --preflight-enable-debug');
+  }
+}
+
+/**
+ * As `policyDenial`, from the structured diagnostic events: the code `policy` refused an authorization
+ * of `account` with, or null. The asset's one failed authentication of the account carries the code,
+ * the policy raised that same code, and every error the account raised, and every trap of its
+ * `__check_auth`, carries it too.
+ */
+function structuredDenial(events, asset, account, policy) {
+  const authError = errorVal(xdr.ScError.sceAuth(xdr.ScErrorCode.scecInvalidAction));
+  const failed = events.filter((e) => e.host && e.by === contractHex(asset) && e.topics.length === 2 && same(e.topics[0], sym('error'))
+    && same(e.topics[1], authError) && e.data.type === 'scvVec' && e.data.vec?.length === 3
+    && same(e.data.vec[0], xdr.ScVal.scvString('failed account authentication with error')) && same(e.data.vec[1], addressVal(account))
+    && e.data.vec[2].type === 'scvError' && e.data.vec[2].error.type === 'sceContract');
+  if (failed.length !== 1) return null;
+  const code = failed[0].data.vec[2].error.contractCode;
+  const expected = contractError(code);
+  if (!errorsBy(events, policy).some((e) => e.topics[1].error.contractCode === code
+    && same(e.data, vec([xdr.ScVal.scvString('failing with contract error'), u32(code)])))) return null;
+  const conflicting = events.some((e) => {
+    if (!e.host || e.by !== contractHex(account) || !e.topics.length) return false;
+    if (same(e.topics[0], sym('error'))) return e.topics.length !== 2 || !same(e.topics[1], expected);
+    const data = e.data.type === 'scvVec' ? e.data.vec ?? [] : [];
+    return same(e.topics[0], sym('log')) && data.length >= 2 && same(data[0], xdr.ScVal.scvString('VM call trapped with HostError'))
+      && same(data[1], sym('__check_auth')) && (data.length !== 3 || !same(data[2], expected));
+  });
+  return conflicting ? null : code;
+}
+
+/**
+ * The code the policy refused the account's authorization with, from wherever the RPC put the host's
+ * event log. stellar-rpc 30.0.0 and earlier print it into `error` after the host error and return the
+ * same events in `events`; 30.0.1 returns the host error alone ("Error strings no longer include the
+ * event log", its release notes) and the events only in `events`. The structured events decide; a
+ * printed log, where there is one, must show the same denial. `expectedCode` is the code this case
+ * needs: a printed log with another policy code is that decision (`policy_code`) before any event is
+ * read, as it always was. Anything else is `not_a_policy_denial`.
+ */
+function deniedWith(text, rawEvents, { asset, account, policy }, expectedCode, host) {
+  const printed = text.includes('\n') ? policyDenial(text, asset, account, policy) : undefined;
+  if (printed === null) fail('not_a_policy_denial', 'the printed log does not show the policy refusing the account\'s authorization', { host });
+  if (printed !== undefined && printed !== expectedCode) {
+    fail('policy_code', `the policy refused with ${printed}, not ${expectedCode}`, { code: printed, host });
+  }
+  if (!Array.isArray(rawEvents) || !rawEvents.length) {
+    if (printed !== undefined) fail('unbound_response', 'the simulation reported no diagnostic events, so nothing ties it to the envelope');
+    requireEvents({ events: rawEvents });
+  }
+  const events = responseEvents({ events: rawEvents });
+  const code = structuredDenial(events, asset, account, policy);
+  if (code === null || (printed !== undefined && code !== printed)) {
+    fail('not_a_policy_denial', 'the structured events do not show the policy refusing the account\'s authorization', { host });
+  }
+  if (code !== expectedCode) fail('policy_code', `the policy refused with ${code}, not ${expectedCode}`, { code, host });
+  return { code, events };
+}
+
 /** The `Vec<Context>` the host passes `__check_auth` for an entry without sub-invocations. */
 function authContexts(entry) {
   const fn = entry.rootInvocation.function.contractFn;
@@ -544,12 +612,7 @@ function denial(c, simulation, records) {
   if (text.split('\n')[0] !== 'HostError: Error(Auth, InvalidAction)') {
     fail('not_a_policy_denial', 'the top-level failure is not the transfer authentication failure', { host });
   }
-  const code = policyDenial(text, c.asset, c.account, c.policy);
-  if (code === null) fail('not_a_policy_denial', 'the candidate policy did not refuse the account\'s authorization', { host });
-  if (code !== POLICY_NO_TUPLE_MATCHED) {
-    fail('policy_code', `the candidate policy refused with ${code}, not NoTupleMatched (${POLICY_NO_TUPLE_MATCHED})`, { code, host });
-  }
-  if (!events) fail('unbound_response', 'the simulation reported no diagnostic events, so nothing ties it to the envelope');
+  const { code } = deniedWith(text, simulation.events, c, POLICY_NO_TUPLE_MATCHED, host);
   // Everything a failed simulation records was rolled back: an event from a successful call is
   // another response's.
   if (events.some((e) => e.ok)) fail('unbound_response', 'a denial\'s events include some from successful calls');
@@ -605,6 +668,7 @@ function permit(c, simulation, entries, records) {
     fail('unbound_response', 'the result does not echo exactly the envelope\'s authorization entries');
   }
   // Nothing in a successful simulation was rolled back: an event from a failed call is another response's.
+  requireEvents(simulation);
   const events = responseEvents(simulation);
   if (events.some((e) => !e.ok)) fail('unbound_response', 'a permit\'s events include some from failed calls');
   requireBinding(c, events, records);
@@ -652,7 +716,7 @@ export function validateLiveCase(input) {
 // again (fresh nonces) and simulated in enforce mode, never submitted. Its refusal counts only as
 // the generated policy's own `CallCountExceeded` (7), raised inside the account's authentication of
 // this envelope's transfer entry, under the same attribution rules as a live denial above: the
-// printed log and the structured events agree, every event comes from a failed call, the call is
+// structured events show it (and a printed log, where the RPC prints one, agrees), every event comes from a failed call, the call is
 // exactly the asset's `transfer` and the account's one recorded check is this entry's.
 
 /** The generated policy's `CallCountExceeded`: this installation has used every call it was granted. */
@@ -662,12 +726,14 @@ function useCase(intent) {
   const c = intent;
   const contract = (text) => typeof text === 'string' && StrKey.isValidContract(text);
   const classic = (text) => typeof text === 'string' && StrKey.isValidEd25519PublicKey(text);
-  if (!c || typeof c !== 'object' || c.network_id !== NETWORK_ID || !contract(c.account) || !contract(c.policy) || !classic(c.delegate)
+  let asset;
+  try { asset = nativeAsset(c?.network_id); } catch { fail('intent', 'the use names no network this wallet runs on'); }
+  if (!c || typeof c !== 'object' || !contract(c.account) || !contract(c.policy) || !classic(c.delegate)
     || !(contract(c.recipient) || classic(c.recipient)) || typeof c.amount !== 'string' || !/^[1-9][0-9]{0,37}$/.test(c.amount)
     || !integer(c.rule_id, 1, 0xffffffff) || !integer(c.signature_expiration_ledger, 1, 0xffffffff)
     || !integer(c.min_ledger, 1, c.signature_expiration_ledger)
-    || new Set([c.account, c.policy, c.delegate, c.recipient, NATIVE_ASSET]).size !== 5) fail('intent', 'the use is malformed');
-  return { network_id: c.network_id, account: c.account, asset: NATIVE_ASSET, policy: c.policy, delegate: c.delegate,
+    || new Set([c.account, c.policy, c.delegate, c.recipient, asset]).size !== 5) fail('intent', 'the use is malformed');
+  return { network_id: c.network_id, account: c.account, asset, policy: c.policy, delegate: c.delegate,
     recipient: c.recipient, amount: c.amount, rule_id: c.rule_id, signature_expiration_ledger: c.signature_expiration_ledger,
     min_ledger: c.min_ledger };
 }
@@ -700,7 +766,7 @@ function useAuthorizations(c, envelopeXdr) {
   if (signers.length !== 1 || !same(signers[0].key, signerScVal({ kind: 'delegated', address: c.delegate })) || signers[0].proof.length) {
     fail('transfer_signers', 'the transfer authorization\'s signers are not exactly {Delegated(delegate)}');
   }
-  const record = { entry: accountEntry, credentials, ruleIds };
+  const record = { entry: accountEntry, credentials, ruleIds, networkId: c.network_id };
   const checkAuth = contractCall(c.account, '__check_auth', [xdr.ScVal.scvBytes(accountDigest(record))]);
   if (Address.fromScAddress(signer.address).toString() !== c.delegate || !rootIs(signerEntry, checkAuth) || signer.signature.type === 'scvVoid') {
     fail('signer_entry', 'the delegate\'s authorization is not one signed entry for exactly the account entry');
@@ -735,7 +801,7 @@ function repeatedPermit(c, simulation, bound) {
   if (!Array.isArray(auth) || auth.length !== bound.entries.length || auth.some((text, i) => text !== bound.entries[i].toXDR('base64'))) {
     fail('unbound_response', 'the result does not echo exactly the envelope\'s authorization entries');
   }
-  if (!Array.isArray(simulation.events) || !simulation.events.length) fail('unbound_response', 'the simulation reported no diagnostic events');
+  requireEvents(simulation);
   const events = responseEvents(simulation);
   if (events.some((e) => !e.ok)) fail('unbound_response', 'a permit\'s events include some from failed calls');
   repeatedBinding(c, events, bound);
@@ -750,11 +816,7 @@ function repeatedDenial(c, simulation, { record, transfer }) {
   if (text.split('\n')[0] !== 'HostError: Error(Auth, InvalidAction)') {
     fail('not_a_policy_denial', 'the top-level failure is not the transfer authentication failure', { host });
   }
-  const code = policyDenial(text, c.asset, c.account, c.policy);
-  if (code === null) fail('not_a_policy_denial', 'the policy did not refuse the account\'s authorization', { host });
-  if (code !== CALL_COUNT_EXCEEDED) fail('policy_code', `the policy refused with ${code}, not CallCountExceeded (${CALL_COUNT_EXCEEDED})`, { code, host });
-  if (!Array.isArray(simulation.events) || !simulation.events.length) fail('unbound_response', 'the simulation reported no diagnostic events');
-  const events = responseEvents(simulation);
+  const { code, events } = deniedWith(text, simulation.events, c, CALL_COUNT_EXCEEDED, host);
   if (events.some((e) => e.ok)) fail('unbound_response', 'a refusal\'s events include some from successful calls');
   const transferCheck = repeatedBinding(c, events, { record, transfer });
   const authFailed = vec([xdr.ScVal.scvString('failed account authentication with error'), addressVal(c.account), contractError(code)]);

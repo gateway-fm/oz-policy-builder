@@ -232,7 +232,7 @@ impl<'k> OfflineSigner<'k> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::dry_run::key::tests::{address, key_file, seed_strkey};
+    use crate::key_file::tests::{address, key_file, seed_strkey};
 
     pub(crate) fn binding(delegate: &str) -> OfflineBinding {
         OfflineBinding {

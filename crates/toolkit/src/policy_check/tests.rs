@@ -266,6 +266,25 @@ fn run(input: &CheckAgainstPolicyInput, capture: &PolicyStateCapture) -> CheckAg
     finish_policy_check(&plan, capture).unwrap()
 }
 
+/// The installed-rule check inherits the registry's one refusal point rather than carrying its own.
+#[test]
+fn the_installed_rule_check_refuses_the_development_root_outside_testnet() {
+    let (input, _) = fixture();
+    let (mut authority, _) = crate::call_surface_live::tests::fixture();
+    crate::test_support::moved_to_mainnet(&mut authority);
+    let input = CheckAgainstPolicyInput {
+        spec: authority.spec,
+        binding_set: authority.binding_set,
+        signed_registry_snapshot: authority.signed_registry_snapshot,
+        network_id: authority.network_id,
+        ..input
+    };
+    let Err(error) = plan_policy_check_read(&input, &registry_trust(), &build_config()) else {
+        panic!("the development root must be refused on mainnet")
+    };
+    assert_eq!(error.code, ErrorCode::ERegistryRootPolicy, "{error}");
+}
+
 #[test]
 fn stranger_in_otherwise_sufficient_candidates_must_deny() {
     let live = vec![SignerIdentity::Delegated(g(1))];
@@ -692,4 +711,35 @@ fn tampered_attestation_duplicate_candidate_and_invalid_argument_do_not_start_a_
     ));
     input.invocation["args"][0] = serde_json::json!({"scval_xdr":"garbage"});
     assert!(plan_policy_check_read(&input, &registry_trust(), &build_config()).is_err());
+}
+
+/// A generated build revoked by its Wasm hash (`policy/<hash>`) is not recognized here either,
+/// and the refusal is not softened into an `unsupported` prediction.
+#[test]
+fn a_generated_build_revoked_by_its_wasm_hash_stops_the_prediction() {
+    let (mut input, mut capture) = fixture();
+    let build = input.binding_set.bindings[1].observed_wasm_hash.clone();
+    let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+    let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+    snapshot.revocations.insert(
+        format!("policy/{build}"),
+        ozpb_registry::Revocation {
+            reason: "generated build withdrawn".to_string(),
+            effective_version: snapshot.version,
+        },
+    );
+    let signed =
+        ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot).unwrap();
+    let root = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
+    input.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
+    change_spec(&mut input, &mut capture, |spec| {
+        spec.registry_snapshot = root
+    });
+    assert_eq!(input.binding_set.bindings[1].observed_wasm_hash, build);
+
+    let Err(error) = plan_policy_check_read(&input, &registry_trust(), &build_config()) else {
+        panic!("a revoked generated build must not be recognized");
+    };
+    assert_eq!(error.code, ErrorCode::ERegistryRevoked, "{error}");
+    assert!(policy_check_unavailable(error).is_err());
 }

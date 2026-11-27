@@ -3,26 +3,25 @@
 This package runs the versioned MCP endpoint for **one operator and trusted clients**. It
 works on a Linux Docker host independently of any hosting provider. It does not provision
 cloud infrastructure or establish that an endpoint has been deployed. Releases made after the
-publishing workflow was added also publish images; see
-[Build the reviewed revision](#build-the-reviewed-revision).
+publishing workflows were added also publish images and binaries; see
+[Production release](#production-release).
 
-The hosted testnet deliverable means running the MCP tools behind an authenticated HTTPS
-address for authorized remote clients. It is not a wallet or a Stellar validator/RPC node:
-it records, synthesizes, builds and verifies policies through operator-allowed testnet RPC
-sources. User signing and installation approval remain in the wallet. A working local image
-or this guide alone does not establish that the hosted service is running.
+The third milestone's production versioned endpoint is this package as a release that operators
+run themselves ([below](#production-release)); Gateway operates no service for it. It is not a
+wallet or a Stellar validator/RPC node: it records, synthesizes, builds and verifies policies
+through operator-allowed RPC sources. User signing and installation approval remain in the
+wallet. A working local image or this guide alone does not establish that any endpoint is
+running.
 
-For a reference deployment offered during a testnet review, publish its access window and
-shutdown condition alongside its HTTPS address. Keep the self-hostable image and instructions
-available for use after that window. A temporary testnet instance is not evidence of a
-production endpoint or an ongoing availability commitment.
+A reference deployment offered for a review, as the second milestone's hosted testnet instance
+was ([its acceptance check](TESTNET-EVIDENCE-TRANCHE-2.md#26-hosted-reference-instance-acceptance-check-11-november-2026)),
+publishes its access window and shutdown condition alongside its HTTPS address; for ongoing use,
+self-host. Such an instance is not evidence of a production endpoint or an ongoing availability
+commitment, and it needs its own security and operational acceptance checks.
 
-Use the disposable-worker mode below when preparing the hosted testnet deployment. Choosing
-its hosting provider is an operational decision, not a separate milestone requirement.
-Present the actual account, hostname/TLS plan, image digest, client access boundary, cost,
-budget alert and stop condition before creating paid resources. Tranche 3 delivers a production
-versioned release that operators run themselves; Gateway operates no production service. The
-testnet deployment still needs its own security and operational acceptance checks.
+Before creating paid resources for any deployment, present the actual account, hostname/TLS plan,
+image digest, client access boundary, cost, budget alert and stop condition. Choosing a hosting
+provider is an operational decision.
 
 **The API and compiler still share a trust domain.** Container resource limits, Cargo's
 offline setting and environment filtering are useful bounds, but they do not isolate each
@@ -35,6 +34,106 @@ For a separate Linux host API with a disposable rootless container for each buil
 [Disposable build workers](ISOLATED-BUILDS.md). That mode has its own deployment and
 containment acceptance checks; it does not add runtime access to this Compose service.
 
+## Production release
+
+A release is software you run yourself; Gateway operates no service for it. What its version
+number keeps stable, and for how long, is [VERSIONING.md](VERSIONING.md). Each published GitHub
+Release carries:
+
+- for Linux x86_64, Linux aarch64 and macOS arm64, one archive per binary with the licence files:
+  `ozpb` (the CLI), `ozpb-mcp-server` (stdio, or `--http` for this endpoint) and
+  `ozpb-execution-runtime` (the [native worker](NATIVE-EXECUTION.md) behind `ozpb dry-run`);
+- `ozpb-wire-contract-<tag>.json`: every tool the server lists, with its input and output JSON
+  Schema, and the `E_*` codes;
+- `SHA256SUMS`, and a GitHub build-provenance attestation for every asset, `SHA256SUMS` included.
+
+The API and TLS proxy images are not release assets: publishing the release runs
+`publish-image.yml`, which pushes them, for amd64 and arm64, to Docker Hub
+(`docker.io/gatewayfm/oz-policy-builder` and `docker.io/gatewayfm/oz-policy-builder-proxy`;
+[below](#build-the-reviewed-revision)).
+
+### Obtain and verify
+
+```sh
+tag=vX.Y.Z    # the release you are installing
+revision='<tested-release-commit>'
+target=x86_64-unknown-linux-gnu    # or aarch64-unknown-linux-gnu, aarch64-apple-darwin
+gh release download "$tag" --repo gateway-fm/oz-policy-builder \
+  --pattern "*-$target.tar.gz" --pattern SHA256SUMS
+# On macOS, `shasum -a 256 --check` in place of `sha256sum --check`.
+grep -- "-$target.tar.gz\$" SHA256SUMS | sha256sum --check
+# A subshell, so the first failure stops the loop without closing your shell.
+( set -e
+  for asset in *.tar.gz SHA256SUMS; do
+    gh attestation verify "$asset" --repo gateway-fm/oz-policy-builder \
+      --signer-workflow gateway-fm/oz-policy-builder/.github/workflows/release-binaries.yml \
+      --source-ref "refs/tags/$tag" --source-digest "$revision" --deny-self-hosted-runners
+  done )
+```
+
+The attestation checks require the release workflow, this tag, the tested source commit and a
+GitHub-hosted runner.
+Verify images the same way, by digest (below). The Linux
+binaries are built on Ubuntu 24.04 and may need a glibc as new as its; on an older host, build
+from the tag instead (`cargo build --locked --release -p ozpb-cli -p ozpb-mcp-server`, and the
+worker as its [guide](NATIVE-EXECUTION.md#machine-protocol) says). The macOS binaries are not
+signed or notarized: `gh` and `curl` downloads run as they are, while a browser download is
+quarantined until you remove the attribute (`xattr -d com.apple.quarantine <binary>`), which you
+should do only after the checks above. Unpacked as you, the worker is owned by you and not
+writable by others, which `ozpb dry-run` requires of it.
+
+The binaries do not include a compiler. Generating or verifying a policy (`ozpb generate`,
+`ozpb verify`, the `generate_code` and `verify` tools) runs `stellar contract build`, so a host
+install needs the Rust and Stellar CLI versions the release records
+(`bash scripts/recorded-build-inputs.sh rust` and `stellar-cli`, from the tag) with the
+`wasm32v1-none` target, and `OZPB_STELLAR_BINARY` if `stellar` is not on the path
+([build configuration](DEVELOPERS.md#build-configuration-operator-side)). Any other version builds
+different Wasm, and the [`verify` reproduction](VERSIONING.md#what-is-versioned) then fails. The
+API image includes both.
+
+### Mainnet configuration
+
+- **Registry.** The committed development root is refused for every network but testnet
+  (`E_REGISTRY_ROOT_POLICY`). Use the mainnet root policy and signed head published with
+  [the mainnet registry](../registry/mainnet/README.md); until its custodians sign the first
+  version there is none, and every mainnet trust check refuses. Persist the checkpoint in the
+  roots file and set the floor to its version
+  ([pinning roots and persisting checkpoints](REGISTRY-GOVERNANCE.md#consumers-pinning-roots-and-persisting-checkpoints)).
+  In this deployment that is `registry-roots.json` and `registry.signed.json` in the
+  configuration directory and `OZPB_REGISTRY_MIN_VERSION`; for the CLI, `--registry-roots` and
+  `--registry-min-version`.
+  Then [schedule the monitor](REGISTRY-GOVERNANCE.md#scheduling-the-monitor).
+- **RPC.** Name a mainnet source in `rpc-sources.json`, with the network passphrase
+  `Public Global Stellar Network ; September 2015`, and put its exact HTTPS URL in
+  `OZPB_RPC_ALLOWLIST`. The network must run protocol 30, and installation's live check needs an
+  endpoint that returns diagnostic events, which stellar-rpc 30.0.1 does only when run with
+  `--preflight-enable-debug` ([mainnet prerequisites](MAINNET-INSTALL.md#prerequisites),
+  [live use](ATOMIC-LIVE-HELPER.md#how-live-use-is-meant-to-work)).
+- **Authentication.** `--http` refuses to start without a bearer token of at least 32 bytes and
+  an RPC allowlist, and without either a [build worker launcher](ISOLATED-BUILDS.md) or
+  `OZPB_HTTP_UNISOLATED_BUILDS=accept`, which the Compose file sets. Serve it through the TLS proxy or your own ingress only
+  ([operator boundary](#configure-the-operator-boundary),
+  [ingress](#behind-your-own-ingress-instead-of-the-proxy)). Over stdio the server is a local
+  process of the client and takes no token.
+
+The endpoint never signs or installs: the owner does, in the wallet, by the
+[mainnet runbook](MAINNET-INSTALL.md).
+
+### Upgrading between versions
+
+Read the release notes of every release from yours to the new one. Within 1.x during the grant,
+nothing there breaks the [versioned contracts](VERSIONING.md#breaking-and-additive) except a
+security fix or a network-forced change, which the notes list as breaking with what to do. A
+document that uses a field a newer release added is not readable by an older one, so upgrade
+every component that exchanges documents (CLI, server, native worker, wallet) together, and take
+each from one release. With [disposable build workers](ISOLATED-BUILDS.md), the API binary and
+`deployment/worker-launcher.py` must come from the same release (the API refuses to start with
+a launcher that speaks another protocol): take the launcher from the release's tag, not from
+`main`. Deploy new images by digest and recreate the containers; this discards in-memory session
+references, as described under
+[data handling](#data-handling-and-handover). An upgrade does not move your registry checkpoint
+or floor: they advance only when you accept a newer registry version.
+
 ## Build the reviewed revision
 
 Use Python 3 and Docker with BuildKit. The image supports Linux amd64 and arm64. Building
@@ -43,10 +142,11 @@ dependencies. Allow at least 12 GiB of free build storage. Runtime policy builds
 dependencies and refuse downloads.
 
 ```sh
-git rev-parse HEAD
-python3 scripts/hosted-context.py HEAD > /tmp/ozpb-context.tar
+revision=$(git rev-parse --verify 'HEAD^{commit}'); echo "$revision"
+python3 scripts/hosted-context.py "$revision" > /tmp/ozpb-context.tar
 docker build --target proxy --file deployment/Dockerfile --tag ozpb-proxy:reviewed - < /tmp/ozpb-context.tar
-docker build --file deployment/Dockerfile --tag ozpb-self-host:reviewed - < /tmp/ozpb-context.tar
+docker build --file deployment/Dockerfile --build-arg OZPB_TOOLKIT_SOURCE="$revision" \
+  --tag ozpb-self-host:reviewed - < /tmp/ozpb-context.tar
 docker image inspect ozpb-self-host:reviewed --format '{{.Id}}'
 docker image inspect ozpb-proxy:reviewed --format '{{.Id}}'
 ```
@@ -56,6 +156,12 @@ working-copy edits are ignored, including edits to the Dockerfile: commit and re
 before selecting their revision. Symlinks, crate submodules and missing required files fail
 the export. Source review and the publication gate remain necessary; an allowlist cannot
 decide whether a Rust source file contains confidential information.
+
+The context carries no `.git`, so the image cannot ask which commit it is built from: the
+`OZPB_TOOLKIT_SOURCE` build argument tells it, and every BuildManifest the image writes records
+that commit as `producer.toolkit_source`. Without the argument, they record none. Like every
+manifest field it is the builder's statement, not something `verify` checks; the integration check
+below refuses an image whose manifests do not record the clean commit it was given.
 
 The base image and TLS proxy are pinned by digest. Rust and Stellar CLI match the recorded
 Wasm build inputs; Stellar downloads are checked by SHA-256. OS packages resolve during
@@ -69,7 +175,7 @@ contains it, `publish-image.yml` builds both images for amd64 and arm64 from the
 runs every check `self-hosted.yml` runs on each, and publishes them to
 `docker.io/gatewayfm/oz-policy-builder` and `docker.io/gatewayfm/oz-policy-builder-proxy` under
 the release tag, with a GitHub build-provenance attestation. The workflow summary lists both
-`@sha256` references; use those, and check them with
+`@sha256` references; use those, and check each with
 
 ```sh
 gh attestation verify "oci://<reference>" --repo gateway-fm/oz-policy-builder \
@@ -77,18 +183,13 @@ gh attestation verify "oci://<reference>" --repo gateway-fm/oz-policy-builder \
   --source-ref "refs/tags/<tag>" --source-digest "<release commit>" --deny-self-hosted-runners
 ```
 
-If publication fails partway, rerun the original GitHub Actions run. Each platform job retests
-any digest it staged earlier. Promotion reuses a final tag only if it resolves to the same index.
+A published image is software for operators to run; it does not mean an endpoint is running.
 
-A published
-image is software for operators to run; it does not mean an endpoint is running.
-
-Both Docker Hub repositories must exist and be public before the first release that publishes
-to them: an organization owner creates them once, with immutable tags. A push to a missing
-repository would create it with the namespace's default visibility. The pre-releases up to
-`v0.2.0-rc.2` were published to `ghcr.io/gateway-fm/oz-policy-builder` and
-`ghcr.io/gateway-fm/oz-policy-builder-proxy` instead, and stay there. `v0.1.0` predates the
-workflow and has no images.
+An organization owner creates both public Docker Hub repositories, with immutable tags, before
+publication. The existing 0.2.0 pre-release images remain on GHCR. If publication fails after
+staging a platform image or manifest, rerun the same GitHub Actions run: it reuses that run's
+staged digests and verifies any final tag already published. GitHub stores the attestations for
+each image digest.
 
 ## Configure the operator boundary
 
@@ -151,7 +252,10 @@ proxy mode above. The server refuses a routable listen address unless the list n
 that is not loopback, and then answers authenticated requests for those hosts only (`403` for
 any other `Host`, loopback names included). It refuses any request carrying an `Origin` header
 (`403`) in either mode, as the proxy does. The bearer token, request quota, body bound and build
-limits apply unchanged.
+limits apply unchanged. Run without the Compose file, the image also needs
+`OZPB_HTTP_UNISOLATED_BUILDS=accept` (it compiles in its own container, as under Compose) and the
+read-only root filesystem and private `/tmp/ozpb` tmpfs the Compose file gives it: a build refuses
+a temporary directory other users can write to.
 
 The `Host` check is not access control: whoever reaches the listen address can name the public
 host. Between the ingress and the API the token travels in plain HTTP and is the only control,
@@ -162,7 +266,10 @@ other than `/v1/mcp`, and keeping request bodies and headers out of its access l
 The API has a 2-CPU, 4-GiB memory, 256-process ceiling; the proxy has 0.5 CPU, 128 MiB and
 64 processes. Both run as UID 10001 with no added capabilities, no privilege escalation and
 a read-only root filesystem. The API's temporary build data and cache occupy bounded tmpfs
-mounts (512 MiB and 2 GiB), charged to its memory limit. A cold build may hit these bounds;
+mounts (512 MiB and 2 GiB), charged to its memory limit. Each build removes the crate it built
+from the cache, so the cache holds the shared dependencies, not one entry per spec name a client
+chose. The Compose file sets `OZPB_HTTP_UNISOLATED_BUILDS=accept`: the server refuses to start
+an HTTP endpoint that compiles in its own container without that statement. A cold build may hit these bounds;
 size them using your measured workload. One build slot and one compiler job are configured.
 These are service-level limits, not per-job containment. Replacing the container discards
 the writable cache and temporary files.
@@ -172,13 +279,19 @@ Run the disposable integration check against a locally built image:
 ```sh
 OZPB_IMAGE="$(docker image inspect ozpb-self-host:reviewed --format '{{.Id}}')" \
 OZPB_PROXY_IMAGE="$(docker image inspect ozpb-proxy:reviewed --format '{{.Id}}')" \
+OZPB_TOOLKIT_COMMIT="$revision" \
   bash scripts/test-hosted-container.sh
 ```
 
 It generates a local test certificate, verifies it, checks authentication, host/origin/path
 guards, initialization, body limits and the request quota, then tears that endpoint down.
 Fresh service containers then run real MCP `generate_code` and `verify` through TLS, checking
-the returned Wasm digest and explicit source/Wasm/manifest reproduction dimensions.
+the returned Wasm digest, the toolkit commit its manifest records, and explicit
+source/Wasm/manifest reproduction dimensions. These containers keep their output (`json-file` in
+place of the package's `none`), and `check-hosted-retention.py` then sends a canary bearer token,
+builds a spec named with a canary and sends a signed canary envelope, and fails if the token or
+any canary is in either container's output, its tmpfs files or the files it changed, or if the
+output is anything but the server's startup line.
 A separate container also runs real `generate` and `verify` with `--network none` and no mounted
 credentials. The standalone `check-hosted-endpoint.py` exhausts its supplied quota on
 purpose: use it only against a fresh isolated endpoint, not another operator's active service.
@@ -189,7 +302,11 @@ Access logging and container log retention are disabled. The proxy discards erro
 so URLs or request-derived details are not retained accidentally. Do not enable debug
 tracing, body logging, crash uploads or request analytics. This reduces diagnostics: an
 operator investigating startup failure should reproduce with synthetic input in an isolated
-environment and review any output before retaining it.
+environment and review any output before retaining it. `scripts/check-log-redaction.py` fails
+CI if a file of this package turns a log back on, prints the bearer token or the trust inputs,
+or links a log subscriber into the server; it does not cover your ingress or host. The
+disposable integration check, `scripts/test-hosted-container.sh`, reads what a running package
+retains, with its output kept, and fails if the token or canary request content is in it.
 
 Request data is processed in memory and temporary files. Each MCP session also retains up to
 eight generated artifacts in memory for verification by reference. This is a count limit,

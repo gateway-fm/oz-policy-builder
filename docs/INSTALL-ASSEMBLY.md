@@ -31,7 +31,7 @@ configuration. Run the CLI with the same trust files as the authority commands:
 
 ```sh
 ozpb assemble-install-transaction --request assembly-request.json \
-  --registry-roots registry-roots.json --registry-min-version 4 \
+  --registry-roots registry-roots.json --registry-min-version 6 \
   --rpc-sources rpc-sources.json > unsigned-assembly.json
 ```
 
@@ -83,7 +83,9 @@ not proof that an entry is archived.
 Recording mode does not execute the smart account's owner-authorization checks, so its
 footprint and fee estimate may change when owner authorization is constructed. A wallet
 must independently decode and validate every field against the intended operation, network,
-fee payer and fee ceiling using its own RPC; re-run the authority check and match the
+fee payer and fee ceiling using its own RPC; re-run the install intent, not only the
+authority check (the authority commitment does not cover the target's code, which only the
+intent compares with what the rule requires), and match the
 listed authorities to the user's trusted identities; obtain protected user approval; and
 construct the owner authorization itself. It must then simulate with authorization
 enforcement, reconcile the resulting resources and fees, and validate the exact transaction

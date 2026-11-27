@@ -14,20 +14,28 @@
 //!   ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \\
 //!     --wasm ./generated/generated_sub_transfer_r0.wasm \\
 //!     --manifest ./generated/build-manifest.json
+//!   ozpb publish-artifact --spec spec.json --generated-dir ./generated \\
+//!     --wasm ./generated/generated_sub_transfer_r0.wasm \\
+//!     --manifest ./generated/build-manifest.json --out ./published
+//!   ozpb verify-published ./published/<wasm hash>/<build manifest hash>
 //!   ozpb evaluate --spec spec.json --context c.json --invocation i.json
 
 mod authority;
 mod capture;
 mod dry_run;
+mod key_file;
 mod policy_check;
 mod preflight;
+mod publication;
+mod registry;
 mod verification;
 
 use anyhow::{Context, Result};
 use base64::Engine;
 use clap::{Args, Parser, Subcommand};
 use ozpb_api_types::{
-    EvaluateSpecInput, GenerateCodeInput, RecordOutput, SynthesizeInput, SynthesizeOutput,
+    EvaluateSpecInput, GenerateCodeInput, GenerateCodeOutput, RecordOutput, SynthesizeInput,
+    SynthesizeOutput,
 };
 use ozpb_recorder_core::RecordOptions;
 use ozpb_source_rpc::{get_transaction, simulate_transaction, HttpTransport};
@@ -156,6 +164,16 @@ enum Command {
         build: BuildConfigArgs,
     },
     /// Observe modeled authority around an exact retained installed grant; never prepares installation.
+    ///
+    /// Prints the observation as JSON. With --recorded-authority-commitment and --min-ledger the
+    /// exit status is for cron: 0 unchanged (the exact recorded rule, nothing allocated after it,
+    /// and the recorded commitment); 3 changed (the rule, its signers or policies, a later rule,
+    /// or the modeled authority); 5 inactive (expired, otherwise unchanged); 4 no answer (the read
+    /// or the check refused: incomplete or archived state, code other than the recognized code,
+    /// an endpoint failure, or an observation older than --min-ledger; the state is unknown); 1 an
+    /// error before any read (configuration, request, registry trust including an expired or
+    /// superseded snapshot, build); 2 a usage error (a malformed or missing flag). Treat any other
+    /// non-zero status as an alert too.
     CheckInstalledGrant(authority::InstalledGrantArgs),
     /// Run the live authority check and, only when nothing is refused or unresolved, print the
     /// exact `add_context_rule` arguments with the answer they were checked against. Never signs
@@ -280,6 +298,21 @@ enum Command {
     /// Reference evaluation and artifact reproduction commands.
     #[command(flatten)]
     Verification(verification::Command),
+    /// Lay out a generated artifact for publication under its Wasm hash: the crate exactly as
+    /// generated, the spec, the BuildManifest, the Wasm and a SHA256SUMS index, written to
+    /// `<out>/<wasm hash>/<build manifest hash>/`. Refuses files the manifest does not describe
+    /// and a destination holding other content; republishing the same build is a no-op. Writes
+    /// locally only (docs/PUBLISHING.md).
+    PublishArtifact(publication::PublishArgs),
+    /// Check a published build's index, then rebuild it from its spec through `verify` and
+    /// compare with its Wasm and manifest. Exits 0 when the report matches, 3 when it does not
+    /// (a dimension did not reproduce, or the offline behavioural check failed), and 1 when the
+    /// directory is refused or the build fails.
+    VerifyPublished(publication::VerifyPublishedArgs),
+    /// Registry governance: custodian keys, successors, signing, verification before
+    /// distribution, and monitoring of a published registry (docs/REGISTRY-GOVERNANCE.md).
+    #[command(subcommand)]
+    Registry(registry::Command),
     /// Write the development registry trust files (signed snapshot + root policy).
     ///
     /// The pipeline cannot run without them, and they are derived from the code — emitting
@@ -523,22 +556,7 @@ fn main() -> Result<()> {
                 ozpb_toolkit::generate_code_with_build_config(&input, &build.resolve()?)
                     .map_err(anyhow::Error::from)?;
             if let Some(dir) = out {
-                for (rel, content) in &generated.files {
-                    let path = dir.join(rel);
-                    if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&path, content)?;
-                }
-                let wasm = base64::engine::general_purpose::STANDARD
-                    .decode(&generated.wasm_base64)
-                    .context("decoding generated Wasm")?;
-                let wasm_name = format!("{}.wasm", generated.crate_name.replace('-', "_"));
-                std::fs::write(dir.join(wasm_name), wasm)?;
-                std::fs::write(
-                    dir.join("build-manifest.json"),
-                    serde_json::to_vec_pretty(&generated.build_manifest)?,
-                )?;
+                write_generation(&dir, &generated)?;
                 eprintln!(
                     "wrote crate '{}' ({} files), Wasm {}, and BuildManifest {} to {}",
                     generated.crate_name,
@@ -552,6 +570,9 @@ fn main() -> Result<()> {
             }
         }
         Command::Verification(command) => command.run()?,
+        Command::PublishArtifact(args) => publication::publish(args)?,
+        Command::VerifyPublished(args) => publication::verify_published(args)?,
+        Command::Registry(command) => registry::run(command)?,
         Command::DevRegistry { out } => {
             std::fs::create_dir_all(&out)?;
             let (snapshot_json, roots_json) = ozpb_registry::dev::dev_trust_files(
@@ -572,6 +593,28 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Write what `generate --out` writes: the crate, `<crate_name>.wasm` with `-` as `_`, and
+/// `build-manifest.json`. Returns the Wasm's path.
+fn write_generation(dir: &std::path::Path, generated: &GenerateCodeOutput) -> Result<PathBuf> {
+    for (rel, content) in &generated.files {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, content)?;
+    }
+    let wasm = base64::engine::general_purpose::STANDARD
+        .decode(&generated.wasm_base64)
+        .context("decoding generated Wasm")?;
+    let wasm_path = dir.join(format!("{}.wasm", generated.crate_name.replace('-', "_")));
+    std::fs::write(&wasm_path, wasm)?;
+    std::fs::write(
+        dir.join("build-manifest.json"),
+        serde_json::to_vec_pretty(&generated.build_manifest)?,
+    )?;
+    Ok(wasm_path)
 }
 
 fn record(

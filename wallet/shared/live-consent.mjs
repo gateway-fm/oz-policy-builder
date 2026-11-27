@@ -8,18 +8,19 @@
 // this statement.
 //
 // Supported, as the helper bounds it: the grant the wallet generates from its sample transfer — one
-// rule on the testnet native asset, one Ed25519 delegate, a call cap, and one exact
+// rule on the session network's native asset, one Ed25519 delegate, a call cap, and one exact
 // `transfer(account, G recipient, amount)` with an amount of at most 1,000,000 stroops, so that the
 // adjacent denial stays inside the helper's 1..=1,000,001 bound. Anything else is `unsupported`.
 import { Buffer } from 'buffer';
-import { Address, Asset, Networks, StrKey, hash, xdr } from '#wallet-stellar-sdk';
-import { NETWORK_ID, freezeCopy } from './approval.mjs';
+import { Address, StrKey, hash, xdr } from '#wallet-stellar-sdk';
+import { freezeCopy } from './approval.mjs';
+import { networkById, stroopsText } from './networks.mjs';
 import { installCall } from './assembly.mjs';
 import { decodeBase64Url } from './base64url.mjs';
 import { liveCase } from './live-enforcement.mjs';
 
 /** The reviewed helper Wasm (`EXPECTED_HELPER_HASH` in execution-runtime/tests/atomic_helper.rs). */
-export const LIVE_HELPER_WASM = '0d0128a499f20bb176b64232d6c1d047311b23081b882c4c487072bf9a355e94';
+export const LIVE_HELPER_WASM = 'e9cd36e7b50b16058eca683bf653ebc64dd647f957b40a9593988a989aae9cdf';
 /**
  * How far past the ledger read at preparation the case signatures stay valid: about one minute.
  * Installation waits until they expired unused, so the window is as short as a fast RPC allows:
@@ -36,19 +37,43 @@ export const LIVE_MAX_PERMIT_STROOPS = 1_000_000n;
 export const LIVE_CASES = Object.freeze(['target:original:0', 'target:argument-denial:0']);
 export const LIVE_LABELS = Object.freeze(['state_dependent', 'simulation_only', 'signatures_valid_until_ledger',
   'delegate_is_wallet_in_memory_automation_key']);
-const SAC = Asset.native().contractId(Networks.TESTNET);
+/**
+ * Who holds the grant's delegate key, by the session's funding model, as the consents, their labels and
+ * the live evidence name it. With the wallet's disposable fee payer (testnet) it is the backend's own
+ * in-memory automation key. Operator-funded (always on mainnet; on testnet when the operator configures
+ * its own fee payer) it is the agent's own key, which the agent holds and this backend holds too, from
+ * the operator's `delegateKeyPath` file.
+ */
+export const DELEGATE_HOLDERS = Object.freeze({
+  automation: Object.freeze({ label: LIVE_LABELS[3], evidence: 'wallet_in_memory_automation_key',
+    key: 'the wallet backend\'s in-memory automation key, discarded when it stops' }),
+  operator: Object.freeze({ label: 'delegate_is_agent_key_from_operator_file', evidence: 'agent_key_from_operator_file',
+    key: 'the agent\'s key, held by the agent and by this backend from the operator\'s file' }),
+});
 const refuse = () => { throw new Error('live check refused; prepare it again'); };
+/**
+ * The delegate key's holder (`DELEGATE_HOLDERS`) in a session on the network `networkId` names:
+ * `operatorFunded` is the session's funding model, and a mainnet session always is.
+ */
+export function delegateHolder(networkId, { operatorFunded = false } = {}) {
+  const network = networkById(networkId);
+  return network.name === 'mainnet' || operatorFunded === true ? DELEGATE_HOLDERS.operator : DELEGATE_HOLDERS.automation;
+}
 const sha256 = (value) => Buffer.from(hash(Buffer.from(value))).toString('hex');
 const integer = (n, min, max) => Number.isSafeInteger(n) && n >= min && n <= max;
 const same = (a, b) => Buffer.from(a.toXDR()).equals(Buffer.from(b.toXDR()));
 
 /**
- * Whether the retained grant is the one shape the live layer runs, and its transfer if so:
+ * Whether the retained grant is the one shape the live layer runs on `networkId` (the session's
+ * network, which the spec must name too), and its transfer if so:
  * `{ supported: true, account, delegate, recipient, amount, maxCalls }` or `{ supported: false, reason }`.
  */
-export function liveGrant(spec) {
+export function liveGrant(spec, networkId) {
   const no = (reason) => freezeCopy({ supported: false, reason });
   try {
+    const network = networkById(networkId);
+    if (spec?.network_id !== network.networkId) return no(`The grant is not for ${network.name}, the network of this session.`);
+    const SAC = network.nativeAsset;
     const account = spec?.smart_account?.address;
     if (!Array.isArray(spec?.rules) || spec.rules.length !== 1) return no('The live check supports a grant of exactly one rule.');
     const [rule] = spec.rules;
@@ -71,7 +96,7 @@ export function liveGrant(spec) {
       || allowed.args?.length !== 3 || ![account, 'SELF'].includes(value(0, 'eq_address'))
       || typeof recipient !== 'string' || !StrKey.isValidEd25519PublicKey(recipient)
       || typeof amount !== 'string' || !/^[1-9][0-9]{0,18}$/.test(amount)) {
-      return no('The live check supports one exact-amount testnet native XLM transfer from the account to a G account.');
+      return no(`The live check supports one exact-amount ${network.name} native XLM transfer from the account to a G account.`);
     }
     if (BigInt(amount) > LIVE_MAX_PERMIT_STROOPS) {
       return no('The helper executes at most 1,000,001 stroops, so the permit amount must be at most 1,000,000.');
@@ -82,16 +107,17 @@ export function liveGrant(spec) {
 
 /**
  * `liveGrant`, plus the reviewed installation intent the helper must reproduce: the wallet's own
- * account, the testnet native asset as context, exactly the grant's delegate, one generated policy, a
+ * account, the network's native asset as context, exactly the grant's delegate, one generated policy, a
  * finite expiry and a rule name the account accepts (at most 20 bytes).
  */
-export function liveShape({ spec, intent, wallet }) {
-  const grant = liveGrant(spec);
+export function liveShape({ spec, intent, wallet, networkId }) {
+  const grant = liveGrant(spec, networkId);
   if (!grant.supported) return grant;
   const no = (reason) => freezeCopy({ supported: false, reason });
   try {
     const [policy] = intent.policies;
-    if (intent.account_contract !== wallet.contractId || grant.account !== wallet.contractId || intent.context_contract !== SAC
+    if (intent.account_contract !== wallet.contractId || grant.account !== wallet.contractId
+      || intent.context_contract !== networkById(networkId).nativeAsset
       || JSON.stringify(intent.delegate_signers) !== JSON.stringify([{ kind: 'delegated', address: grant.delegate }])
       || intent.policies.length !== 1 || policy.policy_index !== 0 || policy.install_params?.kind !== 'generated') {
       return no('The live check installs one generated policy for exactly the grant\'s delegate on this account\'s native asset rule.');
@@ -119,11 +145,12 @@ function ownerSigner(wallet) {
 export function liveCases({ approval, spec, helper, policyCodeHash, expectedRuleId, signatureExpirationLedger }) {
   try {
     const intent = approval?.intent;
-    const grant = liveShape({ spec, intent, wallet: approval?.wallet });
+    const network = networkById(approval?.networkId);
+    const grant = liveShape({ spec, intent, wallet: approval?.wallet, networkId: network.networkId });
     const [policy] = intent.policies;
     if (!grant.supported || !integer(approval.ownerRuleId, 0, 0xffffffff)) refuse();
     const base = {
-      network_id: NETWORK_ID, helper, account: grant.account, policy: policy.address, policy_code_hash: policyCodeHash,
+      network_id: network.networkId, helper, account: grant.account, policy: policy.address, policy_code_hash: policyCodeHash,
       delegate: grant.delegate, recipient: grant.recipient, expected_rule_id: expectedRuleId, owner_rule_id: approval.ownerRuleId,
       owner_signer: ownerSigner(approval.wallet), rule_name: intent.rule_name, valid_until_ledger: intent.valid_until_ledger,
       signature_expiration_ledger: signatureExpirationLedger,
@@ -131,7 +158,7 @@ export function liveCases({ approval, spec, helper, policyCodeHash, expectedRule
     const cases = [grant.amount, (BigInt(grant.amount) + 1n).toString()].map((amount) => liveCase({ ...base, amount }));
     // The helper installs exactly the reviewed grant: the same call the owner reviewed.
     const reviewed = installCall(intent);
-    const installed = installCall({ account_contract: base.account, context_contract: SAC, rule_name: base.rule_name,
+    const installed = installCall({ account_contract: base.account, context_contract: network.nativeAsset, rule_name: base.rule_name,
       valid_until_ledger: base.valid_until_ledger, delegate_signers: [{ kind: 'delegated', address: base.delegate }],
       policies: [{ policy_index: 0, address: base.policy, install_params: { kind: 'generated' } }] });
     if (!same(reviewed, installed)) refuse();
@@ -140,12 +167,15 @@ export function liveCases({ approval, spec, helper, policyCodeHash, expectedRule
 }
 
 /**
- * The consent statement for the two cases: both exact calls, the expiry and the warning. The
+ * The consent statement for the two cases: both exact calls, the expiry and the warning, naming the
+ * delegate key's holder by the session's funding model (`operatorFunded`, `delegateHolder`). The
  * backend keeps its SHA-256; the browser shows this same object and returns that hash to consent.
  */
-export function consentDisplay(cases, { currentLedger }) {
+export function consentDisplay(cases, { currentLedger, operatorFunded = false }) {
   try {
     const [permit, denial] = cases;
+    const network = networkById(permit.network_id);
+    const SAC = network.nativeAsset;
     const n = permit.signature_expiration_ledger;
     if (cases.length !== 2 || !integer(currentLedger, 1, 0xffffffff) || n - currentLedger < 2 || n - currentLedger > LIVE_SIGNATURE_LEDGERS
       || ['network_id', 'helper', 'account', 'policy', 'policy_code_hash', 'delegate', 'recipient', 'expected_rule_id', 'owner_rule_id',
@@ -159,24 +189,31 @@ export function consentDisplay(cases, { currentLedger }) {
       delegate_signs: { contract: SAC, function: 'transfer', from: c.account, to: c.recipient, amount_stroops: c.amount,
         context_rule_ids: [c.expected_rule_id] },
     });
-    const amount = (text) => `${text} stroops (${Number(text) / 10_000_000} testnet XLM)`;
+    const amount = (text) => stroopsText(text, network);
+    const holder = delegateHolder(network.networkId, { operatorFunded });
+    const agent = holder === DELEGATE_HOLDERS.operator;
     return freezeCopy({
-      schema: 'ozpb-live-consent/v1', network: 'testnet', network_id: permit.network_id,
+      schema: 'ozpb-live-consent/v1', network: network.name, network_id: network.networkId,
       current_ledger: currentLedger, signature_expiration_ledger: n,
       owner_signs: { contract: permit.account, function: 'add_context_rule', context: `CallContract(${SAC})`, name: permit.rule_name,
         valid_until: permit.valid_until_ledger, signers: [`Delegated(${permit.delegate})`], policies: [permit.policy],
         context_rule_ids: [permit.owner_rule_id], authenticator: 'owner passkey' },
       cases: [call(permit, LIVE_CASES[0], 'permit'), call(denial, LIVE_CASES[1], 'deny (NoTupleMatched, code 6)')],
       warning: `Until ledger ${n}, these signatures are real and submittable. Your passkey signature alone is a complete installation `
-        + `of rule "${permit.rule_name}" on account ${permit.account}: submitted, it would give the delegate ${permit.delegate}, whose key `
-        + `this wallet backend holds, the grant's authority until ledger ${permit.valid_until_ledger}. With it, the delegate's signatures `
+        + `of rule "${permit.rule_name}" on account ${permit.account}: submitted, it would give the delegate ${permit.delegate}, `
+        + (agent ? 'the agent\'s own key, which the agent holds and this backend holds from the operator\'s file, '
+          : 'whose key this wallet backend holds, ')
+        + `the grant's authority until ledger ${permit.valid_until_ledger}. With it, the delegate's signatures `
         + `are a real transfer of ${amount(permit.amount)} to ${permit.recipient}, and of ${amount(denial.amount)}, which the policy must `
         + `refuse. None of them names the helper, so whoever obtains them before ledger ${n} could submit them without it, and every one `
-        + `of them is sent to the operator's testnet RPC endpoint inside the simulation requests. The wallet only simulates them and never `
-        + `submits them. After ledger ${n}, its replay check compares the account with what was read before they existed; run it before `
+        + `of them is sent to the operator's ${network.name} RPC endpoint inside the simulation requests. The wallet only simulates them and never `
+        + `submits them. `
+        + (agent ? `The agent holds the delegate key too: if it obtains your passkey signature, the agent could submit the installation `
+          + `itself before ledger ${n} and then use the grant with its own key, without this wallet. ` : '')
+        + `After ledger ${n}, its replay check compares the account with what was read before they existed; run it before `
         + 'relying on the account.',
-      labels: [LIVE_LABELS[0], LIVE_LABELS[1], `${LIVE_LABELS[2]}:${n}`, LIVE_LABELS[3]],
-      delegate: { address: permit.delegate, key: 'the wallet backend\'s in-memory automation key, discarded when it stops' },
+      labels: [LIVE_LABELS[0], LIVE_LABELS[1], `${LIVE_LABELS[2]}:${n}`, holder.label],
+      delegate: { address: permit.delegate, key: holder.key },
     });
   } catch { return refuse(); }
 }

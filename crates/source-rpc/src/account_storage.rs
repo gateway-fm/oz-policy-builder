@@ -1,4 +1,4 @@
-//! Pure decoder for the pinned `stellar-accounts` 0.7.2 storage schema.
+//! Pure decoder for the pinned `stellar-accounts` 0.7.3 storage schema (unchanged from 0.7.2).
 //!
 //! This reads only already-acquired XDR values. It neither finds every rule nor decides
 //! whether an omitted ledger entry is archived, so it cannot establish account authority.

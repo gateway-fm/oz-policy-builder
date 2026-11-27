@@ -7,11 +7,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { Keypair } from '@stellar/stellar-sdk';
 import { dryRunAcceptance } from '../shared/dry-run.mjs';
-import { NETWORK_ID } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { checkDryRunPreparation, nativeJobText, runAccountExecution } from '../server/native-execution.mjs';
 import { offlineCapability } from '../server/native-protocol.mjs';
 import { RawJson, parseJsonExact, requestText } from '../server/raw-json.mjs';
 import { runTool } from '../server/tool.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const { OZPB_NATIVE_E2E_CLI: cli, OZPB_NATIVE_E2E_RUNTIME: runtime, OZPB_NATIVE_E2E_WORK: work } = process.env;
 const skip = !(cli && runtime && work) && 'requires scripts/test-wallet-native-execution.sh';
@@ -40,11 +41,11 @@ async function prepared({ candidateContextRuleId = 3 } = {}) {
   const path = join(work, `request-${request.run_nonce}.json`);
   writeFileSync(path, requestText(request), { mode: 0o600, flag: 'wx' });
   const output = parseJsonExact(await runTool(cli, ['prepare-dry-run', '--request', path,
-    '--registry-roots', new URL('registry-roots.json', examples).pathname, '--registry-min-version', '4',
+    '--registry-roots', new URL('registry-roots.json', examples).pathname, '--registry-min-version', '6',
     '--rpc-sources', join(work, 'rpc-sources.json')]));
   const checked = checkDryRunPreparation(output, { specHash: manifest.spec_hash, bindingSetHash: output.binding.binding_set_hash,
     accountAddress: spec.smart_account.address, delegateAddress: delegate.publicKey(), policyAddress: POLICY,
-    policyCodeHash: manifest.wasm_hash, candidateContextRuleId, sourceLedger: LEDGER.sequence });
+    policyCodeHash: manifest.wasm_hash, candidateContextRuleId, sourceLedger: LEDGER.sequence, networkId: NETWORK_ID });
   const account = readFileSync(join(work, 'pinned-account.wasm')).toString('base64');
   const maxCalls = spec.rules[0].state[0].call_count_per_installation.max_calls;
   return { ...checked, maxCalls, jobText: nativeJobText(request, account, LEDGER) };

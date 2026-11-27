@@ -47,7 +47,7 @@ const AMOUNT: i128 = 500_000_000;
 const EXPECTED_TARGET_HASH: &str =
     "075c0e31d154fb52bb4d2c6bc85c6086cce851437a776bc4a3537fd94cb1f86a";
 const EXPECTED_POLICY_HASH: &str =
-    "2a9beb1a8a7a73cbfc13173e245f4a712185376bd9a3fce3f7f8d7d2cf9b04be";
+    "03f5e8014d3aefda64ab830c58e7a124211e432ddb5363653dd71acf4c08afba";
 /// Generated policy error for a context that no accepted call tuple admits.
 const NO_TUPLE_MATCHED: u32 = 6;
 

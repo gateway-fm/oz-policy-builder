@@ -249,7 +249,9 @@ function requireRecordedOriginal(c, rule) {
     const ok = kind === 'any_value' ? true
       : kind === 'le_i128' ? live.type === 'scvI128' && scValToNative(live) <= BigInt(constraint.le_i128.max)
         : kind === 'ge_i128' ? live.type === 'scvI128' && scValToNative(live) >= BigInt(constraint.ge_i128.min)
-          : hex(encodeArg(arg)) === hex(live);
+          : kind === 'range_i128' ? live.type === 'scvI128' && scValToNative(live) >= BigInt(constraint.range_i128.min)
+            && scValToNative(live) <= BigInt(constraint.range_i128.max)
+            : hex(encodeArg(arg)) === hex(live);
     requireThat(ok, `recorded call differs from the suite original at arg[${i}]`);
   });
 }
@@ -311,8 +313,10 @@ function requiredSigners(authorization) {
 
 /**
  * The first refusal the installed rule should produce for a realized case, or `{ permit: true }`.
- * `order` is the live rule's policy order. Mirrors stellar-accounts 0.7.2 `do_check_auth`
- * (context type, then unrecognized signers, then each policy in order), the generated policy's
+ * `order` is the live rule's policy order. Mirrors stellar-accounts 0.7.3 `do_check_auth`
+ * (context type, then unrecognized signers, then each policy in order; its 3017 refusal of a
+ * `Delegated` signer that is a context's contract cannot arise for these classic-account
+ * delegates), the generated policy's
  * check order (ZeroSigners 1, PredicateUnsatisfied 2, FunctionNotAllowed 5, NoTupleMatched 6) and
  * the reviewed spending limit's (NotAllowed 3223, LessThanZero 3226, SpendingLimitExceeded 3221).
  */

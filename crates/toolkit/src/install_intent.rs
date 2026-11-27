@@ -15,12 +15,14 @@ use ozpb_api_types::{
     ErrorCode as EC, InstallOperation, InstallPolicy, PolicySurfaceFinding,
     PrepareInstallIntentInput, PrepareInstallIntentOutput, ToolError,
 };
-use ozpb_policy_spec::PolicySpec;
+use ozpb_domain::Hash32;
+use ozpb_policy_spec::{DriftResponse, PolicySpec, TargetHashRole};
 use ozpb_source_rpc::AccountStateScan;
 
 /// Plan the read for an install intent. Beyond the check's own plan, the new rule must not
 /// target the account itself or a policy bound for this spec: refused here, before any build
-/// or read, with a fixed code (the check would refuse it too, after reading).
+/// or read, with a fixed code (the check would refuse it too, after reading). A rule that
+/// requires its target's code also has the target read, in the same capture.
 pub fn plan_install_intent_read(
     input: &PrepareInstallIntentInput,
     registry_trust: &RegistryTrust,
@@ -34,9 +36,59 @@ pub fn plan_install_intent_read(
             guard_target(&rule.context.contract, input)?;
         }
     }
-    let plan = plan_call_surface_read(input, registry_trust, build_config)?;
+    let mut plan = plan_call_surface_read(input, registry_trust, build_config)?;
     guard_target(plan.grant_target(), input)?;
+    if required_target_code(&plan).is_some() {
+        let target = plan.grant_target().to_string();
+        if let Err(at) = plan.contract_addresses.binary_search(&target) {
+            plan.contract_addresses.insert(at, target);
+        }
+    }
     Ok(plan)
+}
+
+/// The code the selected rule requires at its target, when a change there must stop it: an
+/// adapter-derived rule's widened constraints hold only for the code the adapter was bound to,
+/// and a refuse-on-drift identity says so explicitly. Synthesis chose the adapter from the
+/// recording's observation, which a caller supplies, so nothing before this read checked it.
+fn required_target_code(plan: &CallSurfaceReadPlan) -> Option<Hash32> {
+    let rule = plan.prepared.spec.spec().rules.get(plan.input.rule_index)?;
+    rule.context
+        .target_code_hash
+        .as_ref()
+        .filter(|target| {
+            target.role == TargetHashRole::AdapterRequired
+                || target.on_drift == DriftResponse::Refuse
+        })
+        .map(|target| target.hash)
+}
+
+/// Refuse a rule whose required target code is not what the capture observed at its target.
+fn check_required_target_code(
+    plan: &CallSurfaceReadPlan,
+    scan: &AccountStateScan,
+) -> Result<(), ToolError> {
+    let Some(expected) = required_target_code(plan) else {
+        return Ok(());
+    };
+    let target = plan.grant_target();
+    let observed = scan.observed_code_hashes.get(target).ok_or_else(|| {
+        ToolError::new(
+            EC::EIncompleteAccountState,
+            "the scan did not read the code at the rule's target, which the rule requires",
+        )
+    })?;
+    if *observed != expected {
+        return Err(ToolError::new(
+            EC::ETargetCodeChanged,
+            format!(
+                "the rule requires code {expected} at its target {target}, and the account read \
+                 found {observed} there; the rule was synthesized for the other code. Record \
+                 the current target again and synthesize a new rule"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn guard_target(target: &str, input: &PrepareInstallIntentInput) -> Result<(), ToolError> {
@@ -111,6 +163,9 @@ pub fn prepare_install_intent_from_scan(
     scan: &AccountStateScan,
 ) -> Result<PrepareInstallIntentOutput, ToolError> {
     let authority = finish_call_surface_check(plan, source_name, scan)?;
+    // Before the authority findings: other code at the target is a reason not to install this
+    // rule whatever the account's rules say.
+    check_required_target_code(plan, scan)?;
     let authority = &authority;
     let verdict = &authority.verdict;
     if !verdict.refusals.is_empty() || !verdict.unresolved.is_empty() {
@@ -176,6 +231,22 @@ mod tests {
     use crate::call_surface_live::tests::fixture;
     use crate::test_support::{build_config, registry_trust};
     use ozpb_domain::LedgerSeq;
+
+    /// The install intent inherits the registry's one refusal point rather than carrying its own.
+    #[test]
+    fn the_install_intent_refuses_the_development_root_outside_testnet() {
+        let (mut input, _) = fixture();
+        crate::test_support::moved_to_mainnet(&mut input);
+        let Err(error) = plan_install_intent_read(&input, &registry_trust(), &build_config())
+        else {
+            panic!("the development root must be refused on mainnet")
+        };
+        assert_eq!(
+            error.code,
+            ozpb_api_types::ErrorCode::ERegistryRootPolicy,
+            "{error}"
+        );
+    }
 
     #[test]
     fn a_clear_answer_yields_the_exact_arguments_it_committed_to() {
@@ -379,5 +450,109 @@ mod tests {
         assert_eq!(aimed_at(&policy), EC::EUnsafeCallSurface);
         let plan = plan_install_intent_read(&input, &registry_trust(), &build_config()).unwrap();
         assert!(guard_target(plan.grant_target(), &input).is_ok());
+    }
+
+    /// The selected rule with the given target identity, its generated binding rebuilt for the
+    /// changed spec, and a scan that observed `live` at the target (or nothing there).
+    fn with_target_identity(
+        role: ozpb_policy_spec::TargetHashRole,
+        on_drift: ozpb_policy_spec::DriftResponse,
+        live: Option<ozpb_domain::Hash32>,
+    ) -> (PrepareInstallIntentInput, ozpb_source_rpc::AccountStateScan) {
+        let (mut input, mut scan) = fixture();
+        let mut spec: PolicySpec = serde_json::from_value(input.spec.clone()).unwrap();
+        spec.rules[0].context.target_code_hash = Some(ozpb_policy_spec::TargetCodeHash {
+            hash: ozpb_domain::Hash32([0x5a; 32]),
+            role,
+            observed_ledger: LedgerSeq(1),
+            on_drift,
+        });
+        let spec = spec.validate().unwrap();
+        input.spec = serde_json::to_value(spec.spec()).unwrap();
+        input.binding_set.spec_hash = spec.hash().to_hex();
+        let generated = crate::generate_code_with_build_config(
+            &ozpb_api_types::GenerateCodeInput {
+                spec: input.spec.clone(),
+                rule_index: 0,
+            },
+            &build_config(),
+        )
+        .unwrap();
+        let binding = &mut input.binding_set.bindings[1];
+        binding.observed_wasm_hash = generated.wasm_hash.clone();
+        binding.recognition = ozpb_api_types::PolicyRecognition::VerifiedGeneratedManifest {
+            build_manifest: generated.build_manifest,
+        };
+        scan.observed_code_hashes.insert(
+            binding.contract_address.clone(),
+            ozpb_domain::Hash32::from_hex(&generated.wasm_hash).unwrap(),
+        );
+        if let Some(live) = live {
+            scan.observed_code_hashes
+                .insert(spec.spec().rules[0].context.contract.clone(), live);
+        }
+        (input, scan)
+    }
+
+    /// An adapter is selected at synthesis from the recording's target code hash, which a
+    /// caller supplies; the widened constraints hold only for that code. The intent reads the
+    /// target's code in the same capture and refuses other code, as the live check does.
+    #[test]
+    fn install_intent_refuses_adapter_required_target_with_other_code() {
+        use ozpb_policy_spec::{DriftResponse, TargetHashRole};
+        let recorded = ozpb_domain::Hash32([0x5a; 32]);
+        let other = ozpb_domain::Hash32([0x5b; 32]);
+
+        let (input, scan) = with_target_identity(
+            TargetHashRole::AdapterRequired,
+            DriftResponse::Refuse,
+            Some(recorded),
+        );
+        let plan = plan_install_intent_read(&input, &registry_trust(), &build_config()).unwrap();
+        let target = plan.grant_target().to_string();
+        assert!(
+            plan.contract_addresses.contains(&target),
+            "the target's code is read in the same capture"
+        );
+        assert!(plan
+            .contract_addresses
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]));
+        assert!(prepare_install_intent_from_scan(&plan, "testnet", &scan).is_ok());
+
+        for (role, on_drift) in [
+            (TargetHashRole::AdapterRequired, DriftResponse::Refuse),
+            (TargetHashRole::AdapterRequired, DriftResponse::Warn),
+            (TargetHashRole::EvidenceOnly, DriftResponse::Refuse),
+        ] {
+            let (input, scan) = with_target_identity(role, on_drift, Some(other));
+            let plan =
+                plan_install_intent_read(&input, &registry_trust(), &build_config()).unwrap();
+            let error = prepare_install_intent_from_scan(&plan, "testnet", &scan).unwrap_err();
+            assert_eq!(error.code, EC::ETargetCodeChanged, "{role:?} {on_drift:?}");
+            assert!(error.message.contains(&recorded.to_hex()), "{error}");
+            assert!(error.message.contains(&other.to_hex()), "{error}");
+        }
+
+        // A scan that did not observe the target cannot clear a rule that requires its code.
+        let (input, scan) =
+            with_target_identity(TargetHashRole::AdapterRequired, DriftResponse::Refuse, None);
+        let plan = plan_install_intent_read(&input, &registry_trust(), &build_config()).unwrap();
+        assert_eq!(
+            prepare_install_intent_from_scan(&plan, "testnet", &scan)
+                .unwrap_err()
+                .code,
+            EC::EIncompleteAccountState
+        );
+
+        // An evidence-only identity that only warns does not stop the install, and is not read.
+        let (input, scan) = with_target_identity(
+            TargetHashRole::EvidenceOnly,
+            DriftResponse::Warn,
+            Some(other),
+        );
+        let plan = plan_install_intent_read(&input, &registry_trust(), &build_config()).unwrap();
+        assert!(!plan.contract_addresses.contains(&target));
+        assert!(prepare_install_intent_from_scan(&plan, "testnet", &scan).is_ok());
     }
 }

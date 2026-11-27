@@ -1164,9 +1164,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.2.2"
+version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30d65c71f1ce40ab09135ce117d742b9f8a19ff91a41a8b57ed50bc2de59c427"
+checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
 dependencies = [
  "libc",
  "wasi",
@@ -1260,13 +1260,16 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "ed25519-dalek",
+ "getrandom 0.2.17",
  "hex",
  "nix",
  "ozpb-api-types",
+ "ozpb-build-runner",
  "ozpb-domain",
  "ozpb-recorder-core",
  "ozpb-registry",
  "ozpb-source-rpc",
+ "ozpb-synthesizer",
  "ozpb-toolkit",
  "serde",
  "serde_json",
@@ -1350,6 +1353,7 @@ dependencies = [
  "rmcp",
  "serde_json",
  "stellar-xdr",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tower",
@@ -1413,6 +1417,7 @@ dependencies = [
  "ozpb-domain",
  "ozpb-recorder-core",
  "ozpb-registry",
+ "ozpb-source-bundle",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2712,18 +2717,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.55"
+version = "0.8.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5a105cd7b140f6eeec8acff2ea38135d3cab283ada58540f629fe51e46696eb"
+checksum = "c17e8fafad82b542ff3717217ecdc736231b59e387768c9630123b4ce4d2db44"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.55"
+version = "0.8.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fe976fb70c78cd64cccfe3a6fc142244e8a77b70959b30faf9d0ac37ee228eb"
+checksum = "595f56e044df4f46a0c9a626f65c3d99eb8488f7e8a8baa12dd76326d9710bf2"
 dependencies = [
  "proc-macro2",
  "quote",

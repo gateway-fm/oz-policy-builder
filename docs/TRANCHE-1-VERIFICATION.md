@@ -127,8 +127,8 @@ For the slowest independent trust-anchor check, run:
 bash scripts/verify-pinned-upstream.sh
 ```
 
-It clones the pinned OpenZeppelin tag, rebuilds every pinned upstream contract with the
-recorded compiler, and compares their Wasm hashes. Two are Phase 1 trust anchors; the
+It clones the pinned OpenZeppelin tags (v0.7.3 for the account, v0.7.2 for the policy and
+verifiers), rebuilds every pinned upstream contract with the recorded compiler, and compares their Wasm hashes. Two are Phase 1 trust anchors; the
 ed25519 and WebAuthn verifier pins were added for the Tranche 2 authority check. The script is intentionally separate from the release
 gate because it performs a cold build of another repository.
 

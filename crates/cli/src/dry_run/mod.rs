@@ -462,10 +462,10 @@ fn run_captured_layer(
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::key::tests::{address, key_file, seed_strkey};
-    use super::key::KeyFileError;
     use super::signer::tests::{binding, delegate_key, request};
     use super::*;
+    use crate::key_file::tests::{address, key_file, seed_strkey};
+    use crate::key_file::KeyFileError;
 
     #[test]
     fn capture_source_errors_never_echo_confidential_request_fields() {

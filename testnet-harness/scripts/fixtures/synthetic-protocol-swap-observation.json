@@ -6,14 +6,15 @@
     "minimum_out": "100000",
     "deadline": 1792495419,
     "operator_decisions": {
-      "schema": "ozpb-soroswap-operator-decisions/v2",
+      "schema": "ozpb-soroswap-operator-decisions/v3",
       "output_floor": {
         "min": "100000",
         "intent": "Absolute output floor chosen for this controlled test swap; not a price or slippage model"
       },
       "transfer_cap": {
         "max": "1000000",
-        "intent": "Permit the bounded native transfer to the exact pair as an independent capability"
+        "intent": "Permit the bounded native transfer to the exact pair as an independent capability",
+        "no_floor_acknowledged": true
       },
       "adapter_deadline": "keep_recorded_deadline",
       "source_sha256": "f60e747c82cc22422d11fad0169730b15a6226f65ef130aa7f1612c93c101e5f"
@@ -38,7 +39,7 @@
         "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL": {
           "executable": {
             "wasm": {
-              "code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289"
+              "code_hash": "203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f"
             }
           },
           "observed_ledger": 5293646
@@ -116,7 +117,7 @@
       },
       "name": "soroswap-swap",
       "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
-      "registry_snapshot": "3e7c6ca88af0aa98b9153986d07a8e871538991981a82fe2406550187e18f5a6",
+      "registry_snapshot": "8874c4e03f7dd47d2cdc197e56f4317a5c8edb69e8571a3df383bd15f17b48eb",
       "rules": [
         {
           "allowed_calls": [
@@ -310,18 +311,20 @@
       "schema": "policy-spec/v1",
       "smart_account": {
         "address": "CDL6OEBK7K36WJCUPE3UC6AQF3CPNVNGU57SHYIN7SGVYXSEUEMDVEJL",
-        "observed_code_hash": "a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289",
-        "registry_resolution": "stellar-accounts@0.7.x (registry entry a12747ff6c139dc14fc2fd30d200d6bbb5da7b5d59812c047ce1f9cad226b289)"
+        "observed_code_hash": "203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f",
+        "registry_resolution": "stellar-accounts@0.7.3 (registry entry 203e2970d9fed24fb5fca2e0aeebb3c1e4648b76dd6601567178e6474c9fec6f)"
       }
     },
-    "spec_hash": "84672a0c3364e75f530c668d99289f317e33a690e72d31b58b5238b5e18ce9e4",
+    "spec_hash": "2244e1a09580c274ebc7bc1d2c73d8d1b6c6b259098efd278e08a16b9cf80e44",
     "rationale": [
       "permission bundle: 2 independent rules (one per contract); ordering and dependency between them are NOT enforced",
       "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 0: adapter 'soroswap-router@2' derived a code-hash-bound widening from its reviewed argument role (valid only while the target's code hash holds)",
       "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 1: user-widened (Absolute output floor chosen for this controlled test swap; not a price or slippage model), blast radius Medium",
       "target CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC is the built-in Stellar Asset contract; it has no Wasm code hash",
       "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: user-widened (Permit the bounded native transfer to the exact pair as an independent capability), blast radius Medium",
-      "swap_exact_tokens_for_tokens arg 4: preserve the recorded deadline exactly"
+      "swap_exact_tokens_for_tokens arg 4: preserve the recorded deadline exactly",
+      "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: NO FLOOR — the user acknowledged that the cap at 1000000 admits every smaller value, negative amounts included; the generated scope policy has no non-negativity check, so only the target contract can refuse a negative amount the cap admits",
+      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 0: NO FLOOR — adapter 'soroswap-router@2' caps this argument at 1000000 from its reviewed maximum-input role and sets no floor, so every smaller value passes, negative amounts included; the generated scope policy has no non-negativity check, so only the target contract can refuse a negative amount the cap admits"
     ]
   }
 }

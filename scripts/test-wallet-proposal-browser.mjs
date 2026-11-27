@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { chromium } from '../testnet-harness/browser/node_modules/playwright/index.mjs';
 import { proposalFixture } from '../wallet/tests/proposal-fixture.mjs';
 import { checkProposalArtifact, parseGrantProposal } from '../wallet/shared/proposal.mjs';
-import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM } from '../wallet/shared/approval.mjs';
+import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../wallet/shared/approval.mjs';
+import { WALLET_NETWORKS } from '../wallet/shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const origin = process.argv[2] ?? 'http://localhost:3000';
 if (!/^http:\/\/localhost:[0-9]{1,5}$/.test(origin)) throw new Error('Expected a localhost UI origin');
@@ -29,7 +31,7 @@ try {
       assert.equal(name, 'import-proposal', 'import must not deploy, submit or request signing');
       const input = request.postDataJSON();
       assert.deepEqual(input.wallet, f.wallet);
-      const proposal = parseGrantProposal(input.proposal, f.wallet.contractId);
+      const proposal = parseGrantProposal(input.proposal, f.wallet.contractId, NETWORK_ID);
       const artifact = structuredClone(f.artifact);
       const proposalReview = checkProposalArtifact(proposal, artifact);
       if (corrupt) artifact.spec.rules[0].allowed_calls[0].args[2].c.eq_i128.value = '2000000';

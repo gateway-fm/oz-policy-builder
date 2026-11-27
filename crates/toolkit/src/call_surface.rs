@@ -27,7 +27,8 @@ use ozpb_policy_spec::{
     PolicyRef, PolicySpec, ReviewedParams, RuleSpec, SignerSpec, ValidatedSpec,
 };
 use ozpb_registry::{
-    Registry, SignedSnapshot, MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE,
+    Registry, ResolvedAccountAuthority, SignedSnapshot,
+    MANAGEMENT_EVIDENCE_RETURN_VALUE_AND_EVENTS_MUST_AGREE,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,13 +77,17 @@ pub fn check_observed_call_surface_with_build_config(
 }
 
 /// Everything about a request that does not depend on the ledger read: the validated spec,
-/// the signed registry loaded under the pinned trust, the account capability, the bindings
-/// recognized (generated ones rebuilt, once) and the grant. A live check prepares this before
-/// it reads anything, so a request that cannot be answered costs no read and no build after it.
+/// the signed registry loaded under the pinned trust, the account's resolved authority, the
+/// bindings recognized (generated ones rebuilt, once) and the grant. A live check prepares this
+/// before it reads anything, so a request that cannot be answered costs no read and no build
+/// after it.
 pub(crate) struct PreparedCallSurfaceCheck {
     pub(crate) spec: ValidatedSpec,
     pub(crate) registry: Registry,
     pub(crate) loaded_root: Hash32,
+    /// The signed scan bounds and the method inventory reviewed for this exact account build.
+    /// Every entry point resolves it, so none can report the account recognized without it.
+    pub(crate) account_authority: ResolvedAccountAuthority,
     enumeration: Enumeration,
     binding_set_hash: Hash32,
     bound_recognition: BTreeMap<String, VerifiedPolicy>,
@@ -134,6 +139,12 @@ pub(crate) fn prepare_call_surface_check(
         ));
     }
     let enumeration = supported_rule_enumeration(&account.rule_enumeration)?;
+    // Recognizing the hash is not enough to say who can change the account: the method
+    // inventory was reviewed for one exact build, which `check_prepared` then reports as
+    // recognized. Resolved here, so the public observed check cannot skip it.
+    let account_authority = registry
+        .resolve_account_authority(&validated.spec().smart_account.observed_code_hash)
+        .map_err(map_registry_err)?;
     let (binding_set_hash, bound_recognition) =
         validate_bindings(&validated, &input.binding_set, &registry, build_config)?;
     let grant = grant_for(&validated, input.rule_index, &input.binding_set)?;
@@ -141,6 +152,7 @@ pub(crate) fn prepare_call_surface_check(
         spec: validated,
         registry,
         loaded_root,
+        account_authority,
         enumeration,
         binding_set_hash,
         bound_recognition,
@@ -237,8 +249,8 @@ pub(crate) fn check_prepared(
     }
 
     // A policy installed on any rule is readable only if its *observed* implementation
-    // resolves in the signed registry with established signer semantics. Address-only
-    // recognition would let an upgrade at that address pass.
+    // resolves in the signed registry with established signer semantics, and its code is not
+    // revoked under any role. Address-only recognition would let an upgrade at that address pass.
     for policy in observation.account_state.policies.values() {
         if recognized_policies.contains_key(&policy.address) {
             continue;
@@ -246,13 +258,16 @@ pub(crate) fn check_prepared(
         let Ok(hash) = Hash32::from_hex(&policy.observed_wasm_hash) else {
             continue;
         };
+        if registry.ensure_code_not_revoked(&hash).is_err() {
+            continue;
+        }
         if let Ok(entry) = registry.resolve_policy(&hash) {
             recognized_policies.insert(
                 policy.address.clone(),
                 VerifiedPolicy {
                     wasm_hash: hash.to_hex(),
                     path: PolicyRecognitionPath::ReviewedRegistry,
-                    signers: signer_semantics(&entry.kind),
+                    signers: signer_semantics(&hash, &entry.kind),
                 },
             );
         }
@@ -322,17 +337,29 @@ pub(crate) fn check_prepared(
     })
 }
 
-/// What a reviewed policy kind demands of its rule's signers, from source review. OZ's
-/// spending limit refuses unless at least one of the rule's own signers authenticated
-/// (`stellar-accounts` 0.7.2 `policies/spending_limit.rs`, `enforce`: an empty
-/// `authenticated_signers` panics). Any kind not named here is unknown, which leaves a rule
-/// carrying it unresolved: the account hands such a rule to its policies with whatever
+/// The policy builds whose signer semantics were reviewed from source, by exact Wasm hash and
+/// the kind their registry entry must carry. OZ's spending limit refuses unless at least one of
+/// the rule's own signers authenticated (`stellar-accounts` 0.7.2 `policies/spending_limit.rs`,
+/// `enforce`: an empty `authenticated_signers` panics). That was read for this one build, as the
+/// owner verifiers' key schemes and the account's method inventory were: a signed entry can
+/// recognize other code, but its kind label cannot lend that code the reviewed semantics.
+const REVIEWED_POLICY_SIGNER_SEMANTICS: [(Hash32, &str, PolicySignerSemantics); 1] = [(
+    ozpb_domain::pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM,
+    "oz:spending_limit",
+    PolicySignerSemantics::AtLeastOneRuleSigner,
+)];
+
+/// What a recognized policy demands of its rule's signers: the reviewed semantics when both its
+/// code hash and its registry kind are the reviewed pair, and unknown otherwise, which leaves a
+/// rule carrying it unresolved: the account hands such a rule to its policies with whatever
 /// signers came, possibly none.
-fn signer_semantics(kind: &str) -> PolicySignerSemantics {
-    match kind {
-        "oz:spending_limit" => PolicySignerSemantics::AtLeastOneRuleSigner,
-        _ => PolicySignerSemantics::Unknown,
-    }
+fn signer_semantics(wasm_hash: &Hash32, kind: &str) -> PolicySignerSemantics {
+    REVIEWED_POLICY_SIGNER_SEMANTICS
+        .iter()
+        .find(|(hash, reviewed_kind, _)| hash == wasm_hash && *reviewed_kind == kind)
+        .map_or(PolicySignerSemantics::Unknown, |(_, _, semantics)| {
+            *semantics
+        })
 }
 
 /// The rule being installed, from the hashed spec: its target, its signers (the restricted
@@ -430,31 +457,26 @@ fn record_observed_code<'a>(
     Ok(())
 }
 
+/// The one way this crate turns pinned trust into a registry verifier for a network. The
+/// network-pinned constructors refuse the public development root for any network but testnet,
+/// so every operation built on this inherits that rule rather than restating it.
+///
+/// A checkpoint becomes the registry's floor, so one older than the configured floor would lower
+/// it and let the older version it names load again. The roots-file parser refuses that pair,
+/// but `RegistryTrust`'s fields are public, so it is refused here, where every operation passes.
 pub(crate) fn registry_for(
     trust: &RegistryTrust,
     network: ozpb_domain::NetworkId,
 ) -> Result<Registry, ToolError> {
-    // Anyone can recompute the development root's private key from its published seed, so a
-    // snapshot it signs carries no review authority: an agent could sign one recognizing its
-    // own verifier as an owner verifier. Only the testnet example may use it.
-    let development_root = ozpb_registry::dev::dev_root_verifying_bytes();
-    if network != ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE)
-        && trust
-            .root_policy
-            .keys
-            .values()
-            .any(|key| *key == development_root)
-    {
-        return Err(map_registry_err(ozpb_registry::RegistryError::RootPolicy(
-            "the public development registry root is accepted only on testnet".into(),
-        )));
-    }
     match trust.checkpoint.clone() {
-        Some(checkpoint) => Registry::with_pinned_roots_for_network_at_checkpoint(
-            trust.root_policy.clone(),
-            network,
-            checkpoint,
-        ),
+        Some(checkpoint) => {
+            refuse_checkpoint_below_floor(&checkpoint, trust.minimum_version)?;
+            Registry::with_pinned_roots_for_network_at_checkpoint(
+                trust.root_policy.clone(),
+                network,
+                checkpoint,
+            )
+        }
         None => Registry::with_pinned_roots_for_network_at_version(
             trust.root_policy.clone(),
             network,
@@ -462,6 +484,19 @@ pub(crate) fn registry_for(
         ),
     }
     .map_err(map_registry_err)
+}
+
+pub(crate) fn refuse_checkpoint_below_floor(
+    checkpoint: &ozpb_registry::RegistryCheckpoint,
+    minimum_version: u64,
+) -> Result<(), ToolError> {
+    if checkpoint.version < minimum_version {
+        return Err(ToolError::new(
+            EC::ERegistryRollback,
+            "registry checkpoint is older than the configured minimum version",
+        ));
+    }
+    Ok(())
 }
 
 fn supported_rule_enumeration(method: &str) -> Result<Enumeration, ToolError> {
@@ -551,6 +586,12 @@ pub(crate) fn validate_bindings(
                 "binding observed_wasm_hash must use canonical lowercase hex",
             ));
         }
+        // Code revoked under any role is refused by its hash, whichever way it is recognized: a
+        // generated build has no registry entry, so its family resolving says nothing about a
+        // `policy/<hash>` revocation of this one build.
+        registry
+            .ensure_code_not_revoked(&observed_hash)
+            .map_err(map_registry_err)?;
         let (path, signers) = match (policy, &binding.recognition) {
             (
                 PolicyRef::Reviewed {
@@ -573,7 +614,7 @@ pub(crate) fn validate_bindings(
                 }
                 (
                     PolicyRecognitionPath::ReviewedRegistry,
-                    signer_semantics(&entry.kind),
+                    signer_semantics(&observed_hash, &entry.kind),
                 )
             }
             (
@@ -611,7 +652,10 @@ pub(crate) fn validate_bindings(
                     entry.insert(artifact);
                 }
                 let artifact: &ozpb_api_types::GenerateCodeOutput = &generated[&binding.rule_index];
-                if &artifact.build_manifest != build_manifest
+                // Every reproducible field, not the producer record: a policy generated by the
+                // hosted worker, or by another toolkit revision, is still this artifact.
+                if ozpb_build_runner::compare_manifests(build_manifest, &artifact.build_manifest)
+                    == ozpb_build_runner::ManifestMatch::Differs
                     || artifact.wasm_hash != observed_hash.to_hex()
                     || artifact.build_manifest["template_family"]
                         != serde_json::Value::String(template_family.clone())
@@ -1002,6 +1046,31 @@ mod tests {
         );
     }
 
+    /// A generated binding built elsewhere — by the hosted worker in its container, or by another
+    /// toolkit revision — is the same artifact when every reproducible manifest field matches.
+    /// Its producer record describes that build and is not compared.
+    #[test]
+    fn a_generated_binding_from_another_producer_is_still_recognized() {
+        fn manifest(request: &mut CheckPolicyCallSurfaceInput) -> &mut serde_json::Value {
+            match &mut request.binding_set.bindings[1].recognition {
+                PolicyRecognition::VerifiedGeneratedManifest { build_manifest } => build_manifest,
+                _ => panic!("the fixture's second binding is the generated policy"),
+            }
+        }
+        let (mut request, observation) = fixture();
+        assert!(check(&request, &observation).is_ok());
+        manifest(&mut request)["producer"]["build_image"] =
+            serde_json::json!(format!("sha256:{}", "a".repeat(64)));
+        manifest(&mut request)["producer"]["toolkit_source"] = serde_json::Value::Null;
+        assert!(check(&request, &observation).is_ok());
+
+        manifest(&mut request)["build_target"] = serde_json::json!("wasm32-unknown-unknown");
+        assert_eq!(
+            check(&request, &observation).unwrap_err().code,
+            EC::EPolicyBindingInvalid
+        );
+    }
+
     #[test]
     fn account_address_has_one_code_hash_across_policy_observations() {
         let (mut request, mut observation) = fixture();
@@ -1194,12 +1263,12 @@ mod tests {
             check(request, observation).unwrap().verdict
         };
 
-        // Version 3 of the signed example recognizes OZ's WebAuthn verifier.
+        // The current signed example recognizes OZ's WebAuthn verifier.
         let (mut request, mut observation) = fixture();
         replace_fixture_snapshot(
             &mut request,
             &mut observation,
-            ozpb_registry::dev::verifier_successor(network).unwrap(),
+            ozpb_registry::dev::account_advisory_successor(network).unwrap(),
         );
         let verdict = passkey_owner(
             &request,
@@ -1240,8 +1309,14 @@ mod tests {
             EC::EIncompleteAccountState
         );
 
-        // Version 1 recognizes no owner verifier, and other code is never one.
-        let (request, mut observation) = fixture();
+        // A snapshot that does not recognize the WebAuthn verifier: unrecognized code is
+        // never an owner verifier.
+        let (mut request, mut observation) = fixture();
+        let mut without_verifier = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+        without_verifier
+            .verifiers
+            .remove(&ozpb_domain::pinned_upstream::OZ_WEBAUTHN_VERIFIER_WASM.to_hex());
+        replace_fixture_snapshot(&mut request, &mut observation, without_verifier);
         let verdict = passkey_owner(
             &request,
             &mut observation,
@@ -1318,11 +1393,259 @@ mod tests {
         );
     }
 
+    /// A generated policy is recognized through its family and by rebuilding it, so it has no
+    /// registry entry for `resolve_policy` to refuse. Custodians can still revoke one build by
+    /// its Wasm hash, `policy/<hash>`, and `ozpb registry monitor --wasm-hash` reports exactly
+    /// that; recognition must refuse it too, wherever a binding is recognized.
+    #[test]
+    fn a_generated_build_revoked_by_its_wasm_hash_is_not_recognized() {
+        let (mut request, mut observation) = fixture();
+        let build = request.binding_set.bindings[1].observed_wasm_hash.clone();
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+        snapshot.revocations.insert(
+            format!("policy/{build}"),
+            ozpb_registry::Revocation {
+                reason: "generated build withdrawn".to_string(),
+                effective_version: snapshot.version,
+            },
+        );
+        replace_fixture_snapshot(&mut request, &mut observation, snapshot);
+        // The family is still registered, and the build does not depend on the snapshot root:
+        // the same Wasm is what the spec under the revoking snapshot reproduces.
+        assert_eq!(request.binding_set.bindings[1].observed_wasm_hash, build);
+
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::ERegistryRevoked, "{error}");
+        assert!(
+            error.message.contains(&format!("policy/{build}")),
+            "{error}"
+        );
+        assert!(
+            error.message.contains("generated build withdrawn"),
+            "{error}"
+        );
+        let Err(error) =
+            crate::plan_call_surface_read(&request, &registry_trust(), &build_config())
+        else {
+            panic!("the live plan must refuse a revoked generated build");
+        };
+        assert_eq!(error.code, EC::ERegistryRevoked, "{error}");
+    }
+
+    /// What a policy demands of its rule's signers was reviewed for one exact build (OZ's
+    /// spending limit), not for whatever a signed entry labels `oz:spending_limit`. An owner rule
+    /// on the grant's target carrying such a policy is readable only under the pinned hash;
+    /// under any other hash it may let the agent through, and the install is refused.
+    #[test]
+    fn spending_limit_signer_semantics_belong_to_the_reviewed_build_not_the_kind() {
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let pinned = ozpb_domain::pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM;
+        let relabelled = ozpb_domain::sha256(b"other code labelled oz:spending_limit");
+        let verdict_with_target_rule_policy = |code: ozpb_domain::Hash32| {
+            let (mut request, mut observation) = fixture();
+            let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+            let reviewed = snapshot.policies[&pinned.to_hex()].clone();
+            assert_eq!(reviewed.kind, "oz:spending_limit");
+            snapshot.policies.insert(relabelled.to_hex(), reviewed);
+            replace_fixture_snapshot(&mut request, &mut observation, snapshot);
+            let spec: PolicySpec = serde_json::from_value(request.spec.clone()).unwrap();
+            // Rule 2: the owner's own key on the grant's target, behind a policy instance that
+            // is not one of this spec's bindings.
+            let state = &mut observation.account_state;
+            state.rules.insert(
+                2,
+                StoredRule {
+                    id: 2,
+                    context_type: StoredContextType::CallContract {
+                        address: spec.rules[0].context.contract.clone(),
+                    },
+                    valid_until: None,
+                    signer_ids: vec![0],
+                    policy_ids: vec![1],
+                },
+            );
+            state.policies.insert(
+                1,
+                StoredPolicy {
+                    id: 1,
+                    address: address(44),
+                    observed_wasm_hash: code.to_hex(),
+                },
+            );
+            state.next_id = 3;
+            state.active_count = 3;
+            check(&request, &observation).unwrap().verdict
+        };
+
+        let reviewed = verdict_with_target_rule_policy(pinned);
+        assert!(reviewed.refusals.is_empty(), "{:?}", reviewed.refusals);
+        assert_eq!(
+            reviewed
+                .notes
+                .target_rules
+                .iter()
+                .map(|entry| entry.rule_id)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        let mislabelled = verdict_with_target_rule_policy(relabelled);
+        assert!(mislabelled.notes.target_rules.is_empty());
+        assert_eq!(mislabelled.refusals.len(), 1, "{:?}", mislabelled.refusals);
+        assert_eq!(
+            mislabelled.refusals[0].code,
+            FindingCode::DelegateGrantOverlap
+        );
+        assert_eq!(mislabelled.refusals[0].rule_id, Some(2));
+    }
+
+    /// A policy installed on another rule is read through its observed code, and code revoked
+    /// under any role is not recognized there either. The grant here carries only its generated
+    /// policy, so the reviewed build is bound by no binding and only the installed copy on the
+    /// target's owner rule depends on it: readable while unrevoked, refused once revoked.
+    #[test]
+    fn an_installed_policy_whose_code_is_revoked_under_any_role_is_not_recognized() {
+        let pinned = ozpb_domain::pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM;
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let verdict_with_revocation = |revoked: Option<&str>| {
+            let (mut request, mut observation) = fixture();
+            let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+            if let Some(kind) = revoked {
+                snapshot.revocations.insert(
+                    format!("{kind}/{}", pinned.to_hex()),
+                    ozpb_registry::Revocation {
+                        reason: "spending limit build withdrawn".to_string(),
+                        effective_version: snapshot.version,
+                    },
+                );
+            }
+            let signed =
+                ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot)
+                    .unwrap();
+            let mut spec: PolicySpec = serde_json::from_value(request.spec.clone()).unwrap();
+            spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
+            spec.rules[0]
+                .policies
+                .retain(|policy| matches!(policy, PolicyRef::Generated { .. }));
+            let spec = spec.validate().unwrap();
+            request.spec = serde_json::to_value(spec.spec()).unwrap();
+            request.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
+            let generated = generate_code_with_build_config(
+                &GenerateCodeInput {
+                    spec: request.spec.clone(),
+                    rule_index: 0,
+                },
+                &build_config(),
+            )
+            .unwrap();
+            let mut binding = request.binding_set.bindings[1].clone();
+            binding.policy_index = 0;
+            binding.observed_wasm_hash = generated.wasm_hash.clone();
+            binding.recognition = PolicyRecognition::VerifiedGeneratedManifest {
+                build_manifest: generated.build_manifest,
+            };
+            request.binding_set.spec_hash = spec.hash().to_hex();
+            request.binding_set.bindings = vec![binding];
+            observation.bound_policies = vec![BoundPolicy {
+                address: request.binding_set.bindings[0].contract_address.clone(),
+                observed_wasm_hash: generated.wasm_hash,
+            }];
+            // Rule 2: the owner's own key on the grant's target, behind the reviewed build.
+            let state = &mut observation.account_state;
+            state.rules.insert(
+                2,
+                StoredRule {
+                    id: 2,
+                    context_type: StoredContextType::CallContract {
+                        address: spec.spec().rules[0].context.contract.clone(),
+                    },
+                    valid_until: None,
+                    signer_ids: vec![0],
+                    policy_ids: vec![1],
+                },
+            );
+            state.policies.insert(
+                1,
+                StoredPolicy {
+                    id: 1,
+                    address: address(44),
+                    observed_wasm_hash: pinned.to_hex(),
+                },
+            );
+            state.next_id = 3;
+            state.active_count = 3;
+            check(&request, &observation).unwrap().verdict
+        };
+
+        let unrevoked = verdict_with_revocation(None);
+        assert!(unrevoked.refusals.is_empty(), "{:?}", unrevoked.refusals);
+        assert_eq!(unrevoked.notes.target_rules.len(), 1);
+        for kind in ["policy", "account", "verifier", "target_adapter"] {
+            let revoked = verdict_with_revocation(Some(kind));
+            assert!(revoked.notes.target_rules.is_empty(), "{kind}");
+            assert_eq!(revoked.refusals.len(), 1, "{kind}: {:?}", revoked.refusals);
+            assert_eq!(revoked.refusals[0].code, FindingCode::DelegateGrantOverlap);
+            assert_eq!(revoked.refusals[0].rule_id, Some(2));
+        }
+    }
+
+    /// The observed check is public, and its verdict says the account is recognized. A signed
+    /// entry for other account code that copies the reviewed entry's strings and digest must not
+    /// get that answer: the method inventory was reviewed for one exact build, and only the
+    /// live plan used to ask for it.
+    #[test]
+    fn the_observed_check_recognizes_only_the_reviewed_account_build() {
+        let (mut request, mut observation) = fixture();
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let pinned = ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM;
+        let other = ozpb_domain::sha256(b"other account code with the reviewed entry's strings");
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+        let reviewed = snapshot.accounts[&pinned.to_hex()].clone();
+        snapshot.accounts.insert(other.to_hex(), reviewed);
+        request.spec["smart_account"]["observed_code_hash"] = serde_json::json!(other.to_hex());
+        observation.account_code_hash = other.to_hex();
+        replace_fixture_snapshot(&mut request, &mut observation, snapshot);
+
+        let error = check(&request, &observation).unwrap_err();
+        assert_eq!(error.code, EC::EIncompatibleAccount, "{error}");
+        assert!(error.message.contains(&other.to_hex()), "{error}");
+    }
+
+    /// `RegistryTrust` has public fields, so a library caller can pair a floor with an older
+    /// checkpoint without going through the roots-file parser that refuses it. The checkpoint
+    /// must not quietly lower the floor: the older version it names would load again.
+    #[test]
+    fn a_checkpoint_older_than_the_floor_is_refused_not_used_as_the_floor() {
+        let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let v5 = ozpb_registry::sign_snapshot(
+            &ozpb_registry::dev::dev_signing_key(),
+            ozpb_registry::dev::dev_snapshot(network, 5),
+        )
+        .unwrap();
+        let mut loaded = Registry::with_pinned_roots(registry_trust().root_policy).unwrap();
+        loaded.load(&v5).unwrap();
+        let trust_at = |minimum_version| RegistryTrust {
+            minimum_version,
+            checkpoint: Some(loaded.checkpoint().unwrap()),
+            ..registry_trust()
+        };
+
+        let Err(error) = registry_for(&trust_at(6), network) else {
+            panic!("a v5 checkpoint under a floor of 6 must be refused");
+        };
+        assert_eq!(error.code, EC::ERegistryRollback, "{error}");
+
+        // At or above the floor, the checkpoint is what the registry extends.
+        let mut registry = registry_for(&trust_at(5), network).unwrap();
+        assert_eq!(registry.load(&v5).unwrap(), loaded.root().unwrap());
+    }
+
     #[test]
     fn signed_onchain_list_capability_cannot_claim_a_bounded_next_id_verdict() {
         let (mut request, mut observation) = fixture();
         let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
-        let mut snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
         snapshot
             .accounts
             .get_mut(&observation.account_code_hash)
@@ -1339,7 +1662,7 @@ mod tests {
     fn signed_template_must_declare_the_generated_rules_capabilities() {
         let (mut request, mut observation) = fixture();
         let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
-        let mut snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
         snapshot
             .templates
             .get_mut("policy-templates/scope@1")
@@ -1359,7 +1682,7 @@ mod tests {
         let (mut request, mut observation) = fixture();
         let spec: PolicySpec = serde_json::from_value(request.spec.clone()).unwrap();
         let predicate = spec.rules[0].authorization.kind.kind_name();
-        let mut snapshot = ozpb_registry::dev::dev_snapshot(network, 1);
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
         snapshot
             .templates
             .get_mut("policy-templates/scope@1")

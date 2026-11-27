@@ -6,10 +6,12 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { Keypair } from '@stellar/stellar-sdk';
 import { fixture } from './approval-fixture.mjs';
-import { ACCOUNT_WASM, NETWORK_ID } from '../shared/approval.mjs';
+import { ACCOUNT_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { WalletToolchain } from '../server/toolchain.mjs';
 import { proposalFixture } from './proposal-fixture.mjs';
 import { parseGrantProposal } from '../shared/proposal.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 function setup(t, change = () => {}, pipeline) {
   const root = mkdtempSync(join(tmpdir(), 'ozpb-wallet-tools-'));
@@ -26,13 +28,15 @@ function setup(t, change = () => {}, pipeline) {
   const calls = [];
   const raw = JSON.stringify(record).replace('"nonce":1', '"nonce":9223372036854775807');
   const runner = async (executable, args, options = {}) => {
-    calls.push({ executable, args, ...(options.signal ? { signal: options.signal } : {}), ...(options.codes ? { codes: options.codes } : {}),
+    // Every call may surface the registry root refusal; only other allowlisted codes are recorded here.
+    const codes = options.codes?.filter((code) => code !== 'E_REGISTRY_ROOT_POLICY');
+    calls.push({ executable, args, ...(options.signal ? { signal: options.signal } : {}), ...(codes?.length ? { codes } : {}),
       ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) });
     return args[0] === 'record' ? raw : JSON.stringify(await pipeline(args));
   };
   const toolchain = new WalletToolchain({ executable: '/fixed/ozpb', workRoot: root,
     rpcUrl: 'https://example.invalid/rpc', registrySnapshot: '{"valid_until":9223372036854775807}',
-    registryRoots: '{}', registryMinimumVersion: 3, runner });
+    registryRoots: '{}', registryMinimumVersion: 6, runner, network: WALLET_NETWORKS.testnet });
   return { toolchain, root, account, calls, raw };
 }
 
@@ -171,7 +175,7 @@ test('dry-run preparation sends retained artifact claims, a fresh nonce and the 
   const call = calls.at(-2);
   assert.deepEqual(call.args.slice(0, 2), ['prepare-dry-run', '--request']);
   assert.deepEqual(call.args.slice(3), ['--registry-roots', join(toolchain.sessionRoot, 'registry-roots.json'),
-    '--registry-min-version', '3', '--rpc-sources', join(toolchain.sessionRoot, 'rpc-sources.json')]);
+    '--registry-min-version', '6', '--rpc-sources', join(toolchain.sessionRoot, 'rpc-sources.json')]);
   assert.ok(call.args[2].startsWith(root));
   const sent = readFileSync(call.args[2], 'utf8');
   assert.ok(sent.includes('"signed_registry_snapshot":{"valid_until":9223372036854775807}'));
@@ -238,7 +242,7 @@ for (const changed of [false, true]) test(`proposal grant comparison ${changed ?
   const recorded = await toolchain.record({ transactionHash: f.proposal.transaction_hash, accountAddress: f.wallet.contractId });
   const generate = () => toolchain.generate({ recordId: recorded.recordId, delegateAddress: f.proposal.decisions.delegate,
     validUntilLedger: 200, maxCalls: 1, grantName: 'wallet-grant', currentLedger: 101,
-    proposal: parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId) });
+    proposal: parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId, NETWORK_ID) });
   if (changed) {
     await assert.rejects(generate, /refused/);
     assert.deepEqual(calls.map(c => c.args[0]), ['record', 'synthesize']);

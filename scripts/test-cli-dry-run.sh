@@ -151,7 +151,7 @@ printf '%s\n' '{"synthetic-fixture":{"rpc_url":"https://rpc.invalid/","network_p
 
 dry_run() {
     "$cli" dry-run --request "$work/request.json" \
-        --registry-roots docs/examples/registry-roots.json --registry-min-version 3 \
+        --registry-roots docs/examples/registry-roots.json --registry-min-version 6 \
         --rpc-sources "$work/rpc-sources.json" --native-worker "$runtime" \
         --account-wasm "$work/pinned-account.wasm" --source-ledger "$work/ledger.json" \
         --delegate-key-file "$1"

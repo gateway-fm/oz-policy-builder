@@ -48,7 +48,12 @@ pub mod domains {
     pub const SIGNER_SET: &str = "ozpb:v1:signer-set";
     pub const REGISTRY_SNAPSHOT: &str = "ozpb:v1:registry-snapshot";
     pub const CODEGEN_INPUT: &str = "ozpb:v1:codegen-input";
-    pub const BUILD_MANIFEST: &str = "ozpb:v1:build-manifest";
+    /// Schema 2 of the build manifest: schema 1 plus the canonicalization version, build target
+    /// and producer record. The digit is the structure's schema version, as everywhere here.
+    pub const BUILD_MANIFEST: &str = "ozpb:v2:build-manifest";
+    /// The generator's template source — the emitter half of `crates/codegen` and the lockfile it
+    /// copies — keyed by repository path. Recorded in a BuildManifest's producer record.
+    pub const TEMPLATE_PACK: &str = "ozpb:v1:template-pack";
     pub const POLICY_BINDING_SET: &str = "ozpb:v1:policy-binding-set";
     /// The full typed request for a state-dependent installed-policy check.
     pub const POLICY_CHECK_REQUEST: &str = "ozpb:v1:policy-check-request";
@@ -108,6 +113,7 @@ pub mod domains {
         REGISTRY_SNAPSHOT,
         CODEGEN_INPUT,
         BUILD_MANIFEST,
+        TEMPLATE_PACK,
         POLICY_BINDING_SET,
         POLICY_CHECK_REQUEST,
         DRY_RUN_REQUEST,
@@ -160,12 +166,20 @@ impl Hash32 {
 /// | | |
 /// |---|---|
 /// | Source | `github.com/OpenZeppelin/stellar-contracts`, `examples/multisig-smart-account/` |
-/// | Tag | `v0.7.2` |
-/// | Commit | `a9c42169000638da937577f592ebf61a7a3c94ca` |
-/// | `stellar-accounts` | 0.7.2 · `soroban-sdk` 26.1.0 (the workspace pins at that tag) |
+/// | Tag | `v0.7.3` for the account; `v0.7.2` for the policy and both verifiers |
+/// | Commit | `252b35fe1a39fc524499e97d43cfe4598247a4cd` (v0.7.3); `a9c42169000638da937577f592ebf61a7a3c94ca` (v0.7.2) |
+/// | `stellar-accounts` | 0.7.3 or 0.7.2 · `soroban-sdk` 26.1.0 (the workspace pins at those tags) |
 /// | Rust | **1.91.1** — this repo's pinned toolchain, NOT upstream's |
 /// | Command | `stellar contract build` in each example directory |
 /// | Stellar CLI | 27.0.0 |
+///
+/// The account moved to v0.7.3 for GHSA-jpg9-m7w4-c7wc (`stellar-accounts` before 0.7.3
+/// approves a `Delegated` signer without a signature when the delegate is the direct invoker of
+/// the account's `__check_auth`). v0.7.3 changes only `smart_account/{mod,storage}.rs`; the
+/// policy and verifier sources are identical at both tags, so their pins keep the v0.7.2
+/// provenance they were reviewed and deployed with. Built at v0.7.3 the two verifiers reproduce
+/// the same bytes; the policy does not, because the bumped package versions reach its symbol
+/// names, so v0.7.2 is the only tag its pin reproduces from.
 ///
 /// Two things about this that are easy to get wrong.
 ///
@@ -195,7 +209,18 @@ pub mod pinned_upstream {
 
     /// OpenZeppelin's multisig smart-account example — the `__check_auth` implementation that
     /// invokes installed policies. One instance per user, since it holds their signers and rules.
+    /// Built at v0.7.3, the first release fixed for GHSA-jpg9-m7w4-c7wc.
     pub const OZ_SMART_ACCOUNT_WASM: Hash32 = Hash32([
+        0x20, 0x3e, 0x29, 0x70, 0xd9, 0xfe, 0xd2, 0x4f, 0xb5, 0xfc, 0xa2, 0xe0, 0xae, 0xeb, 0xb3,
+        0xc1, 0xe4, 0x64, 0x8b, 0x76, 0xdd, 0x66, 0x01, 0x56, 0x71, 0x78, 0xe6, 0x47, 0x4c, 0x9f,
+        0xec, 0x6f,
+    ]);
+
+    /// The same account example built at v0.7.2. **Not recognized**: GHSA-jpg9-m7w4-c7wc lets
+    /// anyone authorize it without keys when a `Delegated` signer is the contract that asks for
+    /// its authorization, or when delegation loops. Kept because development registry versions
+    /// 1 to 5 were published recognizing it, and version 6 revokes it by this hash.
+    pub const OZ_SMART_ACCOUNT_0_7_2_WASM: Hash32 = Hash32([
         0xa1, 0x27, 0x47, 0xff, 0x6c, 0x13, 0x9d, 0xc1, 0x4f, 0xc2, 0xfd, 0x30, 0xd2, 0x00, 0xd6,
         0xbb, 0xb5, 0xda, 0x7b, 0x5d, 0x59, 0x81, 0x2c, 0x04, 0x7c, 0xe1, 0xf9, 0xca, 0xd2, 0x26,
         0xb2, 0x89,
@@ -514,6 +539,17 @@ mod tests {
     fn hash32_rejects_bad_hex() {
         assert!(Hash32::from_hex("not-hex").is_err());
         assert!(Hash32::from_hex("abcd").is_err()); // too short
+    }
+
+    #[test]
+    fn hash32_renders_as_its_hex_in_reports_and_debug_output() {
+        // Reports and error messages print hashes with `{}`; a reader compares that text with
+        // the hex a verifier computes, so it must be exactly the hex, nothing added or missing.
+        let h = sha256(b"rendered");
+        let hex = h.to_hex();
+        assert_eq!(hex.len(), 64);
+        assert_eq!(format!("{h}"), hex);
+        assert_eq!(format!("{h:?}"), format!("Hash32({hex})"));
     }
 
     // --- trust levels ----------------------------------------------------------------

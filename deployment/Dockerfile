@@ -8,6 +8,10 @@ USER 10001:10001
 # The toolchain pin is part of every generated Wasm's identity.
 FROM rust:1.91.1-slim-trixie@sha256:f75071363e7f4771769d4cf81b1b7b290e607f4d4459e8731f6abdcee9982dc8 AS build
 ARG TARGETARCH
+# The commit whose tree this context is. The context has no .git and no build script, so the
+# toolkit records this in every BuildManifest's producer.toolkit_source; unset, or anything but
+# a full commit hash, and the manifests claim no commit.
+ARG OZPB_TOOLKIT_SOURCE=
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates

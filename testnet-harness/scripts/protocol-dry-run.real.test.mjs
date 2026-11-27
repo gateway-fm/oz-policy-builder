@@ -18,13 +18,13 @@ for (const kind of ['blend_claim', 'soroswap_swap']) test(`real CLI and worker a
   for (const name of ['OZPB_BIN', 'OZPB_NATIVE_WORKER']) assert.ok(process.env[name], `${name} is required`);
   const dir = mkdtempSync(join(tmpdir(), 'ozpb-walkthrough-real-'));
   try {
-    const capture = JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url)));
+    const capture = JSON.parse(readFileSync(new URL('./fixtures/synthetic-protocol-swap-observation.json', import.meta.url)));
     const spec = kind === 'blend_claim'
       ? JSON.parse(readFileSync(new URL('./fixtures/synthetic-blend-claim-spec.json', import.meta.url)))
       : capture.synthesis.spec;
     // The committed RPC fixture includes the exact pinned account bytes. This fallback is
     // offline and hash-checked; it does not claim a fresh source reproduction.
-    const entries = JSON.parse(readFileSync(join(ROOT, 'crates/source-rpc/tests/captured-testnet/target-capture/getLedgerEntries.json'))).entries;
+    const entries = JSON.parse(readFileSync(join(ROOT, 'crates/source-rpc/tests/captured-testnet/target-capture-protocol30/getLedgerEntries.json'))).entries;
     const accountWasm = process.env.OZPB_ACCOUNT_WASM ? readFileSync(process.env.OZPB_ACCOUNT_WASM)
       : entries.map((e) => xdr.LedgerEntryData.fromXDR(e.xdr, 'base64'))
         .filter((e) => e.type === 'contractCode').map((e) => Buffer.from(e.contractCode.code))
@@ -52,7 +52,7 @@ for (const kind of ['blend_claim', 'soroswap_swap']) test(`real CLI and worker a
       OZPB_HARNESS_SECRETS: join(secrets, 'keys.json'),
       OZPB_SIGNED_REGISTRY_SNAPSHOT: join(ROOT, 'docs/examples/registry.signed.json'),
       OZPB_REGISTRY_ROOTS_FILE: join(ROOT, 'docs/examples/registry-roots.json'),
-      OZPB_REGISTRY_MIN_VERSION: '4', OZPB_RPC_SOURCES_FILE: sources }, {
+      OZPB_REGISTRY_MIN_VERSION: '6', OZPB_RPC_SOURCES_FILE: sources }, {
       loadKey: () => delegate,
       nativeSource: async () => ({ accountWasmBase64: accountWasm.toString('base64'),
         ledger: { protocol_version: 30, sequence: capture.record.bundle.ledger, timestamp: '1793000000',

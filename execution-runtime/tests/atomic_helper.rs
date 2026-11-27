@@ -20,7 +20,7 @@ const AMOUNT: i128 = 1_000_000;
 /// The reviewed helper Wasm, as `stellar contract build` produces it with the pinned rustc and
 /// stellar-cli on the aarch64-apple-darwin host the scheduled job also builds on.
 const EXPECTED_HELPER_HASH: &str =
-    "0d0128a499f20bb176b64232d6c1d047311b23081b882c4c487072bf9a355e94";
+    "e9cd36e7b50b16058eca683bf653ebc64dd647f957b40a9593988a989aae9cdf";
 // `HelperError` codes from contracts/atomic-live-helper/src/lib.rs.
 const AMOUNT_OUT_OF_SCOPE: u32 = 7001;
 const ALIASED_IDENTITY: u32 = 7002;
@@ -30,7 +30,7 @@ const POLICY_CODE_MISMATCH: u32 = 7005;
 const UNEXPECTED_RULE_ID: u32 = 7006;
 const UNOBSERVABLE_POLICY: u32 = 7008;
 const CANDIDATE_RULE_NOT_EXERCISED: u32 = 7009;
-/// The account's `PastValidUntil`, from `stellar-accounts` 0.7.2.
+/// The account's `PastValidUntil`, from `stellar-accounts` 0.7.3.
 const ACCOUNT_PAST_VALID_UNTIL: u32 = 3005;
 /// The account's `UnvalidatedContext`: no selected rule validates the call for these signers.
 const ACCOUNT_UNVALIDATED_CONTEXT: u32 = 3002;

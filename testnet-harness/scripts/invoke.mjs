@@ -25,7 +25,7 @@
 import { join } from 'node:path';
 import { Address, Operation } from '@stellar/stellar-sdk';
 
-import { contractCall, entryAddress, i128, policyDenial, signForSmartAccount } from './lib.mjs';
+import { contractCall, denialCode, entryAddress, i128, signForSmartAccount } from './lib.mjs';
 import { ownerSigner } from './owner.mjs';
 import {
   NETWORK_PASSPHRASE, RPC_URL, SimulationError, args, assertTestnet, latestLedger, loadKey, log, readJson,
@@ -87,7 +87,7 @@ try {
   if (negativeControl) {
     const observed = await enforceSimulation(payer, op);
     simulationLedger = observed.ledger;
-    if (observed.result === 'deny') throw new SimulationError(label, observed.error);
+    if (observed.result === 'deny') throw new SimulationError(label, observed.error, observed.events);
     if (observed.result !== 'permit') throw new Error('unexpected enforcing simulation result');
     outcome = { result: 'permit', observation: 'enforcing_simulation', ledger: simulationLedger };
     log(`UNEXPECTED SIMULATION PERMIT  ${label}; no fee transaction submitted`);
@@ -99,7 +99,7 @@ try {
   }
 } catch (e) {
   if (!(e instanceof SimulationError)) throw e;
-  const code = enforcer ? policyDenial(e.error, run.account, enforcer) : null;
+  const code = enforcer ? denialCode(e.error, e.events, run.account, enforcer) : null;
   const who = wrongChallenge ? 'verifier' : postRevocation ? 'account' : 'policy';
   outcome = { result: 'deny', enforcer: enforcer ?? null, code, host: e.error.split('\n')[0],
     ...(simulationLedger === undefined ? {} : { ledger: simulationLedger }) };

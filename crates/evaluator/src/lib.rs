@@ -349,6 +349,12 @@ fn constraint_satisfied(c: &Constraint, ctx: &EvalContext, value: &ArgValue) -> 
         (Constraint::GeI128 { min }, ArgValue::I128(actual)) => {
             min.parse::<i128>().map(|m| *actual >= m).unwrap_or(false)
         }
+        (Constraint::RangeI128 { min, max }, ArgValue::I128(actual)) => {
+            match (min.parse::<i128>(), max.parse::<i128>()) {
+                (Ok(low), Ok(high)) => low <= *actual && *actual <= high,
+                _ => false,
+            }
+        }
         (Constraint::EqScval { xdr_base64 }, actual) => exact_xdr_matches(xdr_base64, actual),
         // Explicit maximal widening: any value at this position satisfies (arity is
         // enforced by the caller before indexing).
@@ -724,6 +730,37 @@ mod tests {
     }
 
     #[test]
+    fn range_i128_permits_both_ends_and_denies_either_side() {
+        let v = spec_with_amount_constraint(
+            Constraint::RangeI128 {
+                min: "0".to_string(),
+                max: AMOUNT.to_string(),
+            },
+            widened(),
+        );
+        for (amount, expect_permit) in [
+            (i128::MIN, false),  // the whole negative half the floor closes
+            (-1, false),         // just below the floor (guards >= vs >)
+            (0, true),           // at the floor
+            (AMOUNT, true),      // at the cap (guards <= vs <)
+            (AMOUNT + 1, false), // just above the cap
+            (i128::MAX, false),
+        ] {
+            let mut inv = original_invocation();
+            inv.args[2] = ArgValue::I128(amount);
+            assert_eq!(
+                matches!(evaluate(&v, &base_ctx(), &inv), Verdict::Permit),
+                expect_permit,
+                "RangeI128 at {amount}"
+            );
+        }
+        // A range is numeric: an address at that position never satisfies it.
+        let mut inv = original_invocation();
+        inv.args[2] = ArgValue::Address(fixtures::MERCHANT.to_string());
+        assert!(!matches!(evaluate(&v, &base_ctx(), &inv), Verdict::Permit));
+    }
+
+    #[test]
     fn ge_i128_lower_bound_permits_at_and_above_floor_denies_below() {
         let v = spec_with_amount_constraint(
             Constraint::GeI128 {
@@ -771,6 +808,35 @@ mod tests {
             evaluate(&v, &base_ctx(), &inv),
             Verdict::Deny(DenyReason::NoTupleMatched)
         );
+    }
+
+    #[test]
+    fn eq_scval_over_an_address_matches_the_typed_address_it_encodes() {
+        // An exact-XDR constraint at the recipient position, with the recipient supplied in
+        // typed form: the evaluator must encode the address and compare, not refuse every
+        // typed address.
+        let merchant = ScVal::Address(fixtures::MERCHANT.parse::<ScAddress>().unwrap())
+            .to_xdr_base64(Limits::none())
+            .unwrap();
+        let mut spec = subscription_spec();
+        spec.rules[0].allowed_calls[0].args[1].constraint = Constraint::EqScval {
+            xdr_base64: merchant,
+        };
+        let v = validate_generated_only(spec);
+
+        assert_eq!(
+            evaluate(&v, &base_ctx(), &original_invocation()),
+            Verdict::Permit
+        );
+        for other in [fixtures::DELEGATE, fixtures::TOKEN, "GNOT-A-STRKEY"] {
+            let mut inv = original_invocation();
+            inv.args[1] = ArgValue::Address(other.to_string());
+            assert_eq!(
+                evaluate(&v, &base_ctx(), &inv),
+                Verdict::Deny(DenyReason::NoTupleMatched),
+                "{other} is not the encoded recipient"
+            );
+        }
     }
 
     #[test]

@@ -1,8 +1,22 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { Address, xdr } from '@stellar/stellar-sdk';
 import { fixture } from './approval-fixture.mjs';
-import { reviewIntent } from '../shared/approval.mjs';
+import { ACCOUNT_WASM, WEBAUTHN_WASM, reviewIntent } from '../shared/approval.mjs';
+
+test('the wallet pins the account and verifier hashes crates/domain pins', () => {
+  // Read from the Rust byte literals, so a moved pin (GHSA-jpg9-m7w4-c7wc moved the account's)
+  // cannot leave the wallet deploying or accepting the old code.
+  const rust = readFileSync(new URL('../../crates/domain/src/lib.rs', import.meta.url), 'utf8');
+  const pinned = (name) => {
+    const literal = new RegExp(`const ${name}: Hash32 = Hash32\\(\\[([^\\]]+)\\]\\)`).exec(rust);
+    assert.ok(literal, `${name} not found in crates/domain/src/lib.rs`);
+    return Buffer.from(literal[1].split(',').map((t) => t.trim()).filter(Boolean).map(Number)).toString('hex');
+  };
+  assert.equal(ACCOUNT_WASM, pinned('OZ_SMART_ACCOUNT_WASM'));
+  assert.equal(WEBAUTHN_WASM, pinned('OZ_WEBAUTHN_VERIFIER_WASM'));
+});
 
 
 test('wallet chooses its exact passkey management rule and freezes displayed semantics', () => {

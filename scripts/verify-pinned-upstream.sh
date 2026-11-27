@@ -25,6 +25,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 UPSTREAM_REPO="https://github.com/OpenZeppelin/stellar-contracts.git"
+# Two tags. The account is built at v0.7.3, the first release fixed for GHSA-jpg9-m7w4-c7wc;
+# the spending-limit policy and both verifiers keep the v0.7.2 provenance they were reviewed and
+# deployed with. Their sources are identical at both tags, but the bumped package versions
+# reach the policy's symbol names, so its pin reproduces from v0.7.2 only.
+ACCOUNT_TAG="v0.7.3"
+ACCOUNT_COMMIT="252b35fe1a39fc524499e97d43cfe4598247a4cd"
 UPSTREAM_TAG="v0.7.2"
 UPSTREAM_COMMIT="a9c42169000638da937577f592ebf61a7a3c94ca"
 TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
@@ -123,38 +129,45 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 source_repo="${OZPB_PINNED_UPSTREAM_SOURCE:-$UPSTREAM_REPO}"
-echo "== cloning $source_repo at $UPSTREAM_TAG =="
-if ! git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" \
-    "$source_repo" "$WORK/src" 2>/dev/null; then
-    echo "  clone failed — no network, or the tag no longer exists upstream"
-    exit 1
-fi
-
-ACTUAL_COMMIT="$(git -C "$WORK/src" rev-parse HEAD)"
-if [ "$ACTUAL_COMMIT" != "$UPSTREAM_COMMIT" ]; then
-    echo "  tag $UPSTREAM_TAG now points at $ACTUAL_COMMIT, expected $UPSTREAM_COMMIT"
-    echo "  a moved tag is a supply-chain event, not a build failure — investigate before trusting"
-    exit 1
-fi
-echo "  commit $ACTUAL_COMMIT ✔"
+# clone_at <tag> <recorded commit> <dir>
+clone_at() {
+    echo "== cloning $source_repo at $1 =="
+    if ! git -c advice.detachedHead=false clone -q --depth 1 --branch "$1" \
+        "$source_repo" "$3" 2>/dev/null; then
+        echo "  clone failed — no network, or the tag no longer exists upstream"
+        exit 1
+    fi
+    local actual
+    actual="$(git -C "$3" rev-parse HEAD)"
+    if [ "$actual" != "$2" ]; then
+        echo "  tag $1 now points at $actual, expected $2"
+        echo "  a moved tag is a supply-chain event, not a build failure — investigate before trusting"
+        exit 1
+    fi
+    echo "  commit $actual ✔"
+}
+clone_at "$UPSTREAM_TAG" "$UPSTREAM_COMMIT" "$WORK/src"
+clone_at "$ACCOUNT_TAG" "$ACCOUNT_COMMIT" "$WORK/account-src"
 
 echo "== building with rustc $TOOLCHAIN (upstream's own pin floats on 'stable') =="
 if [ "$BUILD_HOST" != "$ACCOUNT_PIN_HOST" ]; then
     echo "   note: expect the account to MISMATCH here; its pin reproduces only on $ACCOUNT_PIN_HOST"
 fi
+# <checkout>:<example dir>:<artifact>:<constant>
 declare -a NAMES=(
-    "spending-limit-policy:multisig_spending_limit_policy_example:OZ_SPENDING_LIMIT_POLICY_WASM"
-    "account:multisig_account_example:OZ_SMART_ACCOUNT_WASM"
-    "ed25519-verifier:multisig_ed25519_verifier_example:OZ_ED25519_VERIFIER_WASM"
-    "webauthn-verifier:multisig_webauthn_verifier_example:OZ_WEBAUTHN_VERIFIER_WASM"
+    "src:spending-limit-policy:multisig_spending_limit_policy_example:OZ_SPENDING_LIMIT_POLICY_WASM"
+    "account-src:account:multisig_account_example:OZ_SMART_ACCOUNT_WASM"
+    "src:ed25519-verifier:multisig_ed25519_verifier_example:OZ_ED25519_VERIFIER_WASM"
+    "src:webauthn-verifier:multisig_webauthn_verifier_example:OZ_WEBAUTHN_VERIFIER_WASM"
 )
 
 fail=0
 for entry in "${NAMES[@]}"; do
+    checkout="${entry%%:*}"; entry="${entry#*:}"
     dir="${entry%%:*}"; rest="${entry#*:}"; artifact="${rest%%:*}"; const="${rest##*:}"
-    ( cd "$WORK/src/examples/multisig-smart-account/$dir" \
+    ( cd "$WORK/$checkout/examples/multisig-smart-account/$dir" \
         && RUSTUP_TOOLCHAIN="$TOOLCHAIN" stellar contract build >/dev/null 2>&1 )
-    wasm="$WORK/src/target/wasm32v1-none/release/$artifact.wasm"
+    wasm="$WORK/$checkout/target/wasm32v1-none/release/$artifact.wasm"
     built="$(shasum -a 256 "$wasm" | cut -d' ' -f1)"
 
     # The shipped constant, read back out of the source as bytes.
@@ -213,4 +226,5 @@ if [ "$fail" -ne 0 ]; then
     echo "  * upstream source changed under the tag (see the commit check above)"
     exit 1
 fi
-echo "pinned upstream hashes reproduce from $UPSTREAM_TAG with rustc $TOOLCHAIN on $BUILD_HOST"
+echo "pinned upstream hashes reproduce from $ACCOUNT_TAG (account) and $UPSTREAM_TAG (policy, verifiers)"
+echo "with rustc $TOOLCHAIN on $BUILD_HOST"

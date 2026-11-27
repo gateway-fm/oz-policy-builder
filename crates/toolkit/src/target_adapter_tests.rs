@@ -60,10 +60,10 @@ fn request_for(hash: Hash32) -> SynthesizeInput {
     )
     .with_contract_executables(observations);
     let recording = record_snapshot(&snapshot, RecordOptions::default()).unwrap();
-    let mut snapshot = dev::dev_snapshot(
-        ozpb_domain::NetworkId::from_passphrase(TESTNET_PASSPHRASE),
-        1,
-    );
+    let mut snapshot = dev::account_advisory_successor(ozpb_domain::NetworkId::from_passphrase(
+        TESTNET_PASSPHRASE,
+    ))
+    .unwrap();
     snapshot.target_adapters.insert(
         hash.to_hex(),
         TargetAdapterCapability {
@@ -207,19 +207,35 @@ fn explicit_user_widening_keeps_its_distinct_intent_and_provenance() {
         contract: spec::golden_token_strkey(),
         fn_name: "swap_exact_tokens_for_tokens".into(),
         arg_index: 1,
-        bound: ozpb_synthesizer::WideningBound::GeI128 { min: "900".into() },
+        // At the recorded 950: the router adapter reviews this argument as a minimum output, so
+        // a floor below the recorded value would weaken its slippage check and is refused.
+        bound: ozpb_synthesizer::WideningBound::GeI128 { min: "950".into() },
+        no_floor_acknowledged: false,
         intent: "Explicit absolute output floor for this synthetic scenario".into(),
         blast_radius: ozpb_domain::BlastRadius::High,
     });
-    input.decisions = serde_json::to_value(decisions).unwrap();
+    input.decisions = serde_json::to_value(&decisions).unwrap();
     let result = output(&input);
     assert!(
-        matches!(&result.rules[0].allowed_calls[0].args[1].constraint, Constraint::GeI128 { min } if min == "900")
+        matches!(&result.rules[0].allowed_calls[0].args[1].constraint, Constraint::GeI128 { min } if min == "950")
     );
     assert!(matches!(
         result.rules[0].allowed_calls[0].args[1].provenance,
         Provenance::UserWidened { .. }
     ));
+
+    // Below the recorded minimum output, the decision contradicts the reviewed role: a tool
+    // caller gets an invalid decision naming the adapter, whatever the rating.
+    decisions.widenings[0].bound = ozpb_synthesizer::WideningBound::GeI128 { min: "900".into() };
+    input.decisions = serde_json::to_value(decisions).unwrap();
+    let err = synthesize_policy(&input, &registry_trust()).unwrap_err();
+    assert_eq!(err.code, EC::ESpecInvalid, "{err}");
+    assert!(
+        matches!(err.details.as_slice(), [detail] if detail.starts_with("E_INVALID_DECISION:")
+            && detail.contains("adapter 'soroswap-router@1' reviews this argument as a minimum output")),
+        "{:?}",
+        err.details
+    );
 }
 
 #[test]

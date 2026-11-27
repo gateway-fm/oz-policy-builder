@@ -7,6 +7,9 @@ import { WalletSession } from '../server/session.mjs';
 import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
 import { fixture } from './approval-fixture.mjs';
 import { sampleTransfer } from './sample-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+import { TESTNET_FEES } from '../server/network.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 function setup(version = 'legacy') {
   const calls = [];
@@ -20,8 +23,9 @@ function setup(version = 'legacy') {
   draft.ownerRuleXdr = ownerRuleXdr;
   draft.descriptor.ownerRuleXdr = ownerRuleXdr;
   const network = {
+    profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0',
     payerAddress: draft.descriptor.recipient,
-    assertTestnet: async () => {}, requireCode: async () => {}, fundPayer: async () => { calls.push('fund'); },
+    assertNetwork: async () => {}, codePresent: async () => ({ present: true, ledger: 100 }), fundPayer: async () => { calls.push('fund'); },
     requireInstance: async () => ({ ledger: 100 }),
     latestLedger: async () => 101,
     sourceCapture: async () => ({ sourceSequence: '100', ledger: 101 }),
@@ -56,7 +60,7 @@ async function create(f) {
   return f.actions['confirm-account']({ id: preview.action.id });
 }
 function signed(f, prepared, legacyPayload = false) {
-  const approval = reviewSample({ wallet: f.wallet, descriptor: f.draft.descriptor, ownerRuleXdr: prepared.ownerRuleXdr });
+  const approval = reviewSample({ wallet: f.wallet, descriptor: f.draft.descriptor, ownerRuleXdr: prepared.ownerRuleXdr, networkId: NETWORK_ID });
   const checked = validateSampleAssembly({ ...prepared, approval });
   const entry = xdr.SorobanAuthorizationEntry.fromXDR(checked.authEntriesXdr[0], 'base64');
   const rules = xdr.ScVal.scvVec([xdr.ScVal.scvU32(0)]);

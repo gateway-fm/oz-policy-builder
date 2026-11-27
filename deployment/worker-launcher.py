@@ -40,6 +40,10 @@ STOP = {"requested": False}
 # Written first, once the handler is installed. The API signals no earlier, because a SIGTERM
 # before the handler exists kills the launcher with nothing confirmed.
 READY = b"ready\n"
+# The answer to `--protocol`, the one argument this launcher takes: the job schema it reads and the
+# frame schema it writes. The API asks once at startup and refuses to start on any other answer,
+# so a launcher from another revision costs a failed start rather than a retained build slot.
+PROTOCOL = b"build-worker-job/v1 contained-build-result/v2\n"
 
 
 def stop_requested(signum, frame):
@@ -80,8 +84,10 @@ def load_config(path=CONFIG):
     config = decode(raw)
     if set(config) != {"image", "timeout_seconds", "cpus", "memory_mib", "pids", "tmpfs_mib", "jobs"}:
         raise Refused()
-    # Locally loaded image ID or fully qualified digest; tags and implicit pulls are forbidden.
-    if not isinstance(config["image"], str) or not re.fullmatch(
+    # Locally loaded image ID or fully qualified digest; tags and implicit pulls are forbidden. At
+    # most 256 characters, the bound the API holds the frame's `image` to: a longer one would be
+    # refused on every build, after the job, with its slot retained.
+    if not isinstance(config["image"], str) or len(config["image"]) > 256 or not re.fullmatch(
         r"(?:sha256:|[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9._/-]+@sha256:)[0-9a-f]{64}", config["image"]
     ):
         raise Refused()
@@ -225,9 +231,11 @@ def worker_result(raw):
 
 
 def launch(raw, config):
+    # `image` is the configured, digest-pinned image `command` runs the job in. The API records it
+    # in the BuildManifest as the build's image, so it is named on every frame, refusals included.
     def frame(result):
-        return {"schema": "contained-build-result/v1", "job_hash": hashlib.sha256(raw).hexdigest(),
-                "containment": "removed", "result": result}
+        return {"schema": "contained-build-result/v2", "job_hash": hashlib.sha256(raw).hexdigest(),
+                "image": config["image"], "containment": "removed", "result": result}
 
     # Nothing has launched yet: a configuration/input refusal cannot leave a container.
     try:
@@ -258,6 +266,9 @@ def launch(raw, config):
 
 def main():
     try:
+        if sys.argv[1:] == ["--protocol"]:
+            sys.stdout.buffer.write(PROTOCOL)
+            return 0
         if len(sys.argv) != 1:
             raise Refused()
         install_stop_handler()

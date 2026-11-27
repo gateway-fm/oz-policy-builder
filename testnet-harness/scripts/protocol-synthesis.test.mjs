@@ -4,13 +4,16 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { PROTOCOL_TARGETS, ROUTER_ADAPTER } from './protocol-calls.mjs';
 import { adapterDisclosure, orderRootFirst, protocolInputs, validateProtocolSynthesis } from './protocol-synthesis.mjs';
-const capture = JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url)));
+const capture = JSON.parse(readFileSync(new URL('./fixtures/synthetic-protocol-swap-observation.json', import.meta.url)));
 const ADAPTED = { adapter_derived: { adapter: ROUTER_ADAPTER, code_hash: PROTOCOL_TARGETS.router_code } };
 function fixture() {
   const f = structuredClone(capture);
   // This is a validation fixture, never evidence of an executed swap. The preserved capture
   // itself is an unsigned simulation; the execution rejection below tests that boundary. Its
-  // spec is the adapter-derived shape the CLI synthesizes under the version-5 development registry.
+  // spec is the adapter-derived shape the CLI synthesizes under the version-6 development registry.
+  // The capture observed the 0.7.2 account build; its account executable and spec were moved to the
+  // 0.7.3 pin (GHSA-jpg9-m7w4-c7wc), so its recording hashes are the preserved ones and do not
+  // derive from the edited bundle (testnet-harness/README.md).
   f.record.bundle.execution = 'executed_success';
   f.run = { network: 'Test SDF Network ; September 2015', account: f.plan.account,
     account_code_hash: f.synthesis.spec.smart_account.observed_code_hash,
@@ -130,10 +133,13 @@ test('protocol inputs take the floor and transfer cap from the journaled operato
   assert.deepEqual(widened.map((w) => [w.bound, w.intent, w.blast_radius]), [
     [{ ge_i128: { min: decided.output_floor.min } }, decided.output_floor.intent, 'medium'],
     [{ le_i128: { max: decided.transfer_cap.max } }, decided.transfer_cap.intent, 'medium']]);
+  // The cap's open floor reaches synthesis as the operator accepted it; the floor asks nothing.
+  assert.deepEqual(widened.map((w) => w.no_floor_acknowledged), [undefined, true]);
   for (const [mode, change] of [
     ['no decisions', (p) => { delete p.operator_decisions; }],
     ['floor differs from the recorded call', (p) => { p.operator_decisions.output_floor.min = '100001'; }],
     ['transfer cap below the recorded input', (p) => { p.operator_decisions.transfer_cap.max = '999999'; }],
+    ['transfer cap floor not accepted', (p) => { p.operator_decisions.transfer_cap.no_floor_acknowledged = false; }],
     ['deadline not accepted', (p) => { p.operator_decisions.adapter_deadline = 'exact'; }],
     ['unread file', (p) => { delete p.operator_decisions.source_sha256; }],
     ['extra decision', (p) => { p.operator_decisions.input_cap = { max: '1000000', intent: 'not the operator\'s to decide' }; }],
@@ -176,6 +182,11 @@ for (const value of [1792495420n, (1n << 64n) - 1n]) test(`W3 refuses a changed 
   const f = fixture(), inputs = protocolInputs(f.run, f.record);
   f.synthesis.spec.rules[0].allowed_calls[0].args[4].c.eq_scval.xdr_base64 = xdr.ScVal.scvU64(value).toXDR('base64');
   assert.throws(() => validateProtocolSynthesis(f.synthesis, f.run, inputs, f.synthesis.spec.registry_snapshot), /allowed tuple/);
+});
+test('current W3 refuses v2 decisions, which leave the transfer cap\'s floor unanswered', () => {
+  const f = fixture(); f.plan.operator_decisions.schema = 'ozpb-soroswap-operator-decisions/v2';
+  delete f.plan.operator_decisions.transfer_cap.no_floor_acknowledged;
+  assert.throws(() => protocolInputs(f.run, f.record), /schema/);
 });
 test('current W3 refuses legacy open-deadline approval', () => {
   const f = fixture(); f.plan.operator_decisions.schema = 'ozpb-soroswap-operator-decisions/v1';

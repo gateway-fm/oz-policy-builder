@@ -52,7 +52,7 @@ requirements still select the same elliptic-curve, ECDSA, P256, K256 and crypto-
 implementations. The affected verification/recovery arithmetic therefore remains reachable.
 The accounts policy interface is used by generated policies; native mock-account tests now
 exercise the 0.8 account implementation. Actual deployed-account compatibility is checked
-separately against the unchanged 0.7.2 account Wasm.
+separately against the recognized 0.7.3 account Wasm.
 
 The contracts fingerprint is reassessed for this dependency update. Root and runtime
 inventories, accepted limitations and the 10 November expiry remain unchanged. This is

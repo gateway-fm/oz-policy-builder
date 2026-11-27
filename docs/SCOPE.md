@@ -80,7 +80,7 @@ well, by having the account make the call through its `execute` method.
 | Stale-state collisions | `stale_policy_state_is_refused_not_adopted`; `differential.rs` `installation_markers_are_isolated_by_account_and_rule` | The account never reuses a rule id, and the call-surface check reads past the removed id. State created in advance for the next id, here pre-spent through a policy-address rule, makes the owner's `add_context_rule` fail with `AlreadyInstalled`; it is never adopted. Installations are isolated by account and rule. |
 | Rollback of failed compositions | `failed_composition_rolls_back_the_permitting_policy`; `generated_suite.rs` `later_policy_denial_rolls_back_an_earlier_policy_counter` | With two generated-policy instances on one rule, the first permits and the second's denial rolls back the first one's increment. |
 | N+1 and multi-context rollback | `account_wasm_auth.rs` `pinned_account_wasm_full_authorization`; the native worker's [stateful sequence](NATIVE-EXECUTION.md) | The cap holds across ledger advances; a two-context authorization that exceeds it rolls back entirely. |
-| Survival across inactivity | `grant_survives_inactivity_until_its_shortest_ttl` | An idle grant's authorization permits, with its count intact, until the first account or policy entry it reads expires. The target's own entries are not part of this check. After that, a transaction that does not restore the archived entries is refused. A normally simulated submission restores them automatically and pays for it, so archival is not revocation. In this suite the first to expire are the account's own instance and code: nothing on the authorization path extends them, for an active grant as for an idle one. The account extends its rule, signer and policy entries to 30 days when it reads them (stellar-accounts 0.7.2, `smart_account/mod.rs:520-521`), so with real network TTLs one of those may expire first. The policy extends its own entries, instance and code to the compiled expiry. |
+| Survival across inactivity | `grant_survives_inactivity_until_its_shortest_ttl` | An idle grant's authorization permits, with its count intact, until the first account or policy entry it reads expires. The target's own entries are not part of this check. After that, a transaction that does not restore the archived entries is refused. A normally simulated submission restores them automatically and pays for it, so archival is not revocation. In this suite the first to expire are the account's own instance and code: nothing on the authorization path extends them, for an active grant as for an idle one. The account extends its rule, signer and policy entries to 30 days when it reads them (stellar-accounts 0.7.3, `smart_account/mod.rs:521-522`), so with real network TTLs one of those may expire first. The policy extends its own entries, instance and code to the compiled expiry. |
 
 Not covered:
 
@@ -189,14 +189,15 @@ The source-reviewed account method inventory and its limits are described in
    hash, like the method inventory) and its signed entry agrees; older binaries refuse the
    version-3 entry's new fields. Version 4 adds one target-adapter binding: the testnet Soroswap
    router's exact code to `soroswap-router@1`. Version 5 extends v4 and rebinds that router
-   to [`soroswap-router@2`](TARGET-ADAPTERS.md#current-binding-development-registry-version-5),
+   to [`soroswap-router@2`](TARGET-ADAPTERS.md#current-binding-development-registry-version-5-carried-into-6),
    preserving the recorded deadline exactly. Both bindings are development-registry assertions,
    and the router's Wasm was not reproduced from source
    ([target adapters](TARGET-ADAPTERS.md#the-testnet-router-binding-development-registry-version-4)).
    Its public development signing key
    makes this a reproducible code-capability example, not production governance or live-state
-   authority evidence. The operator reader below refuses that root unless its pinned network
-   is testnet.
+   authority evidence. Registry trust for any network but testnet refuses that root
+   (`E_REGISTRY_ROOT_POLICY`), so neither synthesis nor the operator reader below accepts it
+   elsewhere.
    An internal operator-configured reader now pins an RPC endpoint, network passphrase,
    governance roots, and a persisted registry checkpoint. It verifies a signed snapshot on
    each inspection, takes its scan bounds and reviewed method inventory from that snapshot,
@@ -219,21 +220,29 @@ The source-reviewed account method inventory and its limits are described in
    refusal and nothing unresolved, returns the exact `add_context_rule` arguments derived from
    the grant the answer's commitment covers, with the answer attached. A new rule aimed at the
    account or one of its own policies, or one already expired at the read ledger, is refused
-   before any read or after it respectively. Freshness is the wallet's: it re-reads and
+   before any read or after it respectively; so is a rule that requires its target's code
+   (adapter-derived, or refuse on drift) when the same capture finds other code there
+   (`E_TARGET_CODE_CHANGED`). Freshness is the wallet's: it re-reads and
    compares the commitment immediately before signing.
 
-2. **Containerized build, and the BuildManifest provenance fields that go with it** (§4.4,
-   §6.3 — container image digest, source commit and dirty-tree status, template-pack hash,
-   canonicalization version, build target). The builder is labelled `local-unattested`, which
-   is what it is, in every build mode. Adding manifest fields rehashes every manifest, so those
-   fields land at a release gate. The memory, disk and cgroup limits in §4.6 are claimed only
-   for the optional [worker mode](ISOLATED-BUILDS.md), which runs each build in a disposable
-   rootless container with CPU, memory, PID and tmpfs limits, which its acceptance suite
-   checks on the chosen host.
-   The default host builder and the [Compose package](SELF-HOSTING.md) do **not** isolate one
-   build from another, and no manifest records a container image. §6.3 carries a scope note
-   listing the fields the manifest holds against the ones it does not, so the gap is stated
-   rather than left for a reader to find by diffing the document against the struct.
+2. **A containerized default builder, and provenance someone else can check** (§4.4, §6.3).
+   The BuildManifest (schema `build-manifest/v2`) carries the fields §6.3 lists: canonicalization
+   version, build target, and a producer record with the toolkit's source commit and dirty flag,
+   the template-pack hash and, when the optional [worker mode](ISOLATED-BUILDS.md) builds, the
+   image its launcher ran. Two things remain. The default builder and the
+   [Compose package](SELF-HOSTING.md) compile in the API's own environment — no container per
+   build, and the Compose package's own image is not recorded — so their manifests name no image,
+   and they do **not** isolate one build from another; the memory, disk and cgroup limits in
+   §4.6 are claimed only for worker mode, whose acceptance suite checks them on the chosen host.
+   And every field is the producer's own statement: the builder is labelled `local-unattested`
+   in every mode, which is what it is, and no signed attestation (SEP-55) or published rebuild
+   recipe (SEP-58) lets a third party check a manifest without rerunning `ozpb verify`.
+   `ozpb publish-artifact` gives that rerun its inputs under the Wasm hash, and
+   `ozpb verify-published` runs it ([publishing](PUBLISHING.md)); it is still a rerun. An image
+   built from the hosted build context (`scripts/hosted-context.py`) has no checkout to ask, so
+   its manifests record the toolkit commit its build was given (`OZPB_TOOLKIT_SOURCE`, which
+   the image workflows set to the exported commit), and none without it. §6.3's scope
+   note states which fields `verify` reproduces and which it only reports.
 
 3. **Reviewed-policy composition at the account-Wasm layer** (F5d). The spending-limit
    example is already built from the pinned OpenZeppelin source, recognized by its exact
@@ -389,3 +398,24 @@ The source-reviewed account method inventory and its limits are described in
    entries in the envelope stay live authorizations until their expiration ledger, so a hosted
    server refuses an envelope carrying signatures, while the CLI and a stdio server send it to
    the caller's chosen endpoint.
+
+7. **Registry governance boundaries.** The `ozpb registry` tooling and
+   [Registry governance](REGISTRY-GOVERNANCE.md) cover custodian keys, successors, signing,
+   replay, monitoring and revocation; two limits are decisions, not gaps waiting for code.
+   `generate` and `verify` take no registry trust: they carry the root the spec names into the
+   BuildManifest unchecked, and trust is enforced at synthesis, the install intent and the live
+   checks, which load the snapshot under the pinned roots. Root rotation is an out-of-band re-pin
+   — snapshots do not carry the root policy — with the cutover order in
+   [Rotation](REGISTRY-GOVERNANCE.md#rotation-lost-and-compromised-keys). The mainnet registry
+   is an unsigned draft until its key ceremony ([`registry/mainnet/`](../registry/mainnet/README.md)).
+8. **Decision rules are synthesis's.** The rules that judge a user's widening — a bound may not
+   loosen what a bound adapter's role requires, a bound with no finite top must be rated high,
+   one widening loosens one recorded call — run in synthesis, which has the decisions, the
+   recorded values and the adapter roles. Validation holds only what a spec shows on its own: a
+   bound spanning the whole `i128` range, like `any_value`, needs `high`. `generate_code` and
+   `ozpb generate` take a spec and no decisions, so a spec edited by hand and passed straight to
+   them can carry an open-top bound rated low or medium, or a widening an adapter's role would
+   refuse; the generated policy enforces the bound as written, and only its rating is wrong.
+   No rule decides when a finite cap is too large: its rating is the user's, and the skill's card
+   sets each bound beside the recorded value instead
+   ([scoping decisions](SCOPING-DECISIONS.md#widenings-you-may-choose)).

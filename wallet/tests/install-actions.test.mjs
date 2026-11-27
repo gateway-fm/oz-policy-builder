@@ -79,6 +79,26 @@ test('assemble returns the exact unsigned installation, independently re-validat
   assert.equal(f.submissions.length, 0, 'assembling submits nothing');
 });
 
+test('a restarted wallet releases no installation entry until an earlier session\'s signatures have expired', async () => {
+  // What an earlier backend on this work root journaled for the account (`earlierAuthorizationExpiry`).
+  let earlier = 0;
+  const f = await installable({ priorAuthorizationExpiry: () => earlier });
+  await verified(f);
+  earlier = f.state.ledger;
+  await assert.rejects(() => f.actions.assemble({ reviewId: f.review.reviewId }), { reason: 'signatures_still_valid' });
+  assert.deepEqual(f.obligations, [], 'no obligation journaled, no entry released');
+  // The clock is past it, but the CLI's authority observation is not: the earliest read decides.
+  earlier = f.state.ledger - 1;
+  f.freshChange = (intent) => { intent.authority.verdict.observed_ledger = f.state.ledger - 1; };
+  await assert.rejects(() => f.actions.assemble({ reviewId: f.review.reviewId }), { reason: 'signatures_still_valid' });
+  assert.deepEqual(f.obligations, []);
+  f.freshChange = null;
+  const { result } = await assembled(f);
+  assert.equal(f.obligations.length, 1);
+  assert.equal(f.submissions.length, 0, 'assembling submits nothing');
+  assert.match(result.action.id, /^[0-9a-f]{64}$/);
+});
+
 test('submit refuses an envelope differing from the reviewed assembly', async () => {
   for (const change of ['other entry', 'other origin', 'unsigned', 'two entries']) {
     const f = await installable();
@@ -222,7 +242,11 @@ test('submit never resends a pending hash', async () => {
   const f = await installable();
   await verified(f);
   const { result, signed } = await assembled(f);
-  f.onSubmit = () => { throw new Error('wallet network operation refused; inspect the local journal before retrying'); };
+  // Its result uncertain, as the network leaves it: signed and counted, no further write.
+  f.onSubmit = () => {
+    f.network.spentStroops = '1000'; f.network.canSubmit = false;
+    throw new Error('wallet network operation refused; inspect the local journal before retrying');
+  };
   await assert.rejects(() => f.actions.submit({ id: result.action.id, signedAuthEntriesXdr: signed }), /refused/);
   assert.equal(installs(f).length, 1);
   // Neither the same action, nor a new assembly for the same review, nor a fresh signature reaches the fee payer again.
@@ -239,7 +263,7 @@ test('submit never resends a pending hash', async () => {
 function slowRpc(f, ledgers, msPerLedger = 40) {
   const n = f.network, base = f.state.ledger, t0 = Date.now();
   const tick = () => { f.state.ledger = Math.max(f.state.ledger, base + Math.floor((Date.now() - t0) / msPerLedger)); };
-  for (const name of ['assertTestnet', 'ledgerClock', 'latestLedger', 'requireInstance', 'view', 'ruleReadback',
+  for (const name of ['assertNetwork', 'ledgerClock', 'latestLedger', 'requireInstance', 'view', 'ruleReadback',
     'prepareRemoval', 'sourceCapture']) {
     const original = n[name];
     if (typeof original !== 'function') continue;
@@ -388,6 +412,40 @@ test('submit accepts ledgers that close while the authority recheck runs', async
   f.onIntent = () => { f.state.ledger += 2; };
   const submitted = await f.actions.submit({ id: result.action.id, signedAuthEntriesXdr: signed });
   assert.equal(submitted.installation.status, 'installed');
+});
+
+test('an installation entry is released for the passkey only when the fee payer can pay the installation', async () => {
+  const f = await installable();
+  await verified(f);
+  const asked = [];
+  f.network.payerCovers = async (stroops) => {
+    asked.push(stroops);
+    throw Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' });
+  };
+  await assert.rejects(() => f.actions.assemble({ reviewId: f.review.reviewId }), (error) => error.reason === 'payer_unfunded');
+  assert.deepEqual(asked, [f.network.fees.maxFeeStroops]);
+  assert.equal(f.obligations.length, 0, 'no entry released, so no obligation');
+  assert.equal(assembles(f).length, 0, 'refused before the CLI assembles anything');
+  f.network.payerCovers = async () => {};
+  const { result, signed } = await assembled(f);
+  assert.equal((await f.actions.submit({ id: result.action.id, signedAuthEntriesXdr: signed })).installation.status, 'installed');
+});
+
+test('an installation the fee payer refused before signing keeps the review; the next entry follows once the first expired', async () => {
+  const f = await installable();
+  await verified(f);
+  const { result, signed } = await assembled(f);
+  f.onSubmit = () => { throw Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' }); };
+  await assert.rejects(() => f.actions.submit({ id: result.action.id, signedAuthEntriesXdr: signed }), (error) => error.reason === 'payer_unfunded');
+  assert.equal((await f.actions.status({})).capabilities.install, true, 'nothing left: the review keeps its attempt');
+  // The released entry is signed and still valid: no second one until it has expired.
+  await assert.rejects(() => f.actions.assemble({ reviewId: f.review.reviewId }), /refused/);
+  f.state.ledger = result.display.transaction.signature_expiration_ledger + 1;
+  f.onSubmit = null;
+  const again = await assembled(f);
+  const submitted = await f.actions.submit({ id: again.result.action.id, signedAuthEntriesXdr: again.signed });
+  assert.equal(submitted.installation.status, 'installed');
+  assert.equal(installs(f).length, 2);
 });
 
 test('nothing is released or spent while the fee payer cannot submit', async () => {

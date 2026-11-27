@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { Address, Keypair, hash, xdr } from '@stellar/stellar-sdk';
 import { ACCOUNT_WASM } from '../shared/approval.mjs';
 import { offlineCapability, offlineDomain } from '../server/native-protocol.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const vector = JSON.parse(readFileSync(new URL('../../docs/examples/native-domain-vector.json', import.meta.url)));
 const H = (n) => n.repeat(64);
@@ -24,7 +26,7 @@ export function nativeFixture({ maxCalls = 2, accountAddress = vector.binding.ac
     { label: 'wrong arity', rule_index: 0, class: 'arg_arity', expected: 'deny', actual: 'deny(NoTupleMatched)', agree: true },
   ];
   const requiredClasses = ['original', 'different_function', 'wrong_signer'];
-  const expected = { runHash: binding.run_hash, suiteHash: binding.suite_hash, accountAddress: binding.account_address,
+  const expected = { networkId: binding.source_network_id, runHash: binding.run_hash, suiteHash: binding.suite_hash, accountAddress: binding.account_address,
     delegateAddress: binding.delegate_address, policyAddress, policyCodeHash,
     candidateContextRuleId, sourceLedger: binding.source_ledger, boundaryCases: outcomes.length };
   const prepared = { type: 'prepared', schema: 1, binding, execution_network_id: offlineDomain(binding).networkId,

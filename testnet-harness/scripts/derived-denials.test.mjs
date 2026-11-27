@@ -387,6 +387,15 @@ test('a recorded call that is not the suite original is refused before replaying
   const over = { ...w3, walkthrough: { ...w3.walkthrough, amount_in: '1000001' } };
   assert.throws(() => planDerivedDenials({ cases: protocol.emitted.cases, rules: liveRules(over, protocol.spec), account: over.account,
     delegate: over.delegate }), /recorded call differs from the suite original at arg\[0\]/);
+  // A range admits a recorded amount anywhere between its ends, both included, and nothing outside.
+  const ranged = structuredClone(spec);
+  ranged.rules[0].allowed_calls[0].args[2].c = { range_i128: { min: '1', max: '10000000' } };
+  const planRanged = (r) => planDerivedDenials({ cases: emitted.cases, rules: liveRules(r, ranged), account: r.account,
+    delegate: r.delegate, standIns: (rule) => liveStandIns(r, rule) });
+  for (const amount of ['1', '9999999', '10000000']) assert.equal(planRanged({ ...run, amount }).denials.length, 10, amount);
+  for (const amount of ['0', '10000001']) {
+    assert.throws(() => planRanged({ ...run, amount }), /recorded call differs from the suite original at arg\[2\]/, amount);
+  }
 });
 
 // --- what must fail the run -----------------------------------------------------------------------

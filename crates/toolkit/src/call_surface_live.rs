@@ -56,10 +56,7 @@ pub fn plan_call_surface_read(
     build_config: &ozpb_build_runner::BuildConfig,
 ) -> Result<CallSurfaceReadPlan, ToolError> {
     let prepared = prepare_call_surface_check(input, registry_trust, build_config)?;
-    let authority = prepared
-        .registry
-        .resolve_account_authority(&prepared.spec.spec().smart_account.observed_code_hash)
-        .map_err(map_registry_err)?;
+    let authority = &prepared.account_authority;
     let mut contracts: BTreeSet<String> = input
         .binding_set
         .bindings
@@ -362,7 +359,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// A request against the version-3 signed example (which binds the account's scan bounds
+    /// A request against the current signed example (which binds the account's scan bounds
     /// and recognizes the owner verifiers), and a scan of an account owned by one classic key.
     pub(crate) fn fixture() -> (CheckPolicyCallSurfaceInput, AccountStateScan) {
         fixture_with_expiry(i64::MAX)
@@ -370,7 +367,7 @@ pub(crate) mod tests {
 
     fn fixture_with_expiry(expires_at: i64) -> (CheckPolicyCallSurfaceInput, AccountStateScan) {
         let network = NetworkId::from_passphrase(TESTNET_PASSPHRASE);
-        let mut snapshot = ozpb_registry::dev::verifier_successor(network).unwrap();
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
         if expires_at != i64::MAX {
             snapshot.valid_from_unix = 1;
         }
@@ -515,16 +512,22 @@ pub(crate) mod tests {
         assert_eq!(plan.contract_addresses, vec![address(40), address(41)]);
         assert!(!plan.classic_addresses.is_empty());
 
-        // A version-1 snapshot recognizes the account but binds no scan protocol: no read.
-        let mut v1 = input.clone();
+        // A snapshot that recognizes the account but binds no scan protocol: no read.
+        let mut unbound = input.clone();
         let mut spec: ozpb_policy_spec::PolicySpec =
-            serde_json::from_value(v1.spec.clone()).unwrap();
-        let signed: ozpb_registry::SignedSnapshot =
-            serde_json::from_value(crate::test_support::signed_registry_json()).unwrap();
+            serde_json::from_value(unbound.spec.clone()).unwrap();
+        let mut snapshot = ozpb_registry::dev::account_advisory_successor(spec.network_id).unwrap();
+        snapshot
+            .accounts
+            .get_mut(&ozpb_domain::pinned_upstream::OZ_SMART_ACCOUNT_WASM.to_hex())
+            .unwrap()
+            .bounded_next_id = None;
+        let signed =
+            ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot).unwrap();
         spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
-        v1.spec = serde_json::to_value(&spec).unwrap();
-        v1.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
-        assert!(plan_call_surface_read(&v1, &registry_trust(), &build_config()).is_err());
+        unbound.spec = serde_json::to_value(&spec).unwrap();
+        unbound.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
+        assert!(plan_call_surface_read(&unbound, &registry_trust(), &build_config()).is_err());
     }
 
     #[test]
@@ -800,22 +803,11 @@ pub(crate) mod tests {
     #[test]
     fn the_public_development_root_is_refused_outside_testnet() {
         let (mut input, _) = fixture();
-        let mainnet = NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE);
-        let signed = ozpb_registry::sign_snapshot(
-            &ozpb_registry::dev::dev_signing_key(),
-            ozpb_registry::dev::dev_snapshot(mainnet, 3),
-        )
-        .unwrap();
-        let mut spec: ozpb_policy_spec::PolicySpec =
-            serde_json::from_value(input.spec.clone()).unwrap();
-        spec.network_id = mainnet;
-        spec.registry_snapshot = ozpb_registry::snapshot_root(&signed.snapshot).unwrap();
-        input.spec = serde_json::to_value(&spec).unwrap();
-        input.network_id = mainnet.0.to_hex();
-        input.signed_registry_snapshot = serde_json::to_value(signed).unwrap();
+        crate::test_support::moved_to_mainnet(&mut input);
         let Err(error) = plan_call_surface_read(&input, &registry_trust(), &build_config()) else {
             panic!("the development root must be refused on mainnet")
         };
+        assert_eq!(error.code, EC::ERegistryRootPolicy, "{error}");
         assert!(error.message.contains("only on testnet"), "{error}");
         // Also when the dev key is one of several roots.
         let mut mixed = registry_trust();
@@ -823,6 +815,7 @@ pub(crate) mod tests {
         let Err(error) = plan_call_surface_read(&input, &mixed, &build_config()) else {
             panic!("a root policy that includes the development key must be refused")
         };
+        assert_eq!(error.code, EC::ERegistryRootPolicy, "{error}");
         assert!(error.message.contains("only on testnet"), "{error}");
         // Another root is not refused for being on mainnet (its signature fails instead).
         let mut other = registry_trust();

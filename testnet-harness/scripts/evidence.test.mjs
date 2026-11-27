@@ -998,7 +998,8 @@ test('an adapter-bound W3 run exports its route, recipient, function and open-de
   const recipient = report.walkthrough.controls.steps.find((s) => s.name === 'foreign_recipient');
   assert.deepEqual([recipient.result, recipient.enforcer, recipient.code], ['verified_recipient_refusal', null, null]);
   // The decisions, by value and file hash; the operator's free-text intents stay local.
-  assert.deepEqual(report.walkthrough.operator_decisions, { output_floor: '100000', transfer_cap: '1000000',
+  assert.deepEqual(report.walkthrough.operator_decisions, { schema: 'ozpb-soroswap-operator-decisions/v1',
+    output_floor: '100000', transfer_cap: '1000000', transfer_cap_no_floor_acknowledged: false,
     adapter_deadline: 'accept_any_value_high_blast_radius', source_sha256: 'cd'.repeat(32) });
   assert.ok(!JSON.stringify(report).includes(SENTINEL));
 });
@@ -1690,7 +1691,7 @@ function exactDeadlineEvidence(t, change = () => {}) {
   w.invocations = w.invocations.flatMap(s => s.name === 'any_deadline' ? replace(s, true) : [s]);
   const pipeline = structuredClone(protocolPipeline); pipeline.adapter.name = 'soroswap-router@2';
   pipeline.high_blast_radius = []; pipeline.deadline_unix = String(w.deadline);
-  const spec = structuredClone(JSON.parse(readFileSync(new URL('./fixtures/protocol-swap-observation.json', import.meta.url))).synthesis.spec);
+  const spec = structuredClone(JSON.parse(readFileSync(new URL('./fixtures/synthetic-protocol-swap-observation.json', import.meta.url))).synthesis.spec);
   spec.registry_snapshot = HASH; spec.smart_account.address = C;
   spec.rules[0].allowed_calls[0].args[4].c.eq_scval.xdr_base64 = xdr.ScVal.scvU64(BigInt(w.deadline)).toXDR('base64');
   change({ run, pipeline, spec });
@@ -1707,6 +1708,32 @@ test('v2 deadline evidence exports the exact cutoff and both policy denials', (t
   for (const name of ['deadline_plus_one', 'maximum_deadline']) {
     const step = report.walkthrough.controls.steps.find(s => s.name === name);
     assert.equal(step.result, 'verified_denial'); assert.equal(step.code, 6);
+  }
+});
+test('the summary is schema version 2: version 1 lacked the operator decisions\' schema and floor acknowledgement', (t) => {
+  // Committed docs/evidence summaries stay as written, at version 1; the shape only grew.
+  const report = exportEvidence(exactDeadlineEvidence(t));
+  assert.equal(report.schema_version, 2);
+  assert.deepEqual(Object.keys(report.walkthrough.operator_decisions).filter((k) => ['schema', 'transfer_cap_no_floor_acknowledged'].includes(k)),
+    ['schema', 'transfer_cap_no_floor_acknowledged']);
+});
+test('v3 decisions export their schema and the transfer cap\'s accepted open floor; v3 without it is refused', (t) => {
+  const v3 = ({ run }) => {
+    const d = run.walkthrough.operator_decisions;
+    d.schema = 'ozpb-soroswap-operator-decisions/v3'; d.transfer_cap.no_floor_acknowledged = true;
+  };
+  const v2 = exportEvidence(exactDeadlineEvidence(t)).walkthrough.operator_decisions;
+  // A v2 journal predates the question, so it records no acknowledgement; the schema says why.
+  assert.equal(v2.schema, 'ozpb-soroswap-operator-decisions/v2');
+  assert.equal(v2.transfer_cap_no_floor_acknowledged, false);
+  assert.deepEqual(exportEvidence(exactDeadlineEvidence(t, v3)).walkthrough.operator_decisions,
+    { ...v2, schema: 'ozpb-soroswap-operator-decisions/v3', transfer_cap_no_floor_acknowledged: true });
+  for (const unanswered of [false, undefined]) {
+    assert.throws(() => exportEvidence(exactDeadlineEvidence(t, (f) => {
+      v3(f);
+      if (unanswered === undefined) delete f.run.walkthrough.operator_decisions.transfer_cap.no_floor_acknowledged;
+      else f.run.walkthrough.operator_decisions.transfer_cap.no_floor_acknowledged = unanswered;
+    })), /invalid or inconsistent/);
   }
 });
 for (const [name, change] of [

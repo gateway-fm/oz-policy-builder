@@ -1,16 +1,12 @@
 name: publish image
 
-# Publishes the self-hosted API and TLS proxy images to Docker Hub (`gatewayfm/oz-policy-builder`
-# and `gatewayfm/oz-policy-builder-proxy`) for a published GitHub Release,
+# Publishes the self-hosted API and TLS proxy images to Docker Hub for a published GitHub Release,
 # after every check the self-hosted workflow runs (build-context boundary, TLS and offline
-# reproduction, rootless worker containment), on each architecture. It deploys nothing and runs
-# no service. A pull request that changes this file runs the same build and checks on both
-# architectures without logging in or pushing.
+# reproduction, what the endpoint retains, rootless worker containment), on each architecture.
+# It deploys nothing and runs no service. A pull request that changes this file runs the same
+# build and checks on both architectures without logging in or pushing.
 #
-# Credentials: the organization's Docker Hub secrets (`DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`),
-# read only by the release-only push steps; a pull request's run never references them, and a
-# fork's run cannot. The GitHub token stays read-only except for the provenance attestation,
-# and checkout does not persist it into the repository the job's scripts run in.
+# Docker Hub credentials are scoped to release steps. PR builds use a read-only GitHub token.
 on:
   release:
     types: [published]
@@ -19,6 +15,8 @@ on:
       - .github/workflows/publish-image.yml
       - scripts/release-oci.sh
       - scripts/test-release-oci.py
+      - scripts/require-release-checks.sh
+      - scripts/release-artifacts.py
 
 permissions:
   contents: read
@@ -28,7 +26,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-release:
+    name: verify exact-revision CI and released binaries
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: require successful explicitly dispatched runs for this exact source
+        run: bash scripts/require-release-checks.sh
+      - name: verify all expected files and their release attestations against the source commit
+        run: |
+          set -euo pipefail
+          revision=$(git rev-parse --verify 'HEAD^{commit}')
+          assets=$(mktemp -d)
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$assets" \
+            --pattern 'ozpb-*.tar.gz' --pattern 'ozpb-wire-contract-*.json' --pattern 'SHA256SUMS'
+          python3 -I scripts/release-artifacts.py check-release-files --label "$RELEASE_TAG" \
+            --commit "$revision" --directory "$assets" \
+            x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin
+          for asset in "$assets"/*; do
+            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-binaries.yml" \
+              --source-ref "refs/tags/$RELEASE_TAG" --source-digest "$revision" --deny-self-hosted-runners
+          done
+
   build:
+    needs: verify-release
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.verify-release.result == 'success') }}
     name: build and test (${{ matrix.arch }})
     strategy:
       fail-fast: true
@@ -44,10 +78,10 @@ jobs:
       contents: read
     env:
       ARCH: ${{ matrix.arch }}
-      REPOSITORY: docker.io/gatewayfm/oz-policy-builder
       # Through the environment, not interpolated into scripts: the tag comes from the event
       # payload.
       RELEASE_TAG: ${{ github.event.release.tag_name }}
+      REPOSITORY: docker.io/gatewayfm/oz-policy-builder
       SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -68,18 +102,22 @@ jobs:
         run: |
           python3 scripts/test-hosted-context.py
           python3 scripts/test-hosted-mcp.py
+          python3 -B scripts/test-check-hosted-build.py
+          python3 -B scripts/test-check-hosted-retention.py
           python3 scripts/test-worker-launcher.py
       - name: build immutable source context and both images
         run: |
           set -euo pipefail
+          # One commit for the context and the toolkit commit the image's manifests record.
           revision=$(git rev-parse --verify 'HEAD^{commit}')
           python3 scripts/hosted-context.py "$revision" > "$RUNNER_TEMP/ozpb-context.tar"
-          # The source label names the repository each image was built from.
+          # Associate both images with their reviewed source.
           docker build --pull --target proxy --file deployment/Dockerfile \
             --label "org.opencontainers.image.source=$SOURCE_URL" \
             --label "org.opencontainers.image.revision=$revision" \
             --tag ozpb-proxy:check - < "$RUNNER_TEMP/ozpb-context.tar"
           docker build --pull --file deployment/Dockerfile \
+            --build-arg OZPB_TOOLKIT_SOURCE="$revision" \
             --label "org.opencontainers.image.source=$SOURCE_URL" \
             --label "org.opencontainers.image.revision=$revision" \
             --tag ozpb-self-host:check - < "$RUNNER_TEMP/ozpb-context.tar"
@@ -91,11 +129,13 @@ jobs:
           suffix="$RELEASE_TAG-$ARCH-run-$GITHUB_RUN_ID"
           bash scripts/release-oci.sh restore ozpb-self-host:check "$REPOSITORY:$suffix" "$revision" "$SOURCE_URL"
           bash scripts/release-oci.sh restore ozpb-proxy:check "$REPOSITORY-proxy:$suffix" "$revision" "$SOURCE_URL"
-      - name: TLS transport and real offline artifact reproduction
+      - name: TLS transport, real offline artifact reproduction and what the endpoint retains
         run: |
           set -euo pipefail
           export OZPB_IMAGE="$(docker image inspect ozpb-self-host:check --format '{{.Id}}')"
           export OZPB_PROXY_IMAGE="$(docker image inspect ozpb-proxy:check --format '{{.Id}}')"
+          # The same commit the build step passed as OZPB_TOOLKIT_SOURCE; the generated manifest must record it.
+          export OZPB_TOOLKIT_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
           bash scripts/test-hosted-container.sh
       - name: rootless worker containment and independent lifecycle
         run: |

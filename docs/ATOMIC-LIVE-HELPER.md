@@ -36,7 +36,7 @@ amount. In order, it:
    function argument;
 3. refuses any two of helper, account, policy, delegate, recipient and asset sharing an address;
 4. refuses a delegate that is not an existing classic account, an account not running the
-   pinned `stellar-accounts` 0.7.2 Wasm, and a policy not running the expected candidate Wasm;
+   pinned `stellar-accounts` 0.7.3 Wasm, and a policy not running the expected candidate Wasm;
    the candidate must be a generated policy with a call cap (see step 6);
 5. calls the account's `add_context_rule` with exactly one `CallContract(native asset)` rule,
    one `Delegated` signer and one policy, and refuses unless the account allocated the expected
@@ -170,11 +170,17 @@ with a reason. Only `permit` and `deny` are evidence:
 A denial requires a top-level `Auth/InvalidAction` failure and rejects conflicting account
 errors in the printed log or transfer authorization events. It needs the `NoTupleMatched` error
 attributed to the candidate policy inside the asset's failed authentication of the account, with
-no ledger changes. It is read twice: from the printed
-event log as the harness reads it, matched only where the log starts an event so that a value it
-prints verbatim, such as the rule name, cannot pass for one, and from the structured diagnostic
-events. A helper refusal such as `CandidateRuleNotExercised` is not a policy denial and settles
-nothing about the policy, and neither is an account error.
+no ledger changes. It is read from the structured diagnostic events, which stellar-rpc returns in
+the simulation's `events` field. Up to 30.0.0 the RPC also printed the event log into the `error`
+text after the host error; 30.0.1 returns the host error alone, and the diagnostic events only when
+the endpoint runs with `--preflight-enable-debug`
+([release notes](https://github.com/stellar/stellar-rpc/releases/tag/v30.0.1): "Error strings no
+longer include the event log"). An answer with neither is refused as `no_diagnostic_events`, which
+says the endpoint must be configured, not anything about the policy; the public endpoints probed
+on 19 November 2026 (SDF testnet, Gateway testnet, `mainnet.sorobanrpc.com`) returned them. Where the log is printed, it must show the same denial, matched
+only where the log starts an event so that a value it prints verbatim, such as the rule name,
+cannot pass for one. A helper refusal such as `CandidateRuleNotExercised` is not a policy denial
+and settles nothing about the policy, and neither is an account error.
 
 A failed simulation reports no ledger changes, and a permit's nonces tie it only to the entries'
 address and nonce pairs, so the response is bound to the envelope through its diagnostic events,
@@ -260,15 +266,43 @@ refuses an RPC serving any other network before it builds, funds or signs anythi
    subprocess and its process group, waits for the child to close, and then deletes the keys;
    no later harness step runs. Repeated signals cannot bypass that cleanup.
 
-### Current SDK 28 helper deployment
+### Current helper deployment (account 0.7.3)
+
+The helper compiles in the pinned account hash, so moving the account to 0.7.3
+([GHSA-jpg9-m7w4-c7wc](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)) changed its
+Wasm and `EXPECTED_HELPER_HASH`. The
+[19 November 2026 receipt](evidence/atomic-live-helper-testnet-2026-11-19.json) records the
+current helper at `CAQKMRIU2D2UPW3ACRGUNAALAMYV4DX45BQUPSJ4TQAW5BK3RFOZGORK`, read back at
+ledger 5805423 with the current `EXPECTED_HELPER_HASH` / wallet helper pin, probed through a
+throwaway account `CCUJSXKHNTGF7YXBQ24VHXTQIEJ7AA64YGUQ345VDBO5RTAWDH56CGXT` running the 0.7.3
+account code. Configure new wallet live checks with that address, subject to their fresh
+code/liveness checks. Its instance was live until ledger 5926382 and its code until 5926329 when
+observed; these are observations, not a promise that the contract remains live.
+
+At ledger 5805423 the 1,000,000-stroop case permitted and the adjacent amount was denied by the
+candidate policy's `NoTupleMatched` (6) inside the account's failed authentication. After the
+case signatures expired at ledger 5805435, readback at 5805436 showed the account's balance
+unchanged and no installed candidate. The receipt records `checkout_dirty: true` at the base
+revision: it was produced from the working tree that moved the pin, before that change was
+committed. Its `script_sha256` is the SHA-256 of `deploy-live-helper.mjs` as committed with it.
+The throwaway keys were deleted.
+
+The run used `OZPB_RPC_URL=https://rpc.testnet.stellar.gateway.fm`. At the time the script
+attributed the denial only from the host's event log in the simulation's `error` text; that RPC
+(30.0.0) still includes it there, while `soroban-testnet.stellar.org` (30.0.1) returns the host
+error alone and the diagnostic events only in the separate `events` field, so against it the
+denial case reported `not_a_policy_denial` although the simulation failed the same way. The
+script and the wallet now read the structured events, and the printed log only where there is
+one.
+
+### Previous SDK 28 helper deployment (account 0.7.2)
 
 The [28 October 2026 receipt](evidence/atomic-live-helper-testnet-2026-10-28.json) records the
-current helper at `CBFSOXRVL4KTZJD6JAIBB7EHRQKOFYKMXQX6YMCLONAS45RQ77MKNOOA`, read back at
-ledger 5435087 with the current `EXPECTED_HELPER_HASH` / wallet helper pin. Configure new
-wallet live checks with that address, subject to their fresh code/liveness checks. Its instance
-was live until ledger 5556046 and code until 5556045 when observed, before the extension
-[below](#keeping-the-helper-live); these are observations, not a promise that the contract
-remains live.
+previous helper at `CBFSOXRVL4KTZJD6JAIBB7EHRQKOFYKMXQX6YMCLONAS45RQ77MKNOOA`, read back at
+ledger 5435087. It compiles in the revoked 0.7.2 account hash and runs the previous helper
+code, so the wallet's helper pin now refuses it; do not configure it. Its instance was live
+until ledger 5556046 and code until 5556045 when observed, before the extension
+[below](#keeping-the-helper-live).
 
 The original 1,000,000-stroop simulation permitted and the adjacent amount was denied by the
 candidate policy's `NoTupleMatched` (6). After signature expiry at ledger 5435099, readback at
@@ -345,7 +379,7 @@ stellar contract extend --wasm-hash <EXPECTED_HELPER_HASH> \
 ```
 
 The first extends the instance, the second the code, whose hash is `EXPECTED_HELPER_HASH`. On
-3 November 2026 both ran against the current helper
+3 November 2026 both ran against the previous helper
 `CBFSOXRVL4KTZJD6JAIBB7EHRQKOFYKMXQX6YMCLONAS45RQ77MKNOOA`, with `--ledgers-to-extend 518400`
 and `--network testnet`, from a funded testnet key; testnet was on protocol 29. Transaction
 `14bdcc3afa12419e65b6d22b809dce8895057546632b19fd3c7155f912d4b7a3`, at ledger 5536754, moved the

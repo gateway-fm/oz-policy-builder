@@ -161,6 +161,55 @@ mod tests {
         assert_eq!(a.role("unknown_fn", 0), None);
     }
 
+    /// A swap call whose address-vector path is `contracts` contract addresses followed by
+    /// `accounts` account addresses, as the recorder summarizes it (base64 XDR).
+    fn swap_with_path(contracts: usize, accounts: usize) -> Vec<ArgSummary> {
+        use stellar_xdr::{AccountId, ContractId, Hash, PublicKey, ScAddress, Uint256, WriteXdr};
+        let contract = ScVal::Address(ScAddress::Contract(ContractId(Hash([1; 32]))));
+        let account = ScVal::Address(ScAddress::Account(AccountId(
+            PublicKey::PublicKeyTypeEd25519(Uint256([2; 32])),
+        )));
+        let mut path = vec![contract; contracts];
+        path.extend(vec![account; accounts]);
+        let path = ScVal::Vec(Some(path.try_into().unwrap()));
+        vec![
+            ArgSummary::I128(1),
+            ArgSummary::I128(1),
+            ArgSummary::Other {
+                xdr_base64: path.to_xdr_base64(Limits::none()).unwrap(),
+            },
+            ArgSummary::Address(
+                "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526".to_string(),
+            ),
+            ArgSummary::U64(1),
+        ]
+    }
+
+    #[test]
+    fn an_address_vector_path_is_bounded_at_one_mebibyte_of_text() {
+        const BOUND: usize = 1024 * 1024;
+        let a = soroswap_router_adapter(sha256(b"soroswap-router-wasm"));
+        let path_len = |args: &[ArgSummary]| match &args[2] {
+            ArgSummary::Other { xdr_base64 } => xdr_base64.len(),
+            _ => unreachable!(),
+        };
+
+        // 12 bytes of vector header + 19655 × 40 (contract) + 5 × 44 (account) = 786432 bytes
+        // of XDR, whose base64 is exactly the bound.
+        let at_bound = swap_with_path(19_655, 5);
+        assert_eq!(path_len(&at_bound), BOUND);
+        assert!(a.matches_call("swap_exact_tokens_for_tokens", &at_bound));
+
+        // One more address is past the text bound yet still decodes within the 1 MiB XDR
+        // limit, so only the text bound refuses it.
+        let past_bound = swap_with_path(19_656, 5);
+        assert!(path_len(&past_bound) > BOUND);
+        assert!(!a.matches_call("swap_exact_tokens_for_tokens", &past_bound));
+
+        // An ordinary short path is recognized.
+        assert!(a.matches_call("swap_exact_tokens_for_tokens", &swap_with_path(2, 0)));
+    }
+
     #[test]
     fn max_input_permits_upper_bound_min_output_does_not_invent_a_floor() {
         assert_eq!(

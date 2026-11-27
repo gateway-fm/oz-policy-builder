@@ -38,6 +38,7 @@ pub fn prepare_dry_run_with_build_config(
     // Canonicalization has independent depth and byte ceilings. Bound the entire
     // request before registry recognition, suite construction or artifact builds.
     let run_hash = hash(domains::DRY_RUN_REQUEST, input)?;
+    super::verification::suite_spec(&input.candidate.spec)?;
     let prepared = prepare_call_surface_check(&input.candidate, trust, build)?;
     let rule_index = input.candidate.rule_index;
     let suite: Vec<_> = ozpb_harness::build_suite(&prepared.spec)

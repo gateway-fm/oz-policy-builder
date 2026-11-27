@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use stellar_xdr::{Limits, WriteXdr};
 
 pub mod adapters;
-// Test-support walkthrough builders (W1/W3), shared across crates' tests; `expect` on
+// Test-support walkthrough builders (W1, W3, two payments), shared across crates' tests; `expect` on
 // known-good fixtures is intentional here.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub mod walkthroughs;
@@ -99,6 +99,14 @@ pub struct Widening {
     pub fn_name: String,
     pub arg_index: u32,
     pub bound: WideningBound,
+    /// Explicit acknowledgement that a cap (`le_i128`) sets no floor: the argument is a signed
+    /// integer, so every smaller value passes, negative amounts included, and only the target can
+    /// refuse one. The way to bound both ends is a range (`WideningBound::RangeI128`), which needs
+    /// no acknowledgement; without either, a cap is an open question. It answers nothing on a
+    /// range, a floor or `any_value`, where it is refused. Absent reads as `false`, like
+    /// `unlimited_calls_acknowledged`.
+    #[serde(default)]
+    pub no_floor_acknowledged: bool,
     /// The user's stated semantic intent ("amount is a cap, allow headroom to 100").
     pub intent: String,
     pub blast_radius: BlastRadius,
@@ -112,6 +120,12 @@ pub enum WideningBound {
     },
     GeI128 {
         min: String,
+    },
+    /// Both ends, inclusive: `min..=max`. The way to say "spend up to X" without leaving the
+    /// amount open below: `{"range_i128": {"min": "0", "max": "X"}}`.
+    RangeI128 {
+        min: String,
+        max: String,
     },
     /// Accept any value at this argument (maximal widening; only via an explicit,
     /// high-blast-radius user decision — e.g. a caller-chosen `deadline`).
@@ -302,6 +316,54 @@ pub fn synthesize(
             )));
         }
     }
+    // One argument carries one constraint, and `exact_constraints` applies the first widening
+    // that names it. A second would be dropped without a word — a cap and a floor meant as a
+    // range would quietly become the cap alone — so the document is refused and the argument
+    // named instead.
+    let mut widenings_per_argument = BTreeMap::<(&str, &str, u32), usize>::new();
+    for w in &decisions.widenings {
+        *widenings_per_argument
+            .entry((w.contract.as_str(), w.fn_name.as_str(), w.arg_index))
+            .or_default() += 1;
+    }
+    for ((contract, fn_name, arg_index), count) in widenings_per_argument {
+        if count > 1 {
+            errors.push(SynthError::InvalidDecision(format!(
+                "widening {contract}/{fn_name} arg {arg_index}: {count} widenings name this \
+                 argument, and an argument takes one bound; keep the one the user chose"
+            )));
+        }
+    }
+    // The open-floor acknowledgement answers the question a bound with no floor asks (below) and
+    // no other: a cap, or a range from i128::MIN, which renders the same check. On a stated
+    // floor it contradicts the bound beside it; on any_value it qualifies nothing. Either way the
+    // user's answer is unclear, so the document is refused rather than the field ignored.
+    for w in decisions
+        .widenings
+        .iter()
+        .filter(|w| w.no_floor_acknowledged)
+    {
+        let (contract, fn_name, arg_index) = (&w.contract, &w.fn_name, w.arg_index);
+        match &w.bound {
+            WideningBound::LeI128 { .. } => {}
+            WideningBound::RangeI128 { min, .. } if starts_at_the_type_minimum(min) => {}
+            WideningBound::RangeI128 { min, max } => {
+                errors.push(SynthError::InvalidDecision(format!(
+                    "widening {contract}/{fn_name} arg {arg_index}: the range {min}..={max} has \
+                     its floor at {min}, which contradicts no_floor_acknowledged; choose one"
+                )))
+            }
+            WideningBound::GeI128 { min } => errors.push(SynthError::InvalidDecision(format!(
+                "widening {contract}/{fn_name} arg {arg_index}: the floor at {min} contradicts \
+                 no_floor_acknowledged; choose one"
+            ))),
+            WideningBound::AnyValue => errors.push(SynthError::InvalidDecision(format!(
+                "widening {contract}/{fn_name} arg {arg_index}: no_floor_acknowledged qualifies \
+                 a bound with no floor alone (a cap, le_i128, or a range from i128::MIN); \
+                 any_value has no bound for it to qualify"
+            ))),
+        }
+    }
 
     // --- evidence: canonical ordering + dedup (multi-recording provenance, §4.2) ----
     let mut recording_hashes: Vec<(Hash32, &RecordingBundle)> = Vec::new();
@@ -410,6 +472,7 @@ pub fn synthesize(
             .and_then(|t| input.adapters.iter().find(|a| a.target_code_hash == t.hash));
         // Dedup identical tuples; merge their evidence paths.
         let mut tuples: Vec<(AllowedCall, Vec<String>)> = Vec::new();
+        let mut requires_adapter = false;
         for o in calls {
             let matched_adapter =
                 adapter.filter(|adapter| adapter.matches_call(&o.fn_name, o.args));
@@ -421,6 +484,15 @@ pub fn synthesize(
                 &mut errors,
                 &mut rationale,
             );
+            if let Some(adapter) = matched_adapter {
+                requires_adapter |= args.iter().any(|arg| match arg.provenance {
+                    Provenance::AdapterDerived { .. } => true,
+                    Provenance::UserWidened { .. } => {
+                        adapter.role(&o.fn_name, arg.index as usize).is_some()
+                    }
+                    _ => false,
+                });
+            }
             let call = AllowedCall {
                 fn_name: o.fn_name.clone(),
                 args,
@@ -442,15 +514,9 @@ pub fn synthesize(
             })
             .collect();
 
-        // If the reviewed adapter introduced any code-hash-bound constraint, the rule's
-        // effect-minimality claim is valid only while the target's code hash holds — escalate
-        // the drift policy from evidence-only/warn to adapter-required/refuse (§6.1).
-        let adapter_derived = allowed_calls.iter().any(|c| {
-            c.args
-                .iter()
-                .any(|a| matches!(a.provenance, Provenance::AdapterDerived { .. }))
-        });
-        if adapter_derived {
+        // User-selected bounds checked against an adapter role also rely on that code, even
+        // when none of the constraints has adapter-derived provenance.
+        if requires_adapter {
             if let Some(t) = target_code_hash.as_mut() {
                 t.role = TargetHashRole::AdapterRequired;
                 t.on_drift = DriftResponse::Refuse;
@@ -561,9 +627,11 @@ pub fn synthesize(
         });
     }
 
-    // Unused widenings are decisions that matched nothing — surface them, fail closed.
+    // Unused widenings are decisions that matched nothing — surface them, fail closed. Asking
+    // only whether the argument ended up widened is sound because no two widenings name the
+    // same argument (refused above), so a widened argument is this decision's.
     for w in &decisions.widenings {
-        let applied = rules.iter().any(|r| {
+        let Some(rule) = rules.iter().find(|r| {
             r.context.contract == w.contract
                 && r.allowed_calls.iter().any(|c| {
                     c.fn_name == w.fn_name
@@ -571,14 +639,122 @@ pub fn synthesize(
                             .iter()
                             .any(|a| a.index == w.arg_index && a.constraint.is_widening())
                 })
-        });
-        if !applied {
-            errors.push(SynthError::AmbiguousArgSemantics {
-                contract: w.contract.clone(),
-                fn_name: w.fn_name.clone(),
-                arg_index: w.arg_index,
-                reason: "widening matched no observed numeric argument".to_string(),
-            });
+        }) else {
+            // A widening refused against an adapter's role is left unapplied, so it matches
+            // nothing; it is not reported a second time for that.
+            if !refused(&errors, w) {
+                errors.push(SynthError::AmbiguousArgSemantics {
+                    contract: w.contract.clone(),
+                    fn_name: w.fn_name.clone(),
+                    arg_index: w.arg_index,
+                    reason: "widening matched no observed numeric argument".to_string(),
+                });
+            }
+            continue;
+        };
+        // Decisions name an argument, not a recorded call. Where the function was recorded as
+        // several distinct calls, this one widening would loosen the argument in each — the
+        // second payment's amount raised along with the first's. One argument of one recorded
+        // call is what a widening claims, and nothing in a decision can say which call, so it is
+        // refused. Calls that differ only in this argument collapse into one tuple: one call's.
+        let widened_calls = rule
+            .allowed_calls
+            .iter()
+            .filter(|c| {
+                c.fn_name == w.fn_name
+                    && c.args.iter().any(|a| {
+                        a.index == w.arg_index
+                            && matches!(a.provenance, Provenance::UserWidened { .. })
+                    })
+            })
+            .count();
+        if widened_calls > 1 {
+            let (contract, fn_name, arg_index) = (&w.contract, &w.fn_name, w.arg_index);
+            errors.push(SynthError::InvalidDecision(format!(
+                "widening {contract}/{fn_name} arg {arg_index}: this widening would apply to \
+                 {widened_calls} distinct recorded calls of {fn_name} on {contract}, loosening \
+                 argument {arg_index} of each; a widening loosens one argument of one recorded \
+                 call, and a decision cannot name which. Keep the argument exact, or synthesize \
+                 from recordings in which {fn_name} is one distinct call"
+            )));
+        }
+        // An applied numeric bound sits on an i128 (any other argument is refused above), and an
+        // i128 is signed: a cap renders only `x > max → deny`, so the generated policy passes
+        // every negative amount (cf. OpenZeppelin's v0.7.0 audit, L-06). A range from i128::MIN
+        // renders exactly that check too, since a comparison against the type's own minimum is
+        // left out. A floor of zero would infer a direction from the XDR type alone, and one
+        // argument carries one bound, so the open floor is a decision the user states or
+        // synthesis asks for.
+        let open_floor = match &w.bound {
+            WideningBound::LeI128 { max } => Some((
+                format!("the cap at {max}"),
+                format!(
+                    "a range (range_i128, such as 0..={max}; needs development registry version 7 \
+                     or later)"
+                ),
+            )),
+            WideningBound::RangeI128 { min, max } if starts_at_the_type_minimum(min) => Some((
+                format!(
+                    "the range {min}..={max}, which starts at i128::MIN and so is the cap at \
+                     {max},"
+                ),
+                format!("a floor above i128::MIN (such as 0..={max})"),
+            )),
+            _ => None,
+        };
+        // A widening already refused as stated is not asked about its floor as well: the
+        // acknowledgement the question invites would not make it acceptable.
+        if let Some((subject, instead)) = open_floor.filter(|_| !refused(&errors, w)) {
+            let (contract, fn_name, arg_index) = (&w.contract, &w.fn_name, w.arg_index);
+            let refusal = negative_amount_refusal(rule, arg_index);
+            if w.no_floor_acknowledged {
+                rationale.push(format!(
+                    "{contract}/{fn_name} arg {arg_index}: NO FLOOR — the user acknowledged that \
+                     {subject} admits every smaller value, negative amounts included; {refusal}"
+                ));
+            } else {
+                errors.push(SynthError::NeedsDecision(format!(
+                    "widening {contract}/{fn_name} arg {arg_index}: floor: {subject} on this \
+                     signed amount sets no floor, so every smaller value passes it, negative \
+                     amounts included; {refusal}. Bound both ends instead with {instead}, or \
+                     acknowledge the open floor (no_floor_acknowledged, only on the user's \
+                     explicit acceptance), or keep the argument exact"
+                )));
+            }
+        } else if let WideningBound::RangeI128 { min, max } = &w.bound {
+            // A range's floor is the user's explicit decision, so nothing is asked; but a floor
+            // below zero still admits negative amounts, and the report says how far.
+            let (contract, fn_name, arg_index) = (&w.contract, &w.fn_name, w.arg_index);
+            if let Ok(low) = min.parse::<i128>() {
+                if low < 0 {
+                    rationale.push(format!(
+                        "{contract}/{fn_name} arg {arg_index}: NEGATIVE FLOOR — the user's range \
+                         {low}..={max} admits negative amounts down to {low}; the generated scope \
+                         policy refuses only below that"
+                    ));
+                }
+            }
+        }
+    }
+    // An adapter's cap sets no floor either. It is the adapter's reviewed claim, not a question
+    // for the user, but the report states the open floor as plainly as for a user's cap.
+    for rule in &rules {
+        for call in &rule.allowed_calls {
+            for arg in &call.args {
+                if let (Constraint::LeI128 { max }, Provenance::AdapterDerived { adapter, .. }) =
+                    (&arg.constraint, &arg.provenance)
+                {
+                    rationale.push(format!(
+                        "{}/{} arg {}: NO FLOOR — adapter '{adapter}' caps this argument at {max} \
+                         from its reviewed maximum-input role and sets no floor, so every smaller \
+                         value passes, negative amounts included; {}",
+                        rule.context.contract,
+                        call.fn_name,
+                        arg.index,
+                        negative_amount_refusal(rule, arg.index)
+                    ));
+                }
+            }
         }
     }
 
@@ -677,6 +853,20 @@ fn validate_spending_limit_shape(
                     ));
                 }
             }
+            Constraint::RangeI128 { min, max } => {
+                let (Ok(min), Ok(max)) = (min.parse::<i128>(), max.parse::<i128>()) else {
+                    return Err(
+                        "transfer argument 2 must be constrained as a canonical i128".to_string(),
+                    );
+                };
+                if max < 0 || min > limit {
+                    return Err(format!(
+                        "transfer amount range {min}..={max} shares no amount with the spending \
+                         limit's 0..={limit}; the composed policies would deny every matching \
+                         amount"
+                    ));
+                }
+            }
             Constraint::EqAddress { .. } | Constraint::EqScval { .. } | Constraint::AnyValue => {
                 return Err(
                     "oz:spending_limit requires every transfer argument 2 to be constrained as \
@@ -718,6 +908,24 @@ fn validate_spending_limit_shape(
         ));
     }
     Ok(())
+}
+
+/// What refuses a negative value an open floor admits at a capped argument of `rule`. Never the
+/// generated scope policy: a cap renders only `x > max → deny`, with no non-negativity check (it
+/// still refuses the negative values above a negative cap). The reviewed spending limit refuses a
+/// negative transfer amount, and it reads argument 2 of the transfer-only rule it is composed into
+/// (composition refuses any other rule shape); anywhere else only the target contract is left.
+fn negative_amount_refusal(rule: &RuleSpec, arg_index: u32) -> &'static str {
+    let spending_limit = rule.policies.iter().any(
+        |policy| matches!(policy, PolicyRef::Reviewed { kind, .. } if kind == "oz:spending_limit"),
+    );
+    if spending_limit && arg_index == 2 {
+        "the generated scope policy has no non-negativity check; the composed spending limit \
+         refuses a negative amount"
+    } else {
+        "the generated scope policy has no non-negativity check, so only the target contract can \
+         refuse a negative amount the cap admits"
+    }
 }
 
 fn resolve_target_code_hash(
@@ -794,6 +1002,24 @@ fn exact_constraints(
             .iter()
             .find(|w| w.contract == o.contract && w.fn_name == o.fn_name && w.arg_index == index);
 
+        // A decision that contradicts the role a reviewed adapter declares for this argument is
+        // refused for that alone, and not applied: no other finding about it (its rating, its
+        // floor, its type) could make it acceptable, so none is raised.
+        if let Some(finding) = widening
+            .zip(adapter)
+            .and_then(|(w, ad)| against_adapter_role(o, index, w, ad))
+        {
+            if !errors.contains(&finding) {
+                errors.push(finding);
+            }
+            out.push(ArgConstraint {
+                index,
+                constraint: exact_for(arg, input),
+                provenance: Provenance::ObservedExact,
+            });
+            continue;
+        }
+
         let (constraint, provenance) = match (arg, widening) {
             // AnyValue is a type-agnostic maximal widening (e.g. a caller-chosen
             // deadline); it applies regardless of the observed arg type.
@@ -821,15 +1047,37 @@ fn exact_constraints(
             }
             // Numeric bounds are only meaningful for i128 amounts; anything else is
             // ambiguous semantics and fails closed.
-            (ArgSummary::I128(_), Some(w)) => {
+            (ArgSummary::I128(observed), Some(w)) => {
                 rationale.push(format!(
-                    "{}/{} arg {index}: user-widened ({}), blast radius {:?}",
+                    "{}/{} arg {index}: user-widened ({}), blast radius {:?}; recorded value \
+                     {observed}",
                     o.contract, o.fn_name, w.intent, w.blast_radius
                 ));
+                // A widening loosens the recorded call. A bound that excludes the recorded value
+                // would refuse the call the grant was built from, so it is not a widening at all.
+                if let Some(bound) = excluding_bound(&w.bound, *observed) {
+                    let finding = SynthError::InvalidDecision(format!(
+                        "widening {}/{} arg {index}: {bound} excludes the recorded value \
+                         {observed}; a widening loosens the recorded call and cannot refuse it",
+                        o.contract, o.fn_name
+                    ));
+                    if !errors.contains(&finding) {
+                        errors.push(finding);
+                    }
+                }
+                if let Some(finding) = uncapped_below_high(o, index, w, adapter) {
+                    if !errors.contains(&finding) {
+                        errors.push(finding);
+                    }
+                }
                 (
                     match &w.bound {
                         WideningBound::LeI128 { max } => Constraint::LeI128 { max: max.clone() },
                         WideningBound::GeI128 { min } => Constraint::GeI128 { min: min.clone() },
+                        WideningBound::RangeI128 { min, max } => Constraint::RangeI128 {
+                            min: min.clone(),
+                            max: max.clone(),
+                        },
                         WideningBound::AnyValue => unreachable!("handled above"),
                     },
                     Provenance::UserWidened {
@@ -887,6 +1135,9 @@ fn exact_constraints(
                         let constraint = match bound {
                             WideningBound::LeI128 { max } => Constraint::LeI128 { max },
                             WideningBound::GeI128 { min } => Constraint::GeI128 { min },
+                            WideningBound::RangeI128 { min, max } => {
+                                Constraint::RangeI128 { min, max }
+                            }
                             WideningBound::AnyValue => Constraint::AnyValue,
                         };
                         (
@@ -908,6 +1159,150 @@ fn exact_constraints(
         });
     }
     out
+}
+
+/// How `bound` reads in a refusal, when it excludes the recorded `observed` value. A bound that
+/// does not parse is left to the spec's own canonical-value check, which names it.
+fn excluding_bound(bound: &WideningBound, observed: i128) -> Option<String> {
+    let parse = |value: &str| value.parse::<i128>().ok();
+    match bound {
+        WideningBound::LeI128 { max } => parse(max)
+            .filter(|max| observed > *max)
+            .map(|max| format!("the cap <= {max}")),
+        WideningBound::GeI128 { min } => parse(min)
+            .filter(|min| observed < *min)
+            .map(|min| format!("the floor >= {min}")),
+        WideningBound::RangeI128 { min, max } => match (parse(min), parse(max)) {
+            (Some(low), Some(high)) if observed < low || observed > high => {
+                Some(format!("the range {low}..={high}"))
+            }
+            _ => None,
+        },
+        WideningBound::AnyValue => None,
+    }
+}
+
+/// Whether `w` already drew an invalid-decision finding: every such finding about a widening
+/// opens with the argument it names.
+fn refused(errors: &[SynthError], w: &Widening) -> bool {
+    let prefix = format!("widening {}/{} arg {}:", w.contract, w.fn_name, w.arg_index);
+    errors
+        .iter()
+        .any(|e| matches!(e, SynthError::InvalidDecision(message) if message.starts_with(&prefix)))
+}
+
+/// Whether a range's stated floor is the type's own minimum, which the generated check leaves
+/// out: such a range has no floor, the same check as a cap at its maximum.
+fn starts_at_the_type_minimum(min: &str) -> bool {
+    min.parse::<i128>() == Ok(i128::MIN)
+}
+
+/// How a user's bound reads in a finding: the decision's own values, as written.
+fn bound_text(bound: &WideningBound) -> String {
+    match bound {
+        WideningBound::LeI128 { max } => format!("the cap <= {max}"),
+        WideningBound::GeI128 { min } => format!("the floor >= {min}"),
+        WideningBound::RangeI128 { min, max } => format!("the range {min}..={max}"),
+        WideningBound::AnyValue => "any_value".to_string(),
+    }
+}
+
+/// The ends a bound enforces, as the generated check renders it: `(floor, cap)`, where `None` on
+/// a side means every value on that side passes. An end at the type's own limit refuses nothing
+/// and the generated check leaves it out, so it is no end. `None` overall means a stated end does
+/// not parse; the spec's canonical-value check names that, and no finding here rests on it.
+fn enforced_ends(bound: &WideningBound) -> Option<(Option<i128>, Option<i128>)> {
+    let parse = |value: &str| value.parse::<i128>().ok();
+    let floor = |value: i128| (value != i128::MIN).then_some(value);
+    let cap = |value: i128| (value != i128::MAX).then_some(value);
+    Some(match bound {
+        WideningBound::LeI128 { max } => (None, cap(parse(max)?)),
+        WideningBound::GeI128 { min } => (floor(parse(min)?), None),
+        WideningBound::RangeI128 { min, max } => (floor(parse(min)?), cap(parse(max)?)),
+        WideningBound::AnyValue => (None, None),
+    })
+}
+
+/// The refusal of a user widening that loosens what a reviewed adapter's role for the argument
+/// requires, if it does. An argument the adapter keeps exact (a swap's path, its recipient, a
+/// fixed deadline) must carry the recorded value, so any widening of it is refused. A minimum
+/// output is the target's own check on the result, so a bound admitting anything below the
+/// recorded value weakens it — lowering it to zero removes it. A maximum input is what the call
+/// may spend, so a bound with no cap lets it spend any amount. A rating cannot restore any of
+/// these checks, so none is a question of blast radius: the decision contradicts the reviewed
+/// role and is refused; loosening a role is a new adapter version's to do. Raising a minimum
+/// output, capping an input at a finite amount, and any decision on a caller-chosen argument stay
+/// the user's.
+fn against_adapter_role(
+    o: &Observed<'_>,
+    index: u32,
+    w: &Widening,
+    adapter: &adapters::Adapter,
+) -> Option<SynthError> {
+    let (contract, fn_name, name) = (&o.contract, &o.fn_name, &adapter.name);
+    let bound = bound_text(&w.bound);
+    let role = adapter.role(fn_name, index as usize)?;
+    if *role == adapters::ArgRole::ExactOnly {
+        return Some(SynthError::InvalidDecision(format!(
+            "widening {contract}/{fn_name} arg {index}: adapter '{name}' reviews this argument as \
+             exact (exact_only): the call must carry the recorded value, and {bound} would loosen \
+             it. No rating restores a check the reviewed role requires; keep it exact, and \
+             loosening it is for a new adapter version"
+        )));
+    }
+    let Some(ArgSummary::I128(observed)) = o.args.get(index as usize) else {
+        return None;
+    };
+    let (floor, cap) = enforced_ends(&w.bound)?;
+    match role {
+        adapters::ArgRole::MinOutput if floor.is_none_or(|floor| floor < *observed) => {
+            Some(SynthError::InvalidDecision(format!(
+                "widening {contract}/{fn_name} arg {index}: adapter '{name}' reviews this \
+                 argument as a minimum output, below which the target refuses the call; {bound} \
+                 admits values below the recorded {observed}, which weakens that check. A \
+                 decision may only raise a minimum output: keep it exact, or bound it from below \
+                 at {observed} or higher"
+            )))
+        }
+        adapters::ArgRole::MaxInput if cap.is_none() => Some(SynthError::InvalidDecision(format!(
+            "widening {contract}/{fn_name} arg {index}: adapter '{name}' reviews this argument as \
+             a maximum input; {bound} sets no cap on it, so the call may spend any amount. Bound \
+             it from above with a cap or a range, or leave it undecided for the adapter's cap at \
+             the recorded {observed}"
+        ))),
+        _ => None,
+    }
+}
+
+/// The refusal of a user bound with no cap that rates itself below high, if it is one. Every
+/// larger value passes it, which on an amount is any amount — on that side the reach of
+/// `any_value`, which validation holds to high. The XDR type never says whether an argument is
+/// an amount, so synthesis assumes it may be, with one exception: a minimum output a reviewed
+/// adapter declares, where the open top only tightens the target's own check.
+fn uncapped_below_high(
+    o: &Observed<'_>,
+    index: u32,
+    w: &Widening,
+    adapter: Option<&adapters::Adapter>,
+) -> Option<SynthError> {
+    if w.blast_radius == BlastRadius::High {
+        return None;
+    }
+    let (_, cap) = enforced_ends(&w.bound)?;
+    let min_output = adapter.and_then(|ad| ad.role(&o.fn_name, index as usize))
+        == Some(&adapters::ArgRole::MinOutput);
+    if cap.is_some() || min_output {
+        return None;
+    }
+    let rating = format!("{:?}", w.blast_radius).to_lowercase();
+    Some(SynthError::InvalidDecision(format!(
+        "widening {}/{} arg {index}: {} sets no cap, so the generated policy admits every larger \
+         value, which on an amount is any amount: a high blast radius, and this decision rates it \
+         {rating}. Rate it high, or give it a finite maximum",
+        o.contract,
+        o.fn_name,
+        bound_text(&w.bound)
+    )))
 }
 
 fn exact_for(arg: &ArgSummary, input: &SynthesisInput) -> Constraint {
@@ -1584,7 +1979,7 @@ mod tests {
         let mut input = input();
         // The recorder observed the target's on-chain code hash — the adapter binds to it.
         input.bundles[0].contract_executables.insert(
-            target,
+            target.clone(),
             ExecutableObservation {
                 executable: ObservedExecutable::Wasm { code_hash },
                 observed_ledger: LedgerSeq(4_200_100),
@@ -1644,6 +2039,35 @@ mod tests {
         assert_eq!(target_hash.role, TargetHashRole::AdapterRequired);
         assert_eq!(target_hash.on_drift, DriftResponse::Refuse);
 
+        // The adapter's cap sets no floor either. No user acknowledges it, so the rationale says
+        // it, with what refuses a negative amount: here the composed spending limit, which reads
+        // this transfer amount; without it, only the target.
+        let open_floor = |refusal: &str| {
+            format!(
+                "{target}/transfer arg 2: NO FLOOR — adapter 'reviewed-token@1' caps this \
+                 argument at 500000000 from its reviewed maximum-input role and sets no floor, so \
+                 every smaller value passes, negative amounts included; {refusal}"
+            )
+        };
+        assert!(
+            out.rationale.contains(&open_floor(
+                "the generated scope policy has no non-negativity check; the composed spending \
+                 limit refuses a negative amount"
+            )),
+            "{:#?}",
+            out.rationale
+        );
+        d.spending_limit = None;
+        let uncomposed = synthesize(&input, &d).unwrap();
+        assert!(
+            uncomposed.rationale.contains(&open_floor(
+                "the generated scope policy has no non-negativity check, so only the target \
+                 contract can refuse a negative amount the cap admits"
+            )),
+            "{:#?}",
+            uncomposed.rationale
+        );
+
         // The adapter-derived spec still validates.
         assert!(out.spec.validate().is_ok());
     }
@@ -1691,6 +2115,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "({ return true; 0 } as i128) + 0".to_string(),
             },
+            no_floor_acknowledged: true,
             intent: "hostile source token".to_string(),
             blast_radius: BlastRadius::High,
         }];
@@ -1806,6 +2231,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "1000000000".to_string(),
             },
+            no_floor_acknowledged: true,
             intent: "allow headroom".to_string(),
             blast_radius: BlastRadius::Medium,
         }];
@@ -1824,6 +2250,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "10".to_string(),
             },
+            no_floor_acknowledged: false,
             intent: "nonsense".to_string(),
             blast_radius: BlastRadius::High,
         }];
@@ -2096,6 +2523,10 @@ mod tests {
             limit: "10".to_string(),
             period_ledgers: 1,
         };
+        let range = |min: &str, max: &str| Constraint::RangeI128 {
+            min: min.to_string(),
+            max: max.to_string(),
+        };
         for (constraint, accepted) in [
             (Constraint::EqI128 { value: "-1".into() }, false),
             (Constraint::EqI128 { value: "0".into() }, true),
@@ -2105,6 +2536,15 @@ mod tests {
             (Constraint::LeI128 { max: "0".into() }, true),
             (Constraint::GeI128 { min: "10".into() }, true),
             (Constraint::GeI128 { min: "11".into() }, false),
+            // A range meets 0..=10 unless it ends below 0 or starts above 10.
+            (range("-5", "-1"), false),
+            (range("-5", "0"), true),
+            (range("10", "15"), true),
+            (range("11", "15"), false),
+            (range("-5", "15"), true),
+            // Unparsable at either end; a non-canonical but parsable one is the spec's to refuse.
+            (range("x", "5"), false),
+            (range("0", "5 "), false),
         ] {
             let call = transfer_with_amount(constraint.clone());
             assert_eq!(
@@ -2211,6 +2651,7 @@ mod tests {
             fn_name: "transfer".to_string(),
             arg_index: 2,
             bound: WideningBound::AnyValue,
+            no_floor_acknowledged: false,
             intent: "caller chooses any amount".to_string(),
             blast_radius: BlastRadius::High,
         }];
@@ -2300,6 +2741,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "10".to_string(),
             },
+            no_floor_acknowledged: false,
             intent: "wrong fn".to_string(),
             blast_radius: BlastRadius::Low,
         }];
@@ -2316,6 +2758,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "10".to_string(),
             },
+            no_floor_acknowledged: false,
             intent: "wrong index".to_string(),
             blast_radius: BlastRadius::Low,
         }];
@@ -2353,6 +2796,7 @@ mod tests {
             bound: WideningBound::LeI128 {
                 max: "10".to_string(),
             },
+            no_floor_acknowledged: false,
             intent: "typo'd target".to_string(),
             blast_radius: BlastRadius::Low,
         }];
@@ -2360,6 +2804,1058 @@ mod tests {
         assert!(errs
             .iter()
             .any(|e| matches!(e, SynthError::AmbiguousArgSemantics { .. })));
+    }
+
+    /// One argument carries one constraint. A user who caps the amount and then floors it means
+    /// a range; synthesis used to apply the first widening that named the argument, and the
+    /// unused-widening check only asks whether the argument ended up widened at all, so the
+    /// floor was neither applied nor refused and the spec quietly said less than the user did.
+    #[test]
+    fn a_second_widening_of_the_same_argument_is_refused() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let widen =
+            |contract: &str, fn_name: &str, arg_index: u32, bound: WideningBound| Widening {
+                contract: contract.to_string(),
+                fn_name: fn_name.to_string(),
+                arg_index,
+                bound,
+                no_floor_acknowledged: false,
+                intent: "a decision about one argument".to_string(),
+                blast_radius: BlastRadius::High,
+            };
+        let cap = || WideningBound::LeI128 {
+            max: "1000000000".to_string(),
+        };
+        let floor = || WideningBound::GeI128 {
+            min: "1".to_string(),
+        };
+        let duplicate_findings = |errors: &[SynthError]| -> Vec<String> {
+            errors
+                .iter()
+                .filter_map(|error| match error {
+                    SynthError::InvalidDecision(message) if message.contains("widenings name") => {
+                        Some(message.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+
+        let mut d = decisions();
+        d.widenings = vec![
+            widen(&contract, "transfer", 2, cap()),
+            widen(&contract, "transfer", 2, floor()),
+        ];
+        let errors = synthesize(&input(), &d).unwrap_err();
+        assert_eq!(
+            duplicate_findings(&errors),
+            vec![format!(
+                "widening {contract}/transfer arg 2: 2 widenings name this argument, and an \
+                 argument takes one bound; keep the one the user chose"
+            )],
+            "{errors:?}"
+        );
+        assert!(errors[0].to_string().starts_with("E_INVALID_DECISION:"));
+
+        // Three widenings of one argument are one finding, counted.
+        d.widenings.push(widen(&contract, "transfer", 2, cap()));
+        let errors = synthesize(&input(), &d).unwrap_err();
+        let findings = duplicate_findings(&errors);
+        assert_eq!(findings.len(), 1, "{errors:?}");
+        assert!(findings[0].contains(": 3 widenings name"), "{findings:?}");
+
+        // The same function and index on another contract, and another function or index on
+        // this one, are other arguments: they fail for what they are, never as duplicates.
+        for other in [
+            widen("CNOSUCHCONTRACT", "transfer", 2, floor()),
+            widen(&contract, "transfer_from", 2, floor()),
+            widen(&contract, "transfer", 1, WideningBound::AnyValue),
+        ] {
+            let mut d = decisions();
+            d.widenings = vec![widen(&contract, "transfer", 2, floor()), other.clone()];
+            match synthesize(&input(), &d) {
+                Ok(_) => assert_eq!(
+                    other.arg_index, 1,
+                    "only the any_value widening of the recipient, arg 1, synthesizes"
+                ),
+                Err(errors) => {
+                    assert!(
+                        duplicate_findings(&errors).is_empty(),
+                        "{other:?}: {errors:?}"
+                    );
+                    assert!(
+                        errors
+                            .iter()
+                            .all(|e| matches!(e, SynthError::AmbiguousArgSemantics { .. })),
+                        "{other:?}: {errors:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A widening of the recorded transfer's amount, argument 2: an i128, a signed integer.
+    fn amount_widening(bound: WideningBound, no_floor_acknowledged: bool) -> Widening {
+        Widening {
+            contract: transfer_bundle().authorizations[0].root.call_contract(),
+            fn_name: "transfer".to_string(),
+            arg_index: 2,
+            bound,
+            no_floor_acknowledged,
+            intent: "an amount decision".to_string(),
+            blast_radius: BlastRadius::High,
+        }
+    }
+
+    /// The analogue of OpenZeppelin's v0.7.0 audit finding L-06. A cap renders only
+    /// `x > max → deny`, so on a signed amount every negative value passes the generated policy
+    /// and only the target can refuse it. Adding a floor of zero would infer a direction from the
+    /// XDR type, which synthesis never does, and one argument cannot carry a cap and a floor. So a
+    /// cap is a question until the user accepts the open floor in so many words.
+    #[test]
+    fn a_cap_on_a_signed_amount_needs_its_open_floor_acknowledged() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let cap = WideningBound::LeI128 {
+            max: "1000000000".to_string(),
+        };
+        // What refuses a negative amount the cap admits. Never the generated scope policy, which
+        // has no non-negativity check; the reviewed spending limit does, for the transfer amount
+        // (argument 2) of a rule it is composed into.
+        const COMPOSED: &str = "the generated scope policy has no non-negativity check; the \
+                                composed spending limit refuses a negative amount";
+        const TARGET_ONLY: &str = "the generated scope policy has no non-negativity check, so \
+                                   only the target contract can refuse a negative amount the cap \
+                                   admits";
+        let question = |contract: &str, arg: u32, refusal: &str| {
+            SynthError::NeedsDecision(format!(
+                "widening {contract}/transfer arg {arg}: floor: the cap at 1000000000 on this \
+                 signed amount sets no floor, so every smaller value passes it, negative amounts \
+                 included; {refusal}. Bound both ends instead with a range (range_i128, such as \
+                 0..=1000000000; needs development registry version 7 or later), or acknowledge \
+                 the open floor (no_floor_acknowledged, only on the user's explicit acceptance), \
+                 or keep the argument exact"
+            ))
+        };
+        let acknowledged = |contract: &str, arg: u32, refusal: &str| {
+            format!(
+                "{contract}/transfer arg {arg}: NO FLOOR — the user acknowledged that the cap at \
+                 1000000000 admits every smaller value, negative amounts included; {refusal}"
+            )
+        };
+
+        let mut d = decisions();
+        d.widenings = vec![amount_widening(cap.clone(), false)];
+        assert_eq!(
+            synthesize(&input(), &d).unwrap_err(),
+            vec![question(&contract, 2, COMPOSED)]
+        );
+
+        d.widenings = vec![amount_widening(cap.clone(), true)];
+        let out = synthesize(&input(), &d).unwrap();
+        let amount = &out.spec.rules[0].allowed_calls[0].args[2];
+        assert_eq!(
+            amount.constraint,
+            Constraint::LeI128 {
+                max: "1000000000".to_string()
+            }
+        );
+        assert!(matches!(amount.provenance, Provenance::UserWidened { .. }));
+        assert!(
+            out.rationale
+                .contains(&acknowledged(&contract, 2, COMPOSED)),
+            "{:#?}",
+            out.rationale
+        );
+
+        // Without the spending limit only the target is left to refuse a negative amount.
+        d.spending_limit = None;
+        let out = synthesize(&input(), &d).unwrap();
+        assert!(
+            out.rationale
+                .contains(&acknowledged(&contract, 2, TARGET_ONLY)),
+            "{:#?}",
+            out.rationale
+        );
+        d.widenings = vec![amount_widening(cap.clone(), false)];
+        assert_eq!(
+            synthesize(&input(), &d).unwrap_err(),
+            vec![question(&contract, 2, TARGET_ONLY)]
+        );
+
+        // The composed spending limit reads argument 2 alone: a cap on another signed argument
+        // of the same composed rule is still the target's to refuse.
+        let two_amounts = bundle_with_subs(
+            (
+                &contract,
+                "transfer",
+                vec![
+                    ArgSummary::Address(account_strkey()),
+                    ArgSummary::I128(7),
+                    ArgSummary::I128(500_000_000),
+                ],
+            ),
+            vec![],
+        );
+        let mut synthesis_input = input();
+        synthesis_input.bundles = vec![two_amounts];
+        let mut d = decisions();
+        let mut second = amount_widening(cap, false);
+        second.arg_index = 1;
+        d.widenings = vec![second.clone()];
+        assert_eq!(
+            synthesize(&synthesis_input, &d).unwrap_err(),
+            vec![question(&contract, 1, TARGET_ONLY)]
+        );
+        second.no_floor_acknowledged = true;
+        d.widenings = vec![second];
+        let out = synthesize(&synthesis_input, &d).unwrap();
+        assert!(
+            matches!(out.spec.rules[0].policies[0], PolicyRef::Reviewed { .. }),
+            "the rule composes the spending limit"
+        );
+        assert!(
+            out.rationale
+                .contains(&acknowledged(&contract, 1, TARGET_ONLY)),
+            "{:#?}",
+            out.rationale
+        );
+
+        // The question is about an argument the cap bounds. A cap that applies to nothing, or to
+        // an address, is refused for that; asking about its floor would be a question about
+        // nothing.
+        for (contract, arg_index) in [("CNOSUCHCONTRACT".to_string(), 2), (contract, 1)] {
+            let mut unapplied = amount_widening(
+                WideningBound::LeI128 {
+                    max: "10".to_string(),
+                },
+                false,
+            );
+            unapplied.contract = contract;
+            unapplied.arg_index = arg_index;
+            let mut d = decisions();
+            d.widenings = vec![unapplied];
+            let errors = synthesize(&input(), &d).unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .all(|e| matches!(e, SynthError::AmbiguousArgSemantics { .. })),
+                "{errors:?}"
+            );
+        }
+    }
+
+    /// The acknowledgement answers the question a cap asks — or a range from `i128::MIN`, which is
+    /// one — and no other. On a floor it says the opposite of the bound beside it; on `any_value`
+    /// there is no bound for it to qualify.
+    /// Either way the user's decision is unclear, so it is refused rather than ignored.
+    #[test]
+    fn the_no_floor_acknowledgement_belongs_to_a_cap_alone() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let floor = WideningBound::GeI128 {
+            min: "1".to_string(),
+        };
+        let mut d = decisions();
+        d.spending_limit = None; // the reviewed spending limit refuses an any_value amount
+        for (bound, finding) in [
+            (
+                floor.clone(),
+                format!(
+                    "widening {contract}/transfer arg 2: the floor at 1 contradicts \
+                     no_floor_acknowledged; choose one"
+                ),
+            ),
+            (
+                WideningBound::AnyValue,
+                format!(
+                    "widening {contract}/transfer arg 2: no_floor_acknowledged qualifies a bound \
+                     with no floor alone (a cap, le_i128, or a range from i128::MIN); any_value \
+                     has no bound for it to qualify"
+                ),
+            ),
+            (
+                WideningBound::RangeI128 {
+                    min: "0".to_string(),
+                    max: "1000000000".to_string(),
+                },
+                format!(
+                    "widening {contract}/transfer arg 2: the range 0..=1000000000 has its floor \
+                     at 0, which contradicts no_floor_acknowledged; choose one"
+                ),
+            ),
+        ] {
+            d.widenings = vec![amount_widening(bound.clone(), true)];
+            assert_eq!(
+                synthesize(&input(), &d).unwrap_err(),
+                vec![SynthError::InvalidDecision(finding)]
+            );
+            // Without it, neither asks anything about a floor.
+            d.widenings = vec![amount_widening(bound, false)];
+            synthesize(&input(), &d).unwrap();
+        }
+    }
+
+    /// "Spend up to X" stated safely: a range closes the cap from below, so it is the answer to
+    /// the floor question rather than a reason to ask it. The bounds go into the spec as given.
+    #[test]
+    fn a_range_on_a_signed_amount_asks_no_floor_question() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let mut d = decisions();
+        d.widenings = vec![amount_widening(
+            WideningBound::RangeI128 {
+                min: "0".to_string(),
+                max: "1000000000".to_string(),
+            },
+            false,
+        )];
+        let out = synthesize(&input(), &d).unwrap();
+        let amount = &out.spec.rules[0].allowed_calls[0].args[2];
+        assert_eq!(
+            amount.constraint,
+            Constraint::RangeI128 {
+                min: "0".to_string(),
+                max: "1000000000".to_string()
+            }
+        );
+        assert!(matches!(amount.provenance, Provenance::UserWidened { .. }));
+        assert!(
+            !out.rationale.iter().any(|line| line.contains("FLOOR")),
+            "{:#?}",
+            out.rationale
+        );
+        assert!(out.rationale.contains(&format!(
+            "{contract}/transfer arg 2: user-widened (an amount decision), blast radius High; \
+             recorded value 500000000"
+        )));
+        assert!(out.spec.validate().is_ok());
+
+        // A floor below zero is a decision too, and the report says what it admits. A range from
+        // i128::MIN has no floor at all and asks a cap's question
+        // (`a_range_from_i128_min_asks_the_floor_question_a_cap_asks`).
+        let ranged = |min: String| {
+            let mut d = decisions();
+            d.widenings = vec![amount_widening(
+                WideningBound::RangeI128 {
+                    min,
+                    max: "1000000000".to_string(),
+                },
+                false,
+            )];
+            synthesize(&input(), &d).unwrap().rationale
+        };
+        let below_zero = ranged("-5".to_string());
+        assert!(
+            below_zero.contains(&format!(
+                "{contract}/transfer arg 2: NEGATIVE FLOOR — the user's range -5..=1000000000 \
+                 admits negative amounts down to -5; the generated scope policy refuses only \
+                 below that"
+            )),
+            "{below_zero:#?}"
+        );
+        assert!(!ranged("1".to_string())
+            .iter()
+            .any(|line| line.contains("FLOOR")));
+
+        // One argument, one widening: a range and a cap on it are two decisions, refused.
+        d.widenings.push(amount_widening(
+            WideningBound::LeI128 {
+                max: "1000000000".to_string(),
+            },
+            true,
+        ));
+        assert!(synthesize(&input(), &d).unwrap_err().iter().any(|e| matches!(
+            e,
+            SynthError::InvalidDecision(message) if message.contains("2 widenings name this argument")
+        )));
+    }
+
+    /// A widening loosens the recorded call; a bound that excludes the recorded value would turn
+    /// the grant against the very call it was built from. Each numeric bound is held to it, at
+    /// the boundary inclusive (the transfer recorded 500000000).
+    #[test]
+    fn a_numeric_bound_must_admit_the_recorded_value() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let excludes = |bound: &str| {
+            vec![SynthError::InvalidDecision(format!(
+                "widening {contract}/transfer arg 2: {bound} excludes the recorded value \
+                 500000000; a widening loosens the recorded call and cannot refuse it"
+            ))]
+        };
+        let range = |min: &str, max: &str| WideningBound::RangeI128 {
+            min: min.to_string(),
+            max: max.to_string(),
+        };
+        let mut d = decisions();
+        d.spending_limit = None;
+        for (bound, acknowledged, refusal) in [
+            (
+                WideningBound::LeI128 {
+                    max: "499999999".to_string(),
+                },
+                true,
+                "the cap <= 499999999",
+            ),
+            (
+                WideningBound::GeI128 {
+                    min: "500000001".to_string(),
+                },
+                false,
+                "the floor >= 500000001",
+            ),
+            (range("0", "499999999"), false, "the range 0..=499999999"),
+            (
+                range("500000001", "600000000"),
+                false,
+                "the range 500000001..=600000000",
+            ),
+        ] {
+            d.widenings = vec![amount_widening(bound, acknowledged)];
+            assert_eq!(synthesize(&input(), &d).unwrap_err(), excludes(refusal));
+        }
+        for (bound, acknowledged) in [
+            (
+                WideningBound::LeI128 {
+                    max: "500000000".to_string(),
+                },
+                true,
+            ),
+            (
+                WideningBound::GeI128 {
+                    min: "500000000".to_string(),
+                },
+                false,
+            ),
+            (range("500000000", "500000000"), false),
+        ] {
+            d.widenings = vec![amount_widening(bound.clone(), acknowledged)];
+            assert!(synthesize(&input(), &d).is_ok(), "{bound:?}");
+        }
+
+        // Two recordings of the same call are one finding, not two. (Two distinct calls would
+        // draw a second finding: one widening cannot apply to both.)
+        let call = || {
+            (
+                contract.as_str(),
+                "transfer",
+                vec![
+                    ArgSummary::Address(account_strkey()),
+                    ArgSummary::Address(merchant_strkey()),
+                    ArgSummary::I128(500_000_000),
+                ],
+            )
+        };
+        let mut two = input();
+        two.bundles = vec![bundle_with_subs(call(), vec![call()])];
+        d.widenings = vec![amount_widening(range("0", "1"), false)];
+        assert_eq!(
+            synthesize(&two, &d).unwrap_err(),
+            excludes("the range 0..=1")
+        );
+    }
+
+    /// A swap recorded as `swap_exact_tokens_for_tokens(1000, 950, path, SELF, 2000)` on a target
+    /// whose observed code the reviewed router adapter (`soroswap-router@2`) is bound to, unless
+    /// `bound` is false. Returns the input, the router address and the decisions to widen.
+    fn adapted_swap(bound: bool) -> (SynthesisInput, String, UserDecisions) {
+        let mut input = crate::fixtures::golden_input();
+        let router = crate::fixtures::golden_token_strkey();
+        let code_hash = sha256(b"reviewed-router-wasm");
+        input.bundles[0]
+            .contract_executables
+            .get_mut(&router)
+            .unwrap()
+            .executable = ObservedExecutable::Wasm { code_hash };
+        if bound {
+            input.adapters = vec![adapters::soroswap_router_adapter(code_hash)];
+        }
+        input.spending_limit_capability = None;
+        let path = stellar_xdr::ScVal::Vec(Some(
+            vec![stellar_xdr::ScVal::Address(
+                stellar_xdr::ScAddress::Contract(stellar_xdr::ContractId(stellar_xdr::Hash(
+                    [2; 32],
+                ))),
+            )]
+            .try_into()
+            .unwrap(),
+        ));
+        let AuthorizedCall::Contract { fn_name, args, .. } =
+            &mut input.bundles[0].authorizations[0].root.call
+        else {
+            unreachable!()
+        };
+        *fn_name = "swap_exact_tokens_for_tokens".into();
+        *args = vec![
+            ArgSummary::I128(1000),
+            ArgSummary::I128(950),
+            ArgSummary::Other {
+                xdr_base64: path.to_xdr_base64(stellar_xdr::Limits::none()).unwrap(),
+            },
+            ArgSummary::Address(crate::fixtures::golden_account_strkey()),
+            ArgSummary::U64(2000),
+        ];
+        let mut decisions = crate::fixtures::golden_decisions();
+        decisions.spending_limit = None;
+        (input, router, decisions)
+    }
+
+    fn swap_widening(router: &str, arg_index: u32, bound: WideningBound) -> Widening {
+        Widening {
+            contract: router.to_string(),
+            fn_name: "swap_exact_tokens_for_tokens".to_string(),
+            arg_index,
+            no_floor_acknowledged: matches!(bound, WideningBound::LeI128 { .. }),
+            bound,
+            intent: "a swap decision".to_string(),
+            blast_radius: BlastRadius::High,
+        }
+    }
+
+    /// A reviewed adapter knows which direction of an argument is the unsafe one. A user bound
+    /// that loosens it there contradicts the reviewed role: lowering a swap's minimum output
+    /// removes the router's only slippage check, and a maximum input without a cap lets the call
+    /// spend any amount. Each is refused — whatever blast radius it is rated, because the label
+    /// would not restore the check — while a bound that only tightens the unsafe side applies.
+    #[test]
+    fn a_user_bound_against_an_adapter_role_is_refused() {
+        let range = |min: &str, max: &str| WideningBound::RangeI128 {
+            min: min.to_string(),
+            max: max.to_string(),
+        };
+        let (input, router, decisions) = adapted_swap(true);
+        let min_output = |bound: &str| {
+            SynthError::InvalidDecision(format!(
+                "widening {router}/swap_exact_tokens_for_tokens arg 1: adapter \
+                 'soroswap-router@2' reviews this argument as a minimum output, below which the \
+                 target refuses the call; {bound} admits values below the recorded 950, which \
+                 weakens that check. A decision may only raise a minimum output: keep it exact, \
+                 or bound it from below at 950 or higher"
+            ))
+        };
+        let max_input = |bound: &str| {
+            SynthError::InvalidDecision(format!(
+                "widening {router}/swap_exact_tokens_for_tokens arg 0: adapter \
+                 'soroswap-router@2' reviews this argument as a maximum input; {bound} sets no \
+                 cap on it, so the call may spend any amount. Bound it from above with a cap or a \
+                 range, or leave it undecided for the adapter's cap at the recorded 1000"
+            ))
+        };
+        for (widening, finding) in [
+            // The reviewer's case: a low-rated range that reaches zero drops the slippage check.
+            (
+                {
+                    let mut w = swap_widening(&router, 1, range("0", "950"));
+                    w.blast_radius = BlastRadius::Low;
+                    w
+                },
+                min_output("the range 0..=950"),
+            ),
+            (
+                swap_widening(
+                    &router,
+                    1,
+                    WideningBound::LeI128 {
+                        max: "950".to_string(),
+                    },
+                ),
+                min_output("the cap <= 950"),
+            ),
+            (
+                swap_widening(
+                    &router,
+                    1,
+                    WideningBound::GeI128 {
+                        min: "949".to_string(),
+                    },
+                ),
+                min_output("the floor >= 949"),
+            ),
+            (
+                swap_widening(&router, 1, WideningBound::AnyValue),
+                min_output("any_value"),
+            ),
+            (
+                swap_widening(
+                    &router,
+                    0,
+                    WideningBound::GeI128 {
+                        min: "0".to_string(),
+                    },
+                ),
+                max_input("the floor >= 0"),
+            ),
+            (
+                swap_widening(&router, 0, range("0", &i128::MAX.to_string())),
+                max_input(&format!("the range 0..={}", i128::MAX)),
+            ),
+            (
+                swap_widening(&router, 0, WideningBound::AnyValue),
+                max_input("any_value"),
+            ),
+        ] {
+            let mut d = decisions.clone();
+            d.widenings = vec![widening.clone()];
+            assert_eq!(
+                synthesize(&input, &d).unwrap_err(),
+                vec![finding],
+                "{widening:?}"
+            );
+        }
+        // The refusal is the only finding. A cap with no floor acknowledgement is not also asked
+        // about its floor, nor a low-rated open top about its rating: neither answer would make
+        // it acceptable.
+        for (widening, finding) in [
+            (
+                {
+                    let mut w = swap_widening(
+                        &router,
+                        1,
+                        WideningBound::LeI128 {
+                            max: "950".to_string(),
+                        },
+                    );
+                    w.no_floor_acknowledged = false;
+                    w
+                },
+                min_output("the cap <= 950"),
+            ),
+            (
+                {
+                    let mut w = swap_widening(
+                        &router,
+                        0,
+                        WideningBound::GeI128 {
+                            min: "0".to_string(),
+                        },
+                    );
+                    w.blast_radius = BlastRadius::Low;
+                    w
+                },
+                max_input("the floor >= 0"),
+            ),
+        ] {
+            let mut d = decisions.clone();
+            d.widenings = vec![widening.clone()];
+            assert_eq!(
+                synthesize(&input, &d).unwrap_err(),
+                vec![finding],
+                "{widening:?}"
+            );
+        }
+
+        // Raising the minimum output, or capping the input at any finite amount, is the user's
+        // value decision and applies with their provenance.
+        for widening in [
+            {
+                let mut w = swap_widening(
+                    &router,
+                    1,
+                    WideningBound::GeI128 {
+                        min: "950".to_string(),
+                    },
+                );
+                w.blast_radius = BlastRadius::Low;
+                w
+            },
+            swap_widening(&router, 1, range("950", "2000")),
+            swap_widening(&router, 0, range("0", "2000")),
+        ] {
+            let mut d = decisions.clone();
+            d.widenings = vec![widening.clone()];
+            let out = synthesize(&input, &d).unwrap();
+            let arg = &out.spec.rules[0].allowed_calls[0].args[widening.arg_index as usize];
+            assert!(
+                matches!(arg.provenance, Provenance::UserWidened { .. }),
+                "{widening:?}: {arg:?}"
+            );
+        }
+
+        // All positions normally widened by the adapter now have explicit decisions. The
+        // output's low-risk open upper bound is still justified by the reviewed router code.
+        let mut d = decisions.clone();
+        let mut floor = swap_widening(
+            &router,
+            1,
+            WideningBound::GeI128 {
+                min: "950".to_string(),
+            },
+        );
+        floor.blast_radius = BlastRadius::Low;
+        d.widenings = vec![swap_widening(&router, 0, range("0", "2000")), floor];
+        let bound = synthesize(&input, &d).unwrap();
+        let rule = &bound.spec.rules[0];
+        assert!(rule
+            .allowed_calls
+            .iter()
+            .flat_map(|call| &call.args)
+            .all(|arg| !matches!(arg.provenance, Provenance::AdapterDerived { .. })));
+        let hash = rule.context.target_code_hash.as_ref().unwrap();
+        assert_eq!(hash.role, TargetHashRole::AdapterRequired);
+        assert_eq!(hash.on_drift, DriftResponse::Refuse);
+        let (unbound, _, _) = adapted_swap(false);
+        assert!(synthesize(&unbound, &d).is_err());
+
+        // Without the binding nothing declares the role, so the decision is the user's alone.
+        let (unbound, _, _) = adapted_swap(false);
+        let mut d = decisions;
+        d.widenings = vec![swap_widening(&router, 1, range("0", "950"))];
+        assert!(synthesize(&unbound, &d).is_ok());
+    }
+
+    /// An argument a reviewed adapter keeps exact — the router's path, its recipient, and under
+    /// `soroswap-router@2` the deadline — carries a check the reviewed role requires. A decision
+    /// to loosen it, `any_value` at high blast radius included, is refused naming the adapter and
+    /// the role: no rating restores the check, and loosening it is a new adapter version's to do.
+    /// The refusal is the decision's only finding, whatever else it would have drawn.
+    #[test]
+    fn a_user_widening_of_an_argument_an_adapter_keeps_exact_is_refused() {
+        let (input, router, decisions) = adapted_swap(true);
+        let exact = |arg: u32, bound: &str| {
+            vec![SynthError::InvalidDecision(format!(
+                "widening {router}/swap_exact_tokens_for_tokens arg {arg}: adapter \
+                 'soroswap-router@2' reviews this argument as exact (exact_only): the call must \
+                 carry the recorded value, and {bound} would loosen it. No rating restores a \
+                 check the reviewed role requires; keep it exact, and loosening it is for a new \
+                 adapter version"
+            ))]
+        };
+        for (arg_index, bound, text) in [
+            (2, WideningBound::AnyValue, "any_value"),
+            (3, WideningBound::AnyValue, "any_value"),
+            (4, WideningBound::AnyValue, "any_value"),
+            // A numeric bound on the u64 deadline is otherwise ambiguous semantics; the role
+            // answers first.
+            (
+                4,
+                WideningBound::GeI128 {
+                    min: "0".to_string(),
+                },
+                "the floor >= 0",
+            ),
+        ] {
+            let mut d = decisions.clone();
+            d.widenings = vec![swap_widening(&router, arg_index, bound)];
+            assert_eq!(
+                synthesize(&input, &d).unwrap_err(),
+                exact(arg_index, text),
+                "arg {arg_index}"
+            );
+        }
+
+        // An argument the adapter leaves to the caller (`soroswap-router@1`'s deadline) is not
+        // exact, so a decision there stands.
+        let mut v1 = input.clone();
+        v1.adapters = vec![adapters::Adapter::from_semantics(
+            v1.adapters[0].target_code_hash,
+            ozpb_domain::target_adapters::soroswap_router(),
+        )];
+        let mut d = decisions.clone();
+        d.widenings = vec![swap_widening(&router, 4, WideningBound::AnyValue)];
+        assert!(synthesize(&v1, &d).is_ok());
+        // Without the binding nothing declares the role, and the decision stands as made.
+        let (unbound, _, _) = adapted_swap(false);
+        d.widenings = vec![swap_widening(&router, 2, WideningBound::AnyValue)];
+        assert!(synthesize(&unbound, &d).is_ok());
+    }
+
+    /// A bound with no finite cap admits every larger value, which on an amount is any amount:
+    /// the same reach as `any_value` on that side, so it carries the same high blast radius
+    /// whatever the decision rates it. The one argument where the open top is the safe side is a
+    /// minimum output a reviewed adapter declares; there a floor only tightens the target's check.
+    #[test]
+    fn an_open_above_bound_requires_high_blast_radius() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let rated = |bound: WideningBound, blast_radius: BlastRadius| {
+            let mut w = amount_widening(bound, false);
+            w.no_floor_acknowledged = matches!(w.bound, WideningBound::LeI128 { .. });
+            w.blast_radius = blast_radius;
+            w
+        };
+        let finding = |bound: &str, rating: &str| {
+            vec![SynthError::InvalidDecision(format!(
+                "widening {contract}/transfer arg 2: {bound} sets no cap, so the generated \
+                 policy admits every larger value, which on an amount is any amount: a high \
+                 blast radius, and this decision rates it {rating}. Rate it high, or give it a \
+                 finite maximum"
+            ))]
+        };
+        let max = i128::MAX.to_string();
+        let mut d = decisions();
+        d.spending_limit = None;
+        for (bound, text) in [
+            (
+                WideningBound::GeI128 {
+                    min: "0".to_string(),
+                },
+                "the floor >= 0".to_string(),
+            ),
+            (
+                WideningBound::RangeI128 {
+                    min: "0".to_string(),
+                    max: max.clone(),
+                },
+                format!("the range 0..={max}"),
+            ),
+        ] {
+            for (radius, rating) in [(BlastRadius::Low, "low"), (BlastRadius::Medium, "medium")] {
+                d.widenings = vec![rated(bound.clone(), radius)];
+                assert_eq!(
+                    synthesize(&input(), &d).unwrap_err(),
+                    finding(&text, rating)
+                );
+            }
+            d.widenings = vec![rated(bound, BlastRadius::High)];
+            assert!(synthesize(&input(), &d).is_ok());
+        }
+        // A cap at i128::MAX is no cap. Without the floor acknowledgement it is still refused once,
+        // for its open top: acknowledging the floor would not make it acceptable.
+        d.widenings = vec![amount_widening(
+            WideningBound::LeI128 { max: max.clone() },
+            false,
+        )];
+        d.widenings[0].blast_radius = BlastRadius::Medium;
+        assert_eq!(
+            synthesize(&input(), &d).unwrap_err(),
+            finding(&format!("the cap <= {max}"), "medium")
+        );
+        // A finite cap is the user's own assessment, any rating included.
+        d.widenings = vec![rated(
+            WideningBound::RangeI128 {
+                min: "0".to_string(),
+                max: "1000000000".to_string(),
+            },
+            BlastRadius::Low,
+        )];
+        assert!(synthesize(&input(), &d).is_ok());
+
+        // On a minimum output the reviewed router adapter declares, the open top is the safe side.
+        let (input, router, mut decisions) = adapted_swap(true);
+        let mut floor = swap_widening(
+            &router,
+            1,
+            WideningBound::GeI128 {
+                min: "950".to_string(),
+            },
+        );
+        floor.blast_radius = BlastRadius::Medium;
+        decisions.widenings = vec![floor.clone()];
+        assert!(synthesize(&input, &decisions).is_ok());
+        // Without the adapter nothing says it is a minimum output.
+        let (unbound, _, _) = adapted_swap(false);
+        assert_eq!(
+            synthesize(&unbound, &decisions).unwrap_err(),
+            vec![SynthError::InvalidDecision(format!(
+                "widening {router}/swap_exact_tokens_for_tokens arg 1: the floor >= 950 sets no \
+                 cap, so the generated policy admits every larger value, which on an amount is \
+                 any amount: a high blast radius, and this decision rates it medium. Rate it \
+                 high, or give it a finite maximum"
+            ))]
+        );
+    }
+
+    /// A range from `i128::MIN` renders the same check as a cap: the generated policy leaves out a
+    /// comparison against the type's own minimum. So it asks the cap's floor question and takes
+    /// the cap's acknowledgement, rather than passing as a range that needs none.
+    #[test]
+    fn a_range_from_i128_min_asks_the_floor_question_a_cap_asks() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let min = i128::MIN.to_string();
+        let bound = WideningBound::RangeI128 {
+            min: min.clone(),
+            max: "1000000000".to_string(),
+        };
+        let mut d = decisions();
+        d.spending_limit = None;
+        d.widenings = vec![amount_widening(bound.clone(), false)];
+        assert_eq!(
+            synthesize(&input(), &d).unwrap_err(),
+            vec![SynthError::NeedsDecision(format!(
+                "widening {contract}/transfer arg 2: floor: the range {min}..=1000000000, which \
+                 starts at i128::MIN and so is the cap at 1000000000, on this signed amount sets \
+                 no floor, so every smaller value passes it, negative amounts included; the \
+                 generated scope policy has no non-negativity check, so only the target contract \
+                 can refuse a negative amount the cap admits. Bound both ends instead with a floor above i128::MIN (such as \
+                 0..=1000000000), or acknowledge the open floor (no_floor_acknowledged, only on \
+                 the user's explicit acceptance), or keep the argument exact"
+            ))]
+        );
+        d.widenings = vec![amount_widening(bound, true)];
+        let out = synthesize(&input(), &d).unwrap();
+        assert!(
+            out.rationale.contains(&format!(
+                "{contract}/transfer arg 2: NO FLOOR — the user acknowledged that the range \
+                 {min}..=1000000000, which starts at i128::MIN and so is the cap at 1000000000, \
+                 admits every smaller value, negative amounts included; the generated scope \
+                 policy has no non-negativity check, so only the target contract can refuse a \
+                 negative amount the cap admits"
+            )),
+            "{:#?}",
+            out.rationale
+        );
+    }
+
+    /// What the rationale says of an open floor is the missing non-negativity check, not that the
+    /// generated policy refuses no negative amount: under a negative cap it refuses the negative
+    /// amounts above that cap. Recorded at -10 and capped at -5, it refuses -4 to -1.
+    #[test]
+    fn a_negative_cap_is_described_by_its_missing_non_negativity_check() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let negative = bundle_with_subs(
+            (
+                &contract,
+                "transfer",
+                vec![
+                    ArgSummary::Address(account_strkey()),
+                    ArgSummary::Address(merchant_strkey()),
+                    ArgSummary::I128(-10),
+                ],
+            ),
+            vec![],
+        );
+        let mut synthesis_input = input();
+        synthesis_input.bundles = vec![negative];
+        let mut d = decisions();
+        d.spending_limit = None;
+        let cap = WideningBound::LeI128 {
+            max: "-5".to_string(),
+        };
+        d.widenings = vec![amount_widening(cap, true)];
+        let out = synthesize(&synthesis_input, &d).unwrap();
+        assert_eq!(
+            out.spec.rules[0].allowed_calls[0].args[2].constraint,
+            Constraint::LeI128 {
+                max: "-5".to_string()
+            }
+        );
+        assert!(
+            out.rationale.contains(&format!(
+                "{contract}/transfer arg 2: NO FLOOR — the user acknowledged that the cap at -5 \
+                 admits every smaller value, negative amounts included; the generated scope \
+                 policy has no non-negativity check, so only the target contract can refuse a \
+                 negative amount the cap admits"
+            )),
+            "{:#?}",
+            out.rationale
+        );
+        assert!(
+            out.rationale
+                .iter()
+                .all(|line| !line.contains("refuses no negative amount")),
+            "{:#?}",
+            out.rationale
+        );
+    }
+
+    /// Decisions name an argument by contract, function and index — not by recorded call. When
+    /// the function was recorded as several distinct calls, one widening would loosen the
+    /// argument in each of them: widening the first payment's amount to `0..=2000` would raise
+    /// the second payment's too. Until a decision can name its call, that is refused. Calls that
+    /// differ only in the widened argument become one tuple, so a widening there is one call's.
+    #[test]
+    fn a_widening_on_a_multi_tuple_function_is_refused_unless_scoped() {
+        let token = transfer_bundle().authorizations[0].root.call_contract();
+        let payment = |payee: String, amount: i128| {
+            bundle_with_subs(
+                (
+                    &token,
+                    "transfer",
+                    vec![
+                        ArgSummary::Address(account_strkey()),
+                        ArgSummary::Address(payee),
+                        ArgSummary::I128(amount),
+                    ],
+                ),
+                vec![],
+            )
+        };
+        let range = WideningBound::RangeI128 {
+            min: "0".to_string(),
+            max: "2000".to_string(),
+        };
+        let mut d = decisions();
+        d.spending_limit = None;
+        let mut two_payees = input();
+        two_payees.bundles = vec![
+            payment(merchant_strkey(), 2000),
+            payment(delegate_strkey(9), 1000),
+        ];
+        // Exact, the two payments are two tuples.
+        assert_eq!(
+            synthesize(&two_payees, &d).unwrap().spec.rules[0]
+                .allowed_calls
+                .len(),
+            2
+        );
+        d.widenings = vec![amount_widening(range.clone(), false)];
+        assert_eq!(
+            synthesize(&two_payees, &d).unwrap_err(),
+            vec![SynthError::InvalidDecision(format!(
+                "widening {token}/transfer arg 2: this widening would apply to 2 distinct \
+                 recorded calls of transfer on {token}, loosening argument 2 of each; a widening \
+                 loosens one argument of one recorded call, and a decision cannot name which. \
+                 Keep the argument exact, or synthesize from recordings in which transfer is one \
+                 distinct call"
+            ))]
+        );
+
+        let mut one_payee = input();
+        one_payee.bundles = vec![
+            payment(merchant_strkey(), 2000),
+            payment(merchant_strkey(), 1000),
+        ];
+        let out = synthesize(&one_payee, &d).unwrap();
+        let calls = &out.spec.rules[0].allowed_calls;
+        assert_eq!(calls.len(), 1, "{calls:#?}");
+        assert_eq!(calls[0].justified_by.len(), 2);
+
+        // The count is per function: one rule with a widened call of each of two functions holds
+        // one call per widening.
+        let args = || {
+            vec![
+                ArgSummary::Address(account_strkey()),
+                ArgSummary::Address(merchant_strkey()),
+                ArgSummary::I128(2000),
+            ]
+        };
+        let mut two_functions = input();
+        two_functions.bundles = vec![bundle_with_subs(
+            (&token, "transfer", args()),
+            vec![(&token, "approve", args())],
+        )];
+        let mut approve = amount_widening(range, false);
+        approve.fn_name = "approve".to_string();
+        d.widenings.push(approve);
+        let out = synthesize(&two_functions, &d).unwrap();
+        assert_eq!(out.spec.rules[0].allowed_calls.len(), 2);
+
+        // And per argument: it counts the calls carrying this widening, not those carrying
+        // another. Recorded as `pay(SELF, payee, 2000)` and a shorter `pay(SELF, payee)`, the
+        // amount widening reaches one call and is that call's; the recipient widening reaches
+        // both and is refused, alone.
+        let mut two_arities = input();
+        two_arities.bundles = vec![bundle_with_subs(
+            (&token, "pay", args()),
+            vec![(&token, "pay", args()[..2].to_vec())],
+        )];
+        let mut amount = amount_widening(
+            WideningBound::RangeI128 {
+                min: "0".to_string(),
+                max: "2000".to_string(),
+            },
+            false,
+        );
+        amount.fn_name = "pay".to_string();
+        let mut recipient = amount.clone();
+        recipient.arg_index = 1;
+        recipient.bound = WideningBound::AnyValue;
+        d.widenings = vec![amount, recipient];
+        assert_eq!(
+            synthesize(&two_arities, &d).unwrap_err(),
+            vec![SynthError::InvalidDecision(format!(
+                "widening {token}/pay arg 1: this widening would apply to 2 distinct recorded \
+                 calls of pay on {token}, loosening argument 1 of each; a widening loosens one \
+                 argument of one recorded call, and a decision cannot name which. Keep the \
+                 argument exact, or synthesize from recordings in which pay is one distinct call"
+            ))]
+        );
     }
 
     #[test]
@@ -2667,7 +4163,15 @@ pub mod fixtures {
     }
 
     pub fn golden_bundle() -> RecordingBundle {
-        match record(&rec::executed_snapshot(), RecordOptions::default()) {
+        golden_bundle_on(ozpb_domain::TESTNET_PASSPHRASE)
+    }
+
+    /// [`golden_bundle`] recorded on another network.
+    pub fn golden_bundle_on(network_passphrase: &str) -> RecordingBundle {
+        match record(
+            &rec::executed_snapshot_on(network_passphrase),
+            RecordOptions::default(),
+        ) {
             Ok(mut bundle) => {
                 bundle.contract_executables.insert(
                     golden_account_strkey(),

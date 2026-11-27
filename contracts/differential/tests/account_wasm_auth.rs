@@ -129,7 +129,7 @@ fn pinned_account_wasm_full_authorization() {
     assert_eq!(
         policy_hash,
         ozpb_domain::Hash32::from_hex(
-            "2a9beb1a8a7a73cbfc13173e245f4a712185376bd9a3fce3f7f8d7d2cf9b04be"
+            "03f5e8014d3aefda64ab830c58e7a124211e432ddb5363653dd71acf4c08afba"
         )
         .unwrap()
         .0,
