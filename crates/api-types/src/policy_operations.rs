@@ -113,13 +113,22 @@ pub enum PreflightEstimatedResource {
 }
 
 /// Require a nullable wire field to be present: omission must not deserialize as an
-/// explicit `null` value. `#[schemars(required)]` keeps the JSON Schema aligned.
+/// explicit `null` value. Its schema comes from [`required_nullable_schema`].
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
 {
     Option::<T>::deserialize(deserializer)
+}
+
+/// The published schema of a [`required_nullable`] field: `T` or `null`, and required, since a
+/// `schema_with` field is never optional. Not `#[schemars(required)]`, which schemars reads as
+/// "present and not null": it required the field but dropped `null` from its schema.
+fn required_nullable_schema<T: JsonSchema>(
+    generator: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    generator.subschema_for::<Option<T>>()
 }
 
 // --- reference_suite (layer 1 of the future four-layer dry_run) --------------------------
@@ -543,7 +552,7 @@ pub struct PolicyGrant {
     pub signers: Vec<PolicySignerKey>,
     pub name: String,
     #[serde(deserialize_with = "required_nullable")]
-    #[schemars(required)]
+    #[schemars(schema_with = "required_nullable_schema::<u32>")]
     pub valid_until: Option<u32>,
     /// The new rule's `policies` map, in spec order.
     pub policies: Vec<PolicyGrantPolicy>,
@@ -570,7 +579,7 @@ pub struct PolicyAuthorityEntry {
     pub rule_id: u32,
     pub reach: PolicyReach,
     #[serde(deserialize_with = "required_nullable")]
-    #[schemars(required)]
+    #[schemars(schema_with = "required_nullable_schema::<u32>")]
     pub valid_until: Option<u32>,
     pub requirement: PolicyRequirement,
 }
@@ -641,7 +650,7 @@ pub enum PolicyKeyScheme {
 pub struct PolicyVerifierObservation {
     pub code_hash: String,
     #[serde(deserialize_with = "required_nullable")]
-    #[schemars(required)]
+    #[schemars(schema_with = "required_nullable_schema::<PolicyKeyScheme>")]
     pub scheme: Option<PolicyKeyScheme>,
 }
 
@@ -662,7 +671,7 @@ pub struct PolicyRestrictedKeyRule {
     pub rule_id: u32,
     pub context: PolicyRuleContext,
     #[serde(deserialize_with = "required_nullable")]
-    #[schemars(required)]
+    #[schemars(schema_with = "required_nullable_schema::<u32>")]
     pub valid_until: Option<u32>,
     /// The restricted keys can use the rule without anyone else.
     pub usable_alone: bool,
@@ -769,9 +778,9 @@ pub enum PolicyRuleEnumerationEvidence {
 #[serde(deny_unknown_fields)]
 pub struct PolicySurfaceFinding {
     pub code: crate::ErrorCode,
-    /// Absent when the finding is about the new rule itself.
+    /// `null` when the finding is about the new rule itself; never omitted.
     #[serde(deserialize_with = "required_nullable")]
-    #[schemars(required)]
+    #[schemars(schema_with = "required_nullable_schema::<u32>")]
     pub rule_id: Option<u32>,
     /// Which shape this version refuses, on `E_UNSUPPORTED_AUTHORITY`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -823,7 +832,7 @@ pub struct PrepareInstallIntentOutput {
     pub rule_name: String,
     /// Explicit `null` means no expiration; omission must not silently grant one.
     #[serde(deserialize_with = "required_nullable")]
-    #[schemars(required)]
+    #[schemars(schema_with = "required_nullable_schema::<u32>")]
     pub valid_until_ledger: Option<u32>,
     /// The account's typed signer arguments for `add_context_rule`, in the same shape the
     /// authority answer reports them.
@@ -913,6 +922,82 @@ mod tests {
             ozpb_domain::canonical_preimage_bytes(domain, &now).unwrap(),
             ozpb_domain::canonical_preimage_bytes(domain, &before).unwrap()
         );
+    }
+
+    /// A `required_nullable` field is on the wire as a value or an explicit `null`: a grant with
+    /// no expiration carries `valid_until_ledger: null`. The published schema has to say both,
+    /// for the input contract and for the output one the MCP server lists. The schema used to
+    /// require the field and refuse `null`, so a client validating a no-expiry intent against
+    /// the published output schema rejected it.
+    #[test]
+    fn required_nullable_fields_are_published_as_required_and_nullable() {
+        fn admits_null(schema: &serde_json::Value) -> bool {
+            let typed_null = match schema.get("type") {
+                Some(serde_json::Value::String(kind)) => kind == "null",
+                Some(serde_json::Value::Array(kinds)) => kinds.iter().any(|kind| kind == "null"),
+                _ => false,
+            };
+            typed_null
+                || ["anyOf", "oneOf"].iter().any(|key| {
+                    schema
+                        .get(*key)
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|branches| branches.iter().any(admits_null))
+                })
+        }
+        fn schemas<T: JsonSchema>() -> [serde_json::Value; 2] {
+            let settings = schemars::generate::SchemaSettings::draft2020_12();
+            [settings.clone(), settings.for_serialize()].map(|settings| {
+                serde_json::to_value(settings.into_generator().into_root_schema_for::<T>()).unwrap()
+            })
+        }
+        let cases = [
+            ("PolicyGrant", schemas::<PolicyGrant>(), "valid_until"),
+            (
+                "PolicyAuthorityEntry",
+                schemas::<PolicyAuthorityEntry>(),
+                "valid_until",
+            ),
+            (
+                "PolicyVerifierObservation",
+                schemas::<PolicyVerifierObservation>(),
+                "scheme",
+            ),
+            (
+                "PolicyRestrictedKeyRule",
+                schemas::<PolicyRestrictedKeyRule>(),
+                "valid_until",
+            ),
+            (
+                "PolicySurfaceFinding",
+                schemas::<PolicySurfaceFinding>(),
+                "rule_id",
+            ),
+            (
+                "PrepareInstallIntentOutput",
+                schemas::<PrepareInstallIntentOutput>(),
+                "valid_until_ledger",
+            ),
+        ];
+        // Every field read with `required_nullable` is listed above, so one added later without
+        // the matching schema is a failing count here rather than a schema that refuses `null`.
+        let source = include_str!("policy_operations.rs");
+        let marker = ["deserialize_with = ", "\"required_nullable\""].concat();
+        assert_eq!(source.matches(&marker).count(), cases.len());
+        for (dto, contracts, field) in cases {
+            for schema in contracts {
+                let required = schema["required"].as_array().unwrap();
+                assert!(
+                    required.contains(&serde_json::json!(field)),
+                    "{dto}.{field} must be required: {schema}"
+                );
+                assert!(
+                    admits_null(&schema["properties"][field]),
+                    "{dto}.{field} must admit null: {}",
+                    schema["properties"][field]
+                );
+            }
+        }
     }
 
     #[test]

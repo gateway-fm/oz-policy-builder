@@ -46,6 +46,37 @@ pub(crate) fn wire_spec() -> ozpb_policy_spec::ValidatedSpec {
         .expect("downgrading trust preserves validity")
 }
 
+/// [`wire_spec`] with its rule widened to 32 tuples of one function, each of 32 distinct exact
+/// amounts: valid, within every per-item limit, and with a reference suite over
+/// `ozpb_harness::MAX_SUITE_CASES` (its cross products alone are 32 × 31 / 2 × 32).
+pub(crate) fn oversized_suite_spec() -> serde_json::Value {
+    let mut spec = wire_spec().spec().clone();
+    spec.rules[0]
+        .policies
+        .retain(|policy| matches!(policy, ozpb_policy_spec::PolicyRef::Generated { .. }));
+    let template = spec.rules[0].allowed_calls[0].clone();
+    spec.rules[0].allowed_calls = (0..32usize)
+        .map(|call| {
+            let mut tuple = template.clone();
+            tuple.fn_name = "f".into();
+            tuple.args = (0..32u32)
+                .map(|index| ozpb_policy_spec::ArgConstraint {
+                    index,
+                    constraint: ozpb_policy_spec::Constraint::EqI128 {
+                        value: (1000 * call + index as usize + 1).to_string(),
+                    },
+                    provenance: ozpb_domain::Provenance::ObservedExact,
+                })
+                .collect();
+            tuple
+        })
+        .collect();
+    let spec = spec
+        .validate()
+        .expect("valid, and within every per-item limit");
+    serde_json::to_value(spec.spec()).unwrap()
+}
+
 pub(crate) fn build_config() -> ozpb_build_runner::BuildConfig {
     // Hermetic + deterministic: the toolkit's verify/binding/manifest logic only needs a
     // reproducible builder, not the real toolchain. This keeps `cargo test` free of a

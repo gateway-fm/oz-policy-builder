@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadWalletConfig } from './config.mjs';
 import { createWalletServer } from './http.mjs';
-import { WalletNetwork } from './network.mjs';
+import { WalletNetwork, earlierAuthorizationExpiry, journaledSpend } from './network.mjs';
 import { AgentHandoff } from './agent-handoff.mjs';
+import { DelegateCapabilities } from './native-execution.mjs';
 import { WalletSession } from './session.mjs';
 import { WalletToolchain } from './toolchain.mjs';
 
@@ -13,9 +14,34 @@ import { WalletToolchain } from './toolchain.mjs';
 // Listeners still bind only the IPv4 loopback interface.
 const ORIGIN = 'http://localhost:3000';
 const BACKEND_HOST = '127.0.0.1';
-const BACKEND_PORT = 4317;
+/**
+ * The backend's loopback port per network. The Vite development server proxies only to the testnet
+ * port; only `vite preview`, serving a production build, proxies to the mainnet one, so a mainnet
+ * session cannot be reached from the development server.
+ */
+export const BACKEND_PORTS = Object.freeze({ testnet: 4317, mainnet: 4318 });
 
-/** Assemble trusted local components without invoking any network method or executable. */
+/**
+ * The operator-facing reason the RPC endpoint cannot serve this session, or null: it must serve the
+ * configured network at protocol 30. One read-only `getNetwork`; nothing is signed or sent.
+ */
+export async function networkPreflight(network) {
+  try { await network.assertNetwork(); return null; } catch (error) {
+    if (error?.reason === 'protocol_unsupported') {
+      return `The RPC endpoint reports protocol ${error.protocolVersion ?? 'unknown'} for ${network.profile.name}; this wallet runs on `
+        + `protocol 30 only.`;
+    }
+    if (error?.reason === 'network_mismatch') {
+      return `The RPC endpoint does not serve ${network.profile.name}, the network this session was configured for (operator \`network\`).`;
+    }
+    return `The RPC endpoint did not answer getNetwork; check the operator \`rpcUrl\`.`;
+  }
+}
+
+/**
+ * Assemble trusted local components without invoking any network method or executable. The network
+ * is chosen once, by the operator configuration, and recorded first in the session journal.
+ */
 export async function createWalletRuntime(configPath, { actionsFactory } = {}) {
   const config = loadWalletConfig(configPath);
   const secret = randomBytes(32).toString('hex');
@@ -23,21 +49,32 @@ export async function createWalletRuntime(configPath, { actionsFactory } = {}) {
   const toolchain = new WalletToolchain(config);
   const journalRoot = join(toolchain.sessionRoot, 'journal');
   mkdirSync(journalRoot, { mode: 0o700 });
-  const network = new WalletNetwork({ rpcUrl: config.rpcUrl, journalRoot });
+  // Operator-funded, the spend cap counts what earlier sessions in this (network-bound) work root sent.
+  const spentStroops = config.feePayer.operator ? journaledSpend(config.workRoot, config.network, config.fees) : '0';
+  const network = new WalletNetwork({ rpcUrl: config.rpcUrl, journalRoot, network: config.network, feePayer: config.feePayer, fees: config.fees,
+    spentStroops });
   const createActions = actionsFactory ?? (await import('./actions.mjs')).createWalletActions;
   const native = config.nativeExecutable ? Object.freeze({ executable: config.nativeExecutable }) : null;
   const live = config.liveHelper ? Object.freeze({ helper: config.liveHelper }) : null;
-  const handoff = new AgentHandoff();
-  const actions = createActions({ session, toolchain, network, native, live, handoff });
+  const handoff = new AgentHandoff({ network: config.network });
+  // Disposable automation keys with the disposable fee payer; operator-funded, only the operator's delegate key, if any.
+  const delegates = new DelegateCapabilities(config.network, { random: !config.feePayer.operator,
+    key: config.delegateKey ? config.delegateKey.keypair() : null });
+  const priorAuthorizationExpiry = (account) => earlierAuthorizationExpiry(config.workRoot, toolchain.sessionRoot, config.network, account);
+  const actions = createActions({ session, toolchain, network, native, live, handoff, delegates, priorAuthorizationExpiry,
+    pinnedWasmDir: config.pinnedWasmDir });
   const server = createWalletServer({ session, actions, handoff });
-  return { server, launchUrl: `${ORIGIN}/policy-builder#session=${secret}` };
+  return { server, network: config.network, preflight: () => networkPreflight(network),
+    launchUrl: `${ORIGIN}/policy-builder#session=${secret}&network=${config.network.name}` };
 }
 
 export async function startWallet(configPath) {
   const runtime = await createWalletRuntime(configPath);
+  const refused = await runtime.preflight();
+  if (refused) throw Object.assign(new Error('wallet startup refused'), { startup: refused });
   await new Promise((resolve, reject) => {
     runtime.server.once('error', reject);
-    runtime.server.listen(BACKEND_PORT, BACKEND_HOST, () => {
+    runtime.server.listen(BACKEND_PORTS[runtime.network.name], BACKEND_HOST, () => {
       runtime.server.off('error', reject);
       resolve();
     });
@@ -62,8 +99,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       server.close();
       process.exitCode = 1;
     });
-  } catch {
-    process.stderr.write('Wallet startup refused. Check the operator configuration and local ports.\n');
+  } catch (error) {
+    process.stderr.write(`${typeof error?.startup === 'string' ? error.startup
+      : 'Wallet startup refused. Check the operator configuration and local ports.'}\n`);
     process.exitCode = 1;
   }
 }

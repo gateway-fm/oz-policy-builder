@@ -6,6 +6,8 @@ import { DelegateCapabilities } from '../server/native-execution.mjs';
 import { offlineCapability, offlineDomain } from '../server/native-protocol.mjs';
 import { LIVE_MAX_AMOUNT, LIVE_NETWORK_IDS, createLiveCapability } from '../server/live-signing.mjs';
 import { LIVE_SIGNATURE_LEDGERS } from '../shared/live-consent.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const vector = JSON.parse(readFileSync(new URL('../../docs/examples/native-domain-vector.json', import.meta.url)));
 const sha256 = (bytes) => Buffer.from(hash(bytes));
@@ -44,15 +46,20 @@ function offlineFixture() {
     preimage: (network = domain.networkId) => authorizationPreimage(network, checkAuth(binding.account_address, Buffer.alloc(32, 9))) };
 }
 
-test('the live allowlist is testnet alone', () => {
-  assert.deepEqual([...LIVE_NETWORK_IDS], [TESTNET]);
+test('the live allowlist is testnet and mainnet, and a capability signs for its session network alone', () => {
+  assert.deepEqual([...LIVE_NETWORK_IDS], [TESTNET, MAINNET]);
+  // A capability needs the session's own frozen profile; a look-alike or another network's ID is refused.
+  const { key } = counting(Keypair.random());
+  assert.throws(() => createLiveCapability(key, approved()), /refused/, 'no session network');
+  assert.throws(() => createLiveCapability(key, approved(), { ...WALLET_NETWORKS.testnet }), /refused/, 'an unfrozen copy');
+  assert.throws(() => createLiveCapability(key, approved(), WALLET_NETWORKS.mainnet), /refused/, 'a testnet check in a mainnet session');
   assert.equal(LIVE_MAX_AMOUNT, 1_000_001n);
 });
 
 test('live capability builds and signs the delegate\'s transfer authorization itself, for testnet only', () => {
   const key = Keypair.random();
   const counted = counting(key);
-  const live = createLiveCapability(counted.key, approved());
+  const live = createLiveCapability(counted.key, approved(), WALLET_NETWORKS.testnet);
   assert.equal(JSON.stringify(live), `{"address":"${key.publicKey()}"}`, 'no key material is serializable');
   const { transferEntryXdr, delegateEntryXdr } = live.authorizeTransfer(structure());
   const transfer = xdr.SorobanAuthorizationEntry.fromXDR(transferEntryXdr, 'base64');
@@ -95,11 +102,11 @@ test('live capability builds and signs the delegate\'s transfer authorization it
 
 test('live capability refuses mainnet/futurenet ids and raw bytes', () => {
   const counted = counting(Keypair.random());
-  const live = createLiveCapability(counted.key, approved());
+  const live = createLiveCapability(counted.key, approved(), WALLET_NETWORKS.testnet);
   const domain = offlineDomain({ ...vector.binding });
   for (const network of [MAINNET, FUTURENET, domain.networkId, vector.binding.source_network_id.toUpperCase(), 'ab'.repeat(32)]) {
     assert.throws(() => live.authorizeTransfer(structure({ network_id: network })), /refused/, network);
-    assert.throws(() => createLiveCapability(counted.key, approved({ network_id: network })), /refused/, network);
+    assert.throws(() => createLiveCapability(counted.key, approved({ network_id: network }), WALLET_NETWORKS.testnet), /refused/, network);
   }
   const preimage = authorizationPreimage(TESTNET, checkAuth(ACCOUNT, Buffer.alloc(32, 1)));
   for (const raw of [Buffer.alloc(32, 7), new Uint8Array(32), preimage.toXDR(), preimage.toXDR('base64'), sha256(preimage.toXDR()),
@@ -113,7 +120,7 @@ test('live capability refuses mainnet/futurenet ids and raw bytes', () => {
 
 test('live capability signs only the bounded transfer it can describe, for exactly the consented check', () => {
   const counted = counting(Keypair.random());
-  const live = createLiveCapability(counted.key, approved());
+  const live = createLiveCapability(counted.key, approved(), WALLET_NETWORKS.testnet);
   const other = StrKey.encodeContract(Buffer.alloc(32, 99));
   for (const change of [
     { asset: other }, { asset: Asset.native().contractId(Networks.PUBLIC) }, { amount: '1000002' }, { amount: '0' }, { amount: '01' },
@@ -132,14 +139,14 @@ test('live capability signs only the bounded transfer it can describe, for exact
   for (const change of [{ read_ledger: 5400000 - LIVE_SIGNATURE_LEDGERS - 1 }, { read_ledger: 5400000 }, { amounts: ['5', '7'] }, { amounts: ['7', '6'] },
     { amounts: ['1000000', '1000002'] },
     { amounts: ['1000001', '1000002'] }, { amounts: ['1000000'] }, { expected_rule_id: 0 }, { consent: 'a'.repeat(64) }]) {
-    assert.throws(() => createLiveCapability(counted.key, approved(change)), /refused/, JSON.stringify(change));
+    assert.throws(() => createLiveCapability(counted.key, approved(change), WALLET_NETWORKS.testnet), /refused/, JSON.stringify(change));
   }
   assert.equal(counted.count(), 0);
 });
 
 test('one live capability signs at most the two cases of one check, each amount and nonce once', () => {
   const counted = counting(Keypair.random());
-  const live = createLiveCapability(counted.key, approved());
+  const live = createLiveCapability(counted.key, approved(), WALLET_NETWORKS.testnet);
   live.authorizeTransfer(structure());
   assert.throws(() => live.authorizeTransfer(structure({ nonce: '4244' })), /refused/, 'the permit amount again');
   assert.throws(() => live.authorizeTransfer(structure({ amount: '1000001' })), /refused/, 'a reused nonce');
@@ -175,7 +182,7 @@ test('offline capability refuses testnet id', () => {
 });
 
 test('each capability refuses the other\'s domain, both ways', () => {
-  const capabilities = new DelegateCapabilities();
+  const capabilities = new DelegateCapabilities(WALLET_NETWORKS.testnet);
   const { capabilityId, address } = capabilities.create();
   const binding = { ...vector.binding, delegate_address: address };
   const domain = offlineDomain(binding);

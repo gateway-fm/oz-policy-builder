@@ -45,6 +45,8 @@ fn command_at(listen: &str, env: &[(&str, &str)]) -> Command {
         "OZPB_BUILD_TIMEOUT_SECS",
         "OZPB_BUILD_CACHE_DIR",
         "OZPB_STELLAR_BINARY",
+        "OZPB_BUILD_WORKER_LAUNCHER",
+        "OZPB_HTTP_UNISOLATED_BUILDS",
         "OZPB_REGISTRY_ROOTS_JSON",
         "OZPB_REGISTRY_MIN_VERSION",
         "OZPB_REGISTRY_SNAPSHOT_JSON",
@@ -73,6 +75,7 @@ fn start_at(listen: &str, extra: &[(&str, &str)]) -> Server {
         ("OZPB_HTTP_BEARER_TOKEN", TOKEN),
         ("OZPB_RPC_ALLOWLIST", "https://rpc.example"),
         ("OZPB_BUILD_JOBS", "1"),
+        ("OZPB_HTTP_UNISOLATED_BUILDS", "accept"),
     ];
     env.extend_from_slice(extra);
     let mut child = command_at(listen, &env)
@@ -217,6 +220,19 @@ fn hosted_mode_refuses_a_configured_source_outside_the_allowlist() {
         ("OZPB_RPC_SOURCES_JSON", &sources),
     ]);
     assert!(stderr.contains("is not on OZPB_RPC_ALLOWLIST"), "{stderr}");
+}
+
+/// The served binary, not only its configuration reader: with neither a launcher nor the
+/// operator's acceptance it does not start, and says what to configure.
+#[test]
+fn hosted_mode_refuses_to_compile_in_process_unless_the_operator_accepts_it() {
+    let stderr = refused_startup(&[
+        ("OZPB_HTTP_BEARER_TOKEN", TOKEN),
+        ("OZPB_RPC_ALLOWLIST", "https://rpc.example"),
+        ("OZPB_BUILD_JOBS", "1"),
+    ]);
+    assert!(stderr.contains("OZPB_BUILD_WORKER_LAUNCHER"), "{stderr}");
+    assert!(stderr.contains("OZPB_HTTP_UNISOLATED_BUILDS"), "{stderr}");
 }
 
 #[test]

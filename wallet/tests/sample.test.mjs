@@ -3,11 +3,13 @@ import test from 'node:test';
 import { Address, Keypair, xdr } from '@stellar/stellar-sdk';
 import { reviewSample, validateSampleAssembly } from '../shared/sample.mjs';
 import { sampleTransfer } from './sample-fixture.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
-function checked(f) { return validateSampleAssembly({ ...f, approval: reviewSample(f) }); }
+function checked(f) { return validateSampleAssembly({ ...f, approval: reviewSample({ ...f, networkId: NETWORK_ID }) }); }
 test('fresh-account sample binds the fixed transfer, exact owner0 credential and retained payer', () => {
   const f = sampleTransfer();
-  const approval = reviewSample(f);
+  const approval = reviewSample({ ...f, networkId: NETWORK_ID });
   const result = checked(f);
   assert.equal(approval.ownerRuleId, 0);
   assert.equal(result.envelopeXdr, f.assembly.envelope_xdr_base64);

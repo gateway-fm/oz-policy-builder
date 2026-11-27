@@ -47,7 +47,7 @@ import { Address, Networks, Operation, StrKey, TransactionBuilder, scValToNative
 
 import { checkArtifact } from './artifact.mjs';
 import { isMainModule } from './cli-entry.mjs';
-import { addContextRuleArgs, contractCall, i128, policyDenial, signForSmartAccount } from './lib.mjs';
+import { addContextRuleArgs, contractCall, i128, policyDenial, signForSmartAccount, structuredPolicyDenial, structuredRaised } from './lib.mjs';
 import { ownerSigner } from './owner.mjs';
 import { parseJsonExact } from './raw-json.mjs';
 import * as rpc from './rpc.mjs';
@@ -192,19 +192,28 @@ export async function buildCaseAuthorizations({ candidate, sac, owner, delegate,
 
 /**
  * A failed simulation as a policy denial, or not. It is a denial only when the policy contract
- * itself raised the code inside the account's failed authentication (`policyDenial`), and no
- * helper refusal was raised: a 7001–7009 from the helper settles nothing about the policy, and
- * neither does an account's own error. With `expected.code`, any other policy code fails the case.
+ * itself raised the code inside the account's failed authentication, and no helper refusal was
+ * raised: a 7001–7009 from the helper settles nothing about the policy, and neither does an
+ * account's own error. With `expected.code`, any other policy code fails the case.
+ *
+ * stellar-rpc 30.0.0 prints the event log into `error` after the host error; 30.0.1 returns the host
+ * error alone and the diagnostic events only in `events`. The printed log (`policyDenial`) is read
+ * where there is one, the structured events (`structuredPolicyDenial`) otherwise, and where both are
+ * there they must agree.
  */
 export function evaluateDenial(sim, { account, policy, helper }, expected = {}) {
   if (typeof sim?.error !== 'string') return { result: 'failed', reason: 'the simulation did not fail' };
   const text = sim.error;
   const host = hostLine(text);
   const raisedByHelper = [...text.matchAll(new RegExp(`contract:${helper}, topics:\\[error, Error\\(Contract, #(\\d+)\\)\\]`, 'g'))]
-    .map((m) => Number(m[1]));
+    .map((m) => Number(m[1])).concat(structuredRaised(sim.events, helper));
   const helperCode = raisedByHelper.find((code) => HELPER_ERROR_CODES.includes(code));
   if (helperCode !== undefined) return { result: 'failed', reason: 'helper_refusal', code: helperCode, host };
-  const code = policyDenial(text, account, policy);
+  const printed = text.includes('\n') ? policyDenial(text, account, policy) : undefined;
+  const structured = structuredPolicyDenial(sim.events, account, policy);
+  const hasEvents = Array.isArray(sim.events) && sim.events.length > 0;
+  const code = printed === undefined ? structured
+    : printed !== null && (!hasEvents || structured === printed) ? printed : null;
   if (code === null) return { result: 'failed', reason: 'not_a_policy_denial', host };
   if (expected.code !== undefined && code !== expected.code) {
     return { result: 'failed', reason: `policy code ${code}, expected ${expected.code}`, code, host };
@@ -458,7 +467,7 @@ async function main() {
       '--to', run.recipient, '--expect', 'permit', '--bundle', join(runDir, 'import-bundle.json')]);
     await runStep('synthesis-flow.mjs', ['--run-dir', runDir]);
     run = rpc.readJson(join(runDir, 'run.json'));
-    const spec = parseJsonExact(readFileSync(run.spec, 'utf8'));
+    const spec = parseJsonExact(readFileSync(rpc.runSpecPath(runDir, run), 'utf8'));
     const policyDir = join(runDir, 'policy');
     const manifest = parseJsonExact(readFileSync(join(policyDir, 'build-manifest.json'), 'utf8'));
     const policyWasm = readFileSync(join(policyDir, readdirWasm(policyDir)));

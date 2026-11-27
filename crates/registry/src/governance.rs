@@ -27,11 +27,12 @@ pub const CHANGE_SCHEMA: &str = "registry-change/v1";
 pub const DETACHED_SIGNATURE_SCHEMA: &str = "registry-signature/v1";
 pub const MONITOR_SCHEMA: &str = "registry-monitor/v1";
 /// How a review reference begins while the custodians still have to supply it (the mainnet draft
-/// carries one). A snapshot holding one is never combined and never passes `verify`.
+/// carries one). A snapshot holding one is never signed, never combined and never passes `verify`.
 pub const PENDING_REVIEW_PREFIX: &str = "PENDING, replace before signing:";
 
-/// The capability kinds a revocation of an exact code hash can name.
-const HASH_KINDS: [&str; 4] = ["policy", "account", "verifier", "target_adapter"];
+/// The capability kinds a revocation of an exact code hash can name. The monitor watches a hash
+/// under all of them, and [`crate::Registry::ensure_code_not_revoked`] refuses it under all of them.
+pub(crate) const HASH_KINDS: [&str; 4] = ["policy", "account", "verifier", "target_adapter"];
 
 /// Why a governance step refused. These reach only the `ozpb registry` CLI, never the MCP wire:
 /// the leading labels name the registry code each fault belongs to, and `E_REGISTRY_PARSE` (a
@@ -71,6 +72,11 @@ pub enum GovernanceError {
         "E_REGISTRY_PARSE: {0} still carries a pending review reference; replace it before signing"
     )]
     PendingReview(String),
+    #[error(
+        "{item} is neither registered nor revoked in the published head (version {version}), so \
+         watching it can never report anything; check the item"
+    )]
+    NotWatchable { item: Watched, version: u64 },
 }
 
 /// What custodians declare for the next version. Version, log index and parent root are not
@@ -177,13 +183,16 @@ pub fn successor(
     Ok(next)
 }
 
-/// Sign a snapshot's root with a locally held key, as a detached signature.
+/// Sign a snapshot's root with a locally held key, as a detached signature. A snapshot still
+/// carrying a pending review reference is refused here, as [`combine`] would refuse it: the
+/// custodians learn of it at the first signature, not after the threshold is collected.
 pub fn sign_detached(
     key_id: &str,
     key: &SigningKey,
     snapshot: &RegistrySnapshot,
 ) -> Result<DetachedSignature, GovernanceError> {
     require_key_id(key_id)?;
+    require_no_pending_review(snapshot)?;
     let signed = sign_snapshot_with_roots(
         &BTreeMap::from([(key_id.to_string(), key.clone())]),
         snapshot.clone(),
@@ -203,7 +212,8 @@ pub fn sign_detached(
 }
 
 /// Accept a signature produced elsewhere — a hardware key, another machine — over this
-/// snapshot's root, refusing one that does not verify under the given public key.
+/// snapshot's root, refusing one that does not verify under the given public key, and refusing a
+/// snapshot with a pending review reference as [`sign_detached`] does.
 pub fn external_signature(
     key_id: &str,
     public_key: &[u8; 32],
@@ -211,6 +221,7 @@ pub fn external_signature(
     snapshot: &RegistrySnapshot,
 ) -> Result<DetachedSignature, GovernanceError> {
     require_key_id(key_id)?;
+    require_no_pending_review(snapshot)?;
     let detached = DetachedSignature {
         schema: DETACHED_SIGNATURE_SCHEMA.to_string(),
         key_id: key_id.to_string(),
@@ -349,10 +360,41 @@ pub enum MonitorStatus {
     Revoked,
 }
 
+/// Something a consumer relies on and must hear about when it is revoked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Watched {
+    /// Exact reviewed code — an account, an owner verifier, a reviewed policy, a target — under
+    /// whichever role the registry holds it.
+    Code(Hash32),
+    /// A template family. A generated policy has no registry entry of its own: it is recognized
+    /// through its family, so the family is what can be watched for it. (A revocation of one
+    /// build's hash is reported through [`Watched::Code`] once it exists.)
+    TemplateFamily(String),
+}
+
+impl Watched {
+    /// A template family to watch, refused unless it is a valid family name by the registry's
+    /// own rule.
+    pub fn template_family(name: &str) -> Result<Self, GovernanceError> {
+        crate::validate_template_family(name)?;
+        Ok(Watched::TemplateFamily(name.to_string()))
+    }
+}
+
+impl std::fmt::Display for Watched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Watched::Code(hash) => write!(f, "wasm hash {hash}"),
+            Watched::TemplateFamily(family) => write!(f, "template family {family:?}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RevokedHash {
-    pub wasm_hash: Hash32,
+pub struct RevokedCapability {
+    pub watched: Watched,
     pub capability: String,
     pub reason: String,
     #[serde(with = "ozpb_domain::wide_int")]
@@ -376,8 +418,8 @@ pub struct MonitorReport {
     pub valid_from_unix: i64,
     #[serde(with = "ozpb_domain::wide_int")]
     pub expires_at_unix: i64,
-    /// Every watched hash the head revokes, under any role.
-    pub revoked: Vec<RevokedHash>,
+    /// Every watched capability the head revokes.
+    pub revoked: Vec<RevokedCapability>,
 }
 
 /// Check the published head against a consumer's persisted checkpoint.
@@ -396,7 +438,7 @@ pub fn monitor(
     published: &[SignedSnapshot],
     now_unix: i64,
     expiry_window_secs: i64,
-    watched: &[Hash32],
+    watched: &[Watched],
 ) -> Result<MonitorReport, GovernanceError> {
     let checkpoint_version = checkpoint.version;
     let mut relevant: Vec<&SignedSnapshot> = published
@@ -420,6 +462,10 @@ pub fn monitor(
         Registry::with_pinned_roots_for_network_at_checkpoint(roots, network, checkpoint.clone())?;
     let mut head_checkpoint = checkpoint.clone();
     for signed in &relevant {
+        // A checkpoint can predate the admission rule and does not run Registry::admit again.
+        if network == NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE) {
+            require_no_pending_review(&signed.snapshot)?;
+        }
         if signed.snapshot.version == checkpoint_version {
             require_matches_checkpoint(&signed.snapshot, &checkpoint, network)?;
         } else {
@@ -438,17 +484,42 @@ pub fn monitor(
         ValidityStatus::Valid
     };
     let mut revoked = Vec::new();
-    for hash in watched {
-        for kind in HASH_KINDS {
-            let capability = format!("{kind}/{}", hash.to_hex());
+    for item in watched {
+        // Something the head can report on: registered under some role, or revoked (a revoked
+        // entry may also have been removed). Anything else is a watch that can never fire.
+        let registered = match item {
+            Watched::Code(hash) => {
+                let key = hash.to_hex();
+                snapshot.policies.contains_key(&key)
+                    || snapshot.accounts.contains_key(&key)
+                    || snapshot.verifiers.contains_key(&key)
+                    || snapshot.target_adapters.contains_key(&key)
+            }
+            Watched::TemplateFamily(family) => snapshot.templates.contains_key(family),
+        };
+        let revoked_before = revoked.len();
+        let capabilities: Vec<String> = match item {
+            Watched::Code(hash) => HASH_KINDS
+                .iter()
+                .map(|kind| format!("{kind}/{}", hash.to_hex()))
+                .collect(),
+            Watched::TemplateFamily(family) => vec![format!("template/{family}")],
+        };
+        for capability in capabilities {
             if let Some(revocation) = snapshot.revocations.get(&capability) {
-                revoked.push(RevokedHash {
-                    wasm_hash: *hash,
+                revoked.push(RevokedCapability {
+                    watched: item.clone(),
                     capability,
                     reason: revocation.reason.clone(),
                     effective_version: revocation.effective_version,
                 });
             }
+        }
+        if !registered && revoked.len() == revoked_before {
+            return Err(GovernanceError::NotWatchable {
+                item: item.clone(),
+                version: snapshot.version,
+            });
         }
     }
     let newer_version_available = snapshot.version > checkpoint_version;
@@ -483,7 +554,17 @@ pub fn monitor(
 /// ([`PENDING_REVIEW_PREFIX`]): a draft custodians have not finished must not be signed by
 /// accident or distributed.
 pub fn require_no_pending_review(snapshot: &RegistrySnapshot) -> Result<(), GovernanceError> {
-    let references = snapshot
+    match pending_reviews(snapshot).into_iter().next() {
+        Some(entry) => Err(GovernanceError::PendingReview(entry)),
+        None => Ok(()),
+    }
+}
+
+/// Every entry (`template/<family>`, `account/<hash>`, …) whose review reference is still
+/// pending, in the order [`require_no_pending_review`] checks them. What a custodian reviews
+/// before signing lists them all, since a device signs whatever root it is given.
+pub fn pending_reviews(snapshot: &RegistrySnapshot) -> Vec<String> {
+    snapshot
         .policies
         .iter()
         .map(|(key, entry)| (format!("policy/{key}"), &entry.review_reference))
@@ -510,13 +591,10 @@ pub fn require_no_pending_review(snapshot: &RegistrySnapshot) -> Result<(), Gove
                 .templates
                 .iter()
                 .map(|(key, entry)| (format!("template/{key}"), &entry.review_reference)),
-        );
-    for (entry, reference) in references {
-        if reference.trim_start().starts_with(PENDING_REVIEW_PREFIX) {
-            return Err(GovernanceError::PendingReview(entry));
-        }
-    }
-    Ok(())
+        )
+        .filter(|(_, reference)| reference.trim_start().starts_with(PENDING_REVIEW_PREFIX))
+        .map(|(entry, _)| entry)
+        .collect()
 }
 
 /// The published copy of the version a consumer has already accepted must be exactly what it

@@ -3,17 +3,24 @@ import { Address, Asset, Networks, StrKey, xdr } from '@stellar/stellar-sdk';
 import { WalletSession } from '../server/session.mjs';
 import { createWalletActions } from '../server/actions.mjs';
 import { fixture } from './approval-fixture.mjs';
-export function setup({ native = null, live = null, delegates } = {}) {
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+import { TESTNET_FEES } from '../server/network.mjs';
+export function setup({ native = null, live = null, delegates, network: overrides = {}, pinnedWasmDir = null, priorAuthorizationExpiry } = {}) {
   const calls = [];
   const f = fixture();
   const session = new WalletSession({ origin: 'http://127.0.0.1:3000', host: '127.0.0.1:3000', secret: 'ab'.repeat(32) });
   let creates = 0;
   const network = {
+    profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0',
     payerAddress: StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 9)),
     canSubmit: true,
-    assertTestnet: async () => { calls.push('network'); },
-    requireCode: async (hash) => { calls.push(['code', hash]); },
+    // A removal can be submitted whenever any write can (tests toggle `canSubmit`).
+    get canSubmitRemoval() { return this.canSubmit; },
+    assertNetwork: async () => { calls.push('network'); },
+    codePresent: async (hash) => { calls.push(['code', hash]); return { present: true, ledger: 124 }; },
     fundPayer: async () => { calls.push('fund'); },
+    payerCovers: async () => {},
+    fundRemoval: async () => { calls.push('fund-removal'); },
     ensureDelegateAccount: async (address) => { calls.push(['delegate-account', address]); return { ledger: 124, createdNow: true }; },
     latestLedger: async () => 123,
     requireInstance: async (address, hash) => { calls.push(['instance', address, hash]); },
@@ -32,11 +39,12 @@ export function setup({ native = null, live = null, delegates } = {}) {
       return { hash: '3'.repeat(64), ledger: 125, trust: 'rpc_reported' };
     },
   };
+  Object.assign(network, overrides);
   const toolchain = {
     record: async (request) => { calls.push(['record', request]); return { recordId: '4'.repeat(64) }; },
     generate: async (request) => { calls.push(['generate', request]); return { artifactId: '5'.repeat(64) }; },
   };
-  return { actions: createWalletActions({ session, toolchain, network, native, live, pause: async () => {},
+  return { actions: createWalletActions({ session, toolchain, network, native, live, pause: async () => {}, pinnedWasmDir, priorAuthorizationExpiry,
     ...(delegates ? { delegates } : {}) }),
     calls, f, network, toolchain, session };
 }
@@ -46,7 +54,7 @@ export function deploymentFixture(change = () => {}, options = {}) {
   const artifactId = 'a'.repeat(64);
   const policy = f.f.expected.boundPolicies[0];
   const artifact = { artifactId, specHash: f.f.expected.specHash, wasmHash: 'b'.repeat(64), spec: {
-    registry_snapshot: f.f.expected.registrySnapshotRoot, smart_account: { address: f.f.wallet.contractId },
+    network_id: WALLET_NETWORKS.testnet.networkId, registry_snapshot: f.f.expected.registrySnapshotRoot, smart_account: { address: f.f.wallet.contractId },
     rules: [{ context: { contract: f.f.expected.target } }],
   } };
   f.toolchain.artifact = (selected) => {
@@ -62,9 +70,14 @@ export function deploymentFixture(change = () => {}, options = {}) {
     if (command === 'prepare-install-intent') return f.f.intent;
     assert.fail('unexpected authority command');
   };
+  // The policy's code is on the network only once an upload of it returned; the pinned code always is.
+  let stored = false;
+  const pinned = f.network.codePresent;
+  f.network.codePresent = async (hash) => (hash === artifact.wasmHash ? { present: stored, ledger: 123456 } : pinned(hash));
   f.network.upload = async (bytes, hash) => {
     assert.equal(bytes.toString(), 'retained artifact'); assert.equal(hash, artifact.wasmHash);
     f.calls.push('upload');
+    stored = true;
     return { hash: 'c'.repeat(64), ledger: 123456, trust: 'rpc_reported' };
   };
   f.network.create = async (hash, args, stage) => {

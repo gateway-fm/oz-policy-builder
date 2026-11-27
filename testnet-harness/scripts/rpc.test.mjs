@@ -201,3 +201,28 @@ test('writeJson completes short writes and refuses a write that makes no progres
   assert.equal(JSON.parse(fs.readFileSync(path, 'utf8')).value, 'a fairly long journal value that needs several short writes');
   assert.deepEqual(fs.readdirSync(dir), ['run.json'], 'the partial temporary file is removed and never renamed');
 });
+
+test('Friendbot is the pinned testnet service, never a URL the RPC endpoint reports', async (t) => {
+  const rpcModule = await import('./rpc.mjs');
+  const address = 'GAMX62ZD4FWIKMWGVPEDR6WNL2TYTPQMO2ZJEAZUAON7VCZ5G2GWDF7W';
+  // An endpoint's getNetwork answer is its own report: it must not choose where this machine sends requests.
+  t.mock.method(rpcModule.server, 'getNetwork', async () => ({ passphrase: rpcModule.NETWORK_PASSPHRASE,
+    friendbotUrl: 'http://169.254.169.254/latest/meta-data/' }));
+  const fetched = [];
+  t.mock.method(globalThis, 'fetch', async (url) => { fetched.push(String(url)); return { ok: true, status: 200 }; });
+  await rpcModule.fund(address);
+  assert.deepEqual(fetched, [`https://friendbot.stellar.org/?addr=${address}`]);
+});
+
+test('a run journal names only its own run directory\'s spec.json; any other spec path is refused, not opened', async () => {
+  const { join, relative, resolve } = await import('node:path');
+  const { runSpecPath } = await import('./rpc.mjs');
+  const dir = resolve('ozpb-run-spec-fixture'), own = join(dir, 'spec.json');
+  assert.equal(runSpecPath(dir, { spec: own }), own);
+  assert.equal(runSpecPath(relative(process.cwd(), dir), { spec: relative(process.cwd(), own) }), own);
+  for (const spec of [undefined, null, 7, '', '/etc/hosts', join(dir, 'other', 'spec.json'), join(dir, '..', 'spec.json'),
+    join(dir, 'spec.json.bak'), `${dir}-other/spec.json`]) {
+    assert.throws(() => runSpecPath(dir, { spec }), /run does not name its own spec/, String(spec));
+  }
+  assert.throws(() => runSpecPath(dir, null), /run does not name its own spec/);
+});

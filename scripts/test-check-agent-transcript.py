@@ -149,10 +149,10 @@ def result(tool_id, payload, is_error=False):
          "content": [{"type": "text", "text": text}]}]}}
 
 
-def synthesis(tool_id, decisions=None, spec=SPEC, spec_hash=SPEC_HASH):
+def synthesis(tool_id, decisions=None, spec=SPEC, spec_hash=SPEC_HASH, rationale=()):
     return [call(tool_id, MCP + "synthesize_policy",
                  {"bundles": [BUNDLE], "decisions": decisions or DECISIONS}),
-            result(tool_id, {"spec": spec, "spec_hash": spec_hash, "rationale": []})]
+            result(tool_id, {"spec": spec, "spec_hash": spec_hash, "rationale": list(rationale)})]
 
 
 def handoff(body=None):
@@ -160,7 +160,8 @@ def handoff(body=None):
                + json.dumps(body or proposal(), indent=2) + "\n```")
 
 
-def session(spec=SPEC, card=CARD, decisions=DECISIONS, restatement=RESTATEMENT) -> list:
+def session(spec=SPEC, card=CARD, decisions=DECISIONS, restatement=RESTATEMENT,
+            rationale=()) -> list:
     return [
         user(f"Record testnet transaction {TX_HASH} and build me a policy for it."),
         call("t1", MCP + "record_transaction", {
@@ -173,7 +174,7 @@ def session(spec=SPEC, card=CARD, decisions=DECISIONS, restatement=RESTATEMENT) 
         user(f"Delegate {DELEGATE}, until ledger 5000, at most 3 calls, call it pay-bob."),
         say(restatement),
         user("Yes."),
-        *synthesis("t2", decisions, spec),
+        *synthesis("t2", decisions, spec, rationale=rationale),
         call("t3", MCP + "reference_suite", {"spec": spec}),
         result("t3", {"all_agree": True}),
         say(card),
@@ -233,6 +234,26 @@ class ReviewRegressions(unittest.TestCase):
         self.assertIn("synthesize_before_decisions", checks(session(decisions=dict(DECISIONS, widenings=[unlimited]),
             restatement=stated.replace("medium", "high"))))
 
+    def test_a_cap_accepted_without_a_floor_is_restated_as_having_none(self):
+        # A cap on a signed amount admits every smaller value, negatives included. The user who
+        # acknowledged that has to have been told it in the line that states the widening.
+        widening = {"contract": TARGET, "fn_name": "transfer", "arg_index": 2,
+                    "bound": {"le_i128": {"max": "2000000"}}, "no_floor_acknowledged": True,
+                    "intent": "headroom", "blast_radius": "medium"}
+        decisions = dict(DECISIONS, widenings=[widening])
+        line = f" Widen {TARGET}.transfer arg[2] to <= 2000000, no floor; blast radius: medium; reason: headroom."
+        self.assertNotIn("synthesize_before_decisions",
+                         checks(session(decisions=decisions, restatement=RESTATEMENT + line)))
+        for silent in (line.replace(", no floor", ""), line.replace("no floor", "floor 0")):
+            self.assertIn("synthesize_before_decisions",
+                          checks(session(decisions=decisions, restatement=RESTATEMENT + silent)), silent)
+        # The phrase belongs to the acknowledgement: a floor or an unacknowledged cap reads as before.
+        for other in (dict(widening, no_floor_acknowledged=False), {k: v for k, v in widening.items()
+                                                                    if k != "no_floor_acknowledged"}):
+            self.assertNotIn("synthesize_before_decisions", checks(session(
+                decisions=dict(DECISIONS, widenings=[other]),
+                restatement=RESTATEMENT + line.replace(", no floor", ""))))
+
     def test_intervening_user_message_invalidates_the_card_not_only_confirmation(self):
         events = session()
         events[COMMAND:COMMAND] = [user("Change the amount."), user("confirm")]
@@ -280,6 +301,104 @@ class ReviewRegressions(unittest.TestCase):
         self.assertNotIn("handoff_without_confirmation", checks(session(spec=spec, card=correct)))
         for card in [CARD, correct.replace("<=", ">="), correct.replace("<= 1000000", "<= 2000000")]:
             self.assertIn("handoff_without_confirmation", checks(session(spec=spec, card=card)))
+
+    def test_a_range_is_shown_and_restated_with_both_ends(self):
+        # "Spend up to X" as a range: the card and the restatement each carry both bounds bound
+        # to their argument, floor first, so a reader sees the floor that refuses negatives.
+        spec = copy.deepcopy(SPEC)
+        spec["rules"][0]["allowed_calls"][0]["args"][2]["c"] = {"range_i128": {"min": "0", "max": "1000000"}}
+        correct = CARD.replace("1000000) on", ">= 0 and <= 1000000) on")
+        self.assertNotIn("handoff_without_confirmation", checks(session(spec=spec, card=correct)))
+        for card in [CARD, correct.replace(">= 0 and ", ""), correct.replace(">= 0", ">= 1"),
+                     correct.replace("<= 1000000", "<= 2000000")]:
+            self.assertIn("handoff_without_confirmation", checks(session(spec=spec, card=card)))
+
+        widening = {"contract": TARGET, "fn_name": "transfer", "arg_index": 2,
+                    "bound": {"range_i128": {"min": "0", "max": "2000000"}},
+                    "intent": "headroom", "blast_radius": "medium"}
+        decisions = dict(DECISIONS, widenings=[widening])
+        line = f" Widen {TARGET}.transfer arg[2] to >= 0 and <= 2000000; blast radius: medium; reason: headroom."
+        self.assertNotIn("synthesize_before_decisions",
+                         checks(session(decisions=decisions, restatement=RESTATEMENT + line)))
+        for wrong in (line.replace(">= 0 and ", ""), line.replace(">= 0", ">= 1"),
+                      line.replace("<= 2000000", "<= 1000000"), line.replace("and <= 2000000", "and <= 2000000, no floor")):
+            self.assertIn("synthesize_before_decisions",
+                          checks(session(decisions=decisions, restatement=RESTATEMENT + wrong)), wrong)
+
+    def test_a_widened_bound_is_shown_beside_the_recorded_value(self):
+        # A finite bound's rating is the user's, and no rule says how large is too large. So the
+        # card sets each widened bound beside the value the recording held, which synthesis states
+        # in its rationale: a maximum a million times the recorded amount is read as one.
+        spec = copy.deepcopy(SPEC)
+        spec["rules"][0]["allowed_calls"][0]["args"][2] = {
+            "i": 2, "c": {"range_i128": {"min": "0", "max": "1000000000000"}},
+            "prov": {"user_widened": {"intent": "headroom", "blast_radius": "medium"}}}
+        rationale = [f"{TARGET}/transfer arg 2: user-widened (headroom), blast radius Medium; "
+                     "recorded value 1000000"]
+        permitted = CARD.replace("1000000) on", ">= 0 and <= 1000000000000) on")
+        exact = "**Not constrained:** nothing; every argument is exact."
+        shown = permitted.replace(exact, f"**Not constrained:** transfer arg[2] on {TARGET} accepts "
+                                  ">= 0 and <= 1000000000000; recorded value 1000000, so the "
+                                  "maximum is ×10⁶ the recorded amount.")
+        self.assertNotIn("handoff_without_confirmation",
+                         checks(session(spec=spec, card=shown, rationale=rationale)))
+        self.assertNotIn("handoff_without_confirmation", checks(session(
+            spec=spec, card=shown.replace("recorded value", "recorded amount"), rationale=rationale)))
+        hidden = permitted.replace(exact, f"**Not constrained:** transfer arg[2] on {TARGET} accepts "
+                                   ">= 0 and <= 1000000000000.")
+        self.assertIn("handoff_without_confirmation",
+                      checks(session(spec=spec, card=hidden, rationale=rationale)))
+        # The value has to be on that line: the Permitted call above holds no recorded value.
+        elsewhere = hidden.replace("**Not checked:**", "**Not checked:** recorded value 1000000;")
+        self.assertIn("handoff_without_confirmation",
+                      checks(session(spec=spec, card=elsewhere, rationale=rationale)))
+        # A bare number is not the annotation, and the annotation belongs to the argument it follows.
+        for wrong in (shown.replace("recorded value 1000000", "recorded 1000000"),
+                      shown.replace("recorded value 1000000", "1000000 recorded"),
+                      shown.replace("transfer arg[2]", "transfer arg[1]"),
+                      shown.replace(f"arg[2] on {TARGET}", f"arg[2] on {ACCOUNT}"),
+                      shown.replace("transfer arg[2]", "approve arg[2]"),
+                      shown.replace("recorded value 1000000", "recorded value 10000000"),
+                      shown.replace(f"transfer arg[2] on {TARGET} accepts", f"recorded value 1000000; "
+                                    f"transfer arg[2] on {TARGET} accepts").replace(
+                                        "; recorded value 1000000, so", ", so"),
+                      shown.replace("; recorded value 1000000", f"; transfer arg[0] on {TARGET}: "
+                                    "SELF; recorded value 1000000")):
+            self.assertIn("handoff_without_confirmation",
+                          checks(session(spec=spec, card=wrong, rationale=rationale)), wrong)
+        # Emphasis, a colon or a capital do not hide it.
+        for written in (shown.replace("; recorded value 1000000,", ". Recorded value 1000000,"),
+                        shown.replace("recorded value 1000000", "recorded value `1000000`"),
+                        shown.replace("recorded value 1000000", "recorded value **1000000**"),
+                        shown.replace("recorded value 1000000", "recorded value: 1000000"),
+                        shown.replace(f"transfer arg[2] on {TARGET}", f"`transfer` arg[2] on `{TARGET}`"),
+                        shown.replace(f"transfer arg[2] on {TARGET}", f"**transfer arg[2]** on **{TARGET}**")):
+            self.assertNotIn("handoff_without_confirmation",
+                             checks(session(spec=spec, card=written, rationale=rationale)), written)
+
+    def test_a_number_equal_to_the_recorded_value_is_not_its_annotation(self):
+        # Any number on the line once stood for the recorded value: a bound's end, an argument
+        # index. Only `recorded value <N>` after that argument says what the recording held.
+        exact = "**Not constrained:** nothing; every argument is exact."
+        for recorded, bound, display in (
+                ("0", {"range_i128": {"min": "0", "max": "1000"}}, ">= 0 and <= 1000"),
+                ("1000000", {"range_i128": {"min": "0", "max": "1000000"}}, ">= 0 and <= 1000000"),
+                ("2", {"range_i128": {"min": "1", "max": "1000"}}, ">= 1 and <= 1000"),
+                ("-10", {"le_i128": {"max": "-5"}}, "<= -5")):
+            spec = copy.deepcopy(SPEC)
+            spec["rules"][0]["allowed_calls"][0]["args"][2] = {
+                "i": 2, "c": bound, "prov": {"user_widened": {"intent": "headroom", "blast_radius": "medium"}}}
+            rationale = [f"{TARGET}/transfer arg 2: user-widened (headroom), blast radius Medium; "
+                         f"recorded value {recorded}"]
+            permitted = CARD.replace("1000000) on", f"{display}) on")
+            unannotated = permitted.replace(exact, f"**Not constrained:** transfer arg[2] on {TARGET} "
+                                            f"accepts {display}.")
+            self.assertIn("handoff_without_confirmation",
+                          checks(session(spec=spec, card=unannotated, rationale=rationale)), recorded)
+            annotated = unannotated.replace(f"accepts {display}.",
+                                            f"accepts {display}; recorded value {recorded}.")
+            self.assertNotIn("handoff_without_confirmation",
+                             checks(session(spec=spec, card=annotated, rationale=rationale)), recorded)
 
     def test_readable_shell_proposals_pass_and_unverifiable_writes_refuse(self):
         events = session()[:-1] + [call("write", "Bash", {"command": "cat > proposal.json <<'EOF'\n" + json.dumps(proposal()) + "\nEOF"})]

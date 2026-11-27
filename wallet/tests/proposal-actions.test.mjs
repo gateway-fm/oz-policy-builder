@@ -4,7 +4,9 @@ import { setup } from './actions-fixture.mjs';
 import { proposalFixture } from './proposal-fixture.mjs';
 import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mjs';
 import { WalletController } from '../overlay/files/src/policy-builder/client/controller.mjs';
-import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 function backend() {
   const f = setup(), p = proposalFixture();
@@ -33,9 +35,9 @@ test('invalid import makes no RPC or tool call; regenerated mismatch releases no
 });
 
 function browser() {
-  const f = proposalFixture(), calls = [], pins = { networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM };
+  const f = proposalFixture(), calls = [], pins = { network: 'testnet', networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM };
   const result = { record: f.record, artifact: f.artifact,
-    proposalReview: checkProposalArtifact(parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId), f.artifact) };
+    proposalReview: checkProposalArtifact(parseGrantProposal(JSON.stringify(f.proposal), f.wallet.contractId, NETWORK_ID), f.artifact) };
   const controller = new WalletController({ validators: { parseGrantProposal, checkProposalArtifact }, pins,
     sign: async () => assert.fail('import must never sign'), origin: 'http://localhost:3000',
     request: async (name, body) => { calls.push([name, body]);
