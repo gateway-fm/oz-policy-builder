@@ -101,6 +101,13 @@ def strkey_payload(address):
     return raw[1:33]
 
 
+def account_identity(address):
+    """Compare classic and muxed forms by their common Ed25519 key (SEP-23)."""
+    if address.startswith(("G", "M")):
+        return ("ed25519", strkey_payload(address))
+    return ("other", address)
+
+
 def instance_key(contract):
     """LedgerKey::ContractData for a contract's persistent instance entry, base64 XDR."""
     xdr = (
@@ -168,34 +175,40 @@ def cases_of(record):
     kind, tx = inner(record["envelopeJson"])
     success = record["status"] == "SUCCESS"
     operations = tx["operations"]
-    invokes = [op["body"]["invoke_host_function"] for op in operations if arm(op["body"]) == "invoke_host_function"]
+    invokes = [op for op in operations if arm(op["body"]) == "invoke_host_function"]
     found = {}
     if not invokes:
         if success and kind == "tx" and 2 <= len(operations) <= 4:
             found["classic-multi-operation"] = 0
         return found
-    invoke = invokes[0]
+    operation = invokes[0]
+    invoke = operation["body"]["invoke_host_function"]
+    source = operation.get("source_account") or tx["source_account"]
     host = invoke["host_function"]
     auth = invoke["auth"]
     call = host.get("invoke_contract") if isinstance(host, dict) else None
     arms = [arm(entry["credentials"]) for entry in auth]
-    authorizers = [credential_address(entry["credentials"]) or tx["source_account"] for entry in auth]
+    authorizers = [credential_address(entry["credentials"]) or source for entry in auth]
+    identities = {account_identity(address) for address in authorizers}
+    inner_source = account_identity(tx["source_account"])
     plain = 0 if kind == "tx" else 1  # a plain envelope keeps each case apart from the fee bump
     # A fee bump counts only when another account pays: both fee-bump cases' tests require it.
     payer = record["envelopeJson"]["tx_fee_bump"]["tx"]["fee_source"] if kind == "tx_fee_bump" else None
-    paid_by_another = payer is not None and payer != tx["source_account"]
+    payer_identity = account_identity(payer) if payer is not None else None
+    paid_by_another = payer_identity is not None and payer_identity != inner_source
     if not success:
         if call:
             found["failed-invocation"] = plain
         return found
-    if paid_by_another and payer not in authorizers:
+    if paid_by_another and payer_identity not in identities:
         # The relayer pattern: one party pays the fee, another authorizes the call.
         found["fee-bump-invocation"] = 0 if "address" in arms else 1
-    if paid_by_another and call and call["function_name"] == "transfer" and arms == ["source_account"]:
+    if (paid_by_another and call and call["function_name"] == "transfer" and arms == ["source_account"]
+            and identities == {inner_source}):
         # Fee-bumped only: the case pins that the credential resolves to the inner source and
         # never to the fee payer, and its test requires the fee bump.
         found["sac-transfer-source-account"] = 0
-    if arms == ["address"] and authorizers[0].startswith("G") and authorizers[0] != tx["source_account"]:
+    if arms == ["address"] and authorizers[0].startswith("G") and identities != {inner_source}:
         found["classic-address-credential"] = plain
     if any(a.startswith("C") for a in authorizers):
         # Ideally the account authorizes a call into another contract, not its own management.
@@ -207,7 +220,7 @@ def cases_of(record):
             root = contract_fn(entry["root_invocation"])
             found["nested-auth-tree"] = 0 if root and "swap" in root["function_name"] else 1
             break
-    if len(set(authorizers)) >= 2:
+    if len(identities) >= 2:
         found["multi-authorizer"] = 0 if len(auth) <= 3 else 1
     for entry in auth:
         root = contract_fn(entry["root_invocation"])
