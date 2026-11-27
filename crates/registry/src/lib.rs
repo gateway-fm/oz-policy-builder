@@ -343,7 +343,9 @@ pub enum RegistryError {
     VerifierCapabilityIncomplete(String),
     #[error("E_TARGET_ADAPTER_UNSUPPORTED: target adapter for wasm {0} has unknown or inconsistent semantics")]
     TargetAdapterUnsupported(String),
-    #[error("E_UNREGISTERED_TEMPLATE: no audited template family named {0}")]
+    #[error(
+        "E_UNREGISTERED_TEMPLATE: no template family named {0} is registered in this snapshot"
+    )]
     UnknownTemplate(String),
     #[error("E_REGISTRY_REVOKED: capability {capability} is revoked: {reason}")]
     Revoked { capability: String, reason: String },
@@ -692,6 +694,10 @@ impl Registry {
         // A registry built without a network could not decide at construction; the snapshot's
         // own network decides here, so the unpinned constructor is not a way around the rule.
         self.refuse_development_root_for(snapshot.network_id)?;
+        if snapshot.network_id == NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE) {
+            governance::require_no_pending_review(snapshot)
+                .map_err(|error| RegistryError::Parse(error.to_string()))?;
+        }
         check_snapshot_validity(snapshot, now_unix)?;
         validate_capability_keys(snapshot)?;
         for (capability, revocation) in &snapshot.revocations {
@@ -953,6 +959,18 @@ impl Registry {
             .ok_or_else(|| RegistryError::UnknownTemplate(family.to_string()))
     }
 
+    /// Refuse code revoked under any role. A generated policy build is recognized through its
+    /// template family and by rebuilding it, so it has no entry of its own and no `resolve_*`
+    /// reaches a `policy/<hash>` revocation of it; recognition asks this instead. It refuses
+    /// exactly what `ozpb registry monitor --wasm-hash` reports as revoked.
+    pub fn ensure_code_not_revoked(&self, wasm_hash: &Hash32) -> Result<(), RegistryError> {
+        let identity = wasm_hash.to_hex();
+        for kind in governance::HASH_KINDS {
+            self.ensure_active(kind, &identity)?;
+        }
+        Ok(())
+    }
+
     fn loaded(&self) -> Result<&Loaded, RegistryError> {
         self.current.as_ref().ok_or(RegistryError::NotLoaded)
     }
@@ -1123,10 +1141,29 @@ pub mod dev {
     use ozpb_domain::sha256;
     use ozpb_policy_spec::{Constraint, PredicateKind};
 
-    /// Version of the committed, signed development example. Versions 1 to 5 remain
+    /// Version of the committed, signed development example. Versions 1 to 6 remain
     /// historical parents; changing their contents would fork persisted checkpoints. The same
     /// holds for this version once published, so tests pin every root.
-    pub const SIGNED_EXAMPLE_VERSION: u64 = 6;
+    pub const SIGNED_EXAMPLE_VERSION: u64 = 7;
+
+    /// What the scope template entry says about review from version 7 on. Versions 1 to 6 say
+    /// "audited with the template pack", which no review supports; they are published, so the
+    /// claim stays in them, and the first unpublished version states what is true.
+    pub const SCOPE_TEMPLATE_REVIEW_V7: &str = "Development-registry entry, not a review: no completed security review covers this template family's code generation (crates/codegen), and anyone can sign with this snapshot's development root. Version 7 adds range_i128 to its declared constraint kinds.";
+
+    /// The scope template's constraint vocabulary as versions 1 to 6 signed it. Frozen, not
+    /// derived: those roots are published, and deriving this from [`Constraint::KINDS`] would
+    /// rewrite all six the moment a kind is added. A new kind is declared by a successor
+    /// instead ([`range_constraint_successor`]), and `historical_kinds_are_the_current_ones_minus_range`
+    /// holds this list to the enum.
+    pub const CONSTRAINT_KINDS_V1_TO_V6: &[&str] = &[
+        "any_value",
+        "eq_address",
+        "eq_i128",
+        "eq_scval",
+        "ge_i128",
+        "le_i128",
+    ];
 
     /// Why version 6 revokes the account built at v0.7.2. Stated in the signed snapshot, so a
     /// refusal names the advisory rather than an unknown hash.
@@ -1154,6 +1191,7 @@ pub mod dev {
         version: u64,
     ) -> Result<(String, String), RegistryError> {
         let snapshot = match version {
+            7 => range_constraint_successor(network_id)?,
             6 => account_advisory_successor(network_id)?,
             5 => soroswap_deadline_successor(network_id)?,
             4 => soroswap_router_successor(network_id)?,
@@ -1331,6 +1369,31 @@ pub mod dev {
         Ok(snapshot)
     }
 
+    /// Version 7: version 6 plus the inclusive range constraint (`range_i128`) in the scope
+    /// template's declared vocabulary, which is now [`Constraint::KINDS`] in full. Synthesis
+    /// refuses a spec whose kinds its template family does not declare, so a grant that bounds
+    /// an amount on both sides (`0..=X`) needs this version. The template entry's review text also
+    /// stops claiming an audit ([`SCOPE_TEMPLATE_REVIEW_V7`]); nothing else changes.
+    pub fn range_constraint_successor(
+        network_id: NetworkId,
+    ) -> Result<RegistrySnapshot, RegistryError> {
+        let previous = account_advisory_successor(network_id)?;
+        let mut snapshot = previous.clone();
+        snapshot.version = 7;
+        snapshot.log_index = 7;
+        snapshot.previous_root = Some(snapshot_root(&previous)?);
+        let template = snapshot
+            .templates
+            .get_mut("policy-templates/scope@1")
+            .ok_or_else(|| RegistryError::Internal("scope template family is absent".into()))?;
+        template.constraint_kinds = Constraint::KINDS
+            .iter()
+            .map(|kind| (*kind).to_string())
+            .collect();
+        template.review_reference = SCOPE_TEMPLATE_REVIEW_V7.to_string();
+        Ok(snapshot)
+    }
+
     /// Version 5 preserves v4 and replaces its router binding with v2's exact deadline.
     pub fn soroswap_deadline_successor(
         network_id: NetworkId,
@@ -1426,15 +1489,16 @@ pub mod dev {
                 //
                 // Deriving them removes that whole class: `KINDS` and the `kind_name` a
                 // checker reads are generated from one exhaustive list in `ozpb-policy-spec`,
-                // so a new variant is a compile error there and this entry grows with it. The
-                // scope template implements the full vocabulary of both types; a future
-                // family that implements a subset would name that subset instead, which is
-                // what makes these lists worth declaring at all.
+                // so a new variant is a compile error there. The scope template implements the
+                // full vocabulary of both types; a future family that implements a subset
+                // would name that subset instead, which is what makes these lists worth
+                // declaring at all. The constraint kinds of these published versions are the
+                // frozen historical list; version 7 declares `Constraint::KINDS` in full.
                 signer_predicates: PredicateKind::KINDS
                     .iter()
                     .map(|kind| (*kind).to_string())
                     .collect(),
-                constraint_kinds: Constraint::KINDS
+                constraint_kinds: CONSTRAINT_KINDS_V1_TO_V6
                     .iter()
                     .map(|kind| (*kind).to_string())
                     .collect(),
@@ -1507,7 +1571,7 @@ mod tests {
             "3e7c6ca88af0aa98b9153986d07a8e871538991981a82fe2406550187e18f5a6";
         assert_eq!(
             dev::SIGNED_EXAMPLE_VERSION,
-            6,
+            7,
             "a new signed example version must pin its own published root here"
         );
         // Version 2 is a published parent: the verifier fields it never carried must not move
@@ -1541,13 +1605,94 @@ mod tests {
         );
         let v6 = dev::account_advisory_successor(network()).unwrap();
         assert_eq!(v6.previous_root, Some(snapshot_root(&v5).unwrap()));
+        assert_eq!(
+            snapshot_root(&v6).unwrap().to_hex(),
+            "92d18f90b6cace23974118f90e9bb0d6f5e0aaedbaec09ca67b15206647dbbb8",
+            "published development example v6 changed; publish new contents as a new version"
+        );
+        let v7 = dev::range_constraint_successor(network()).unwrap();
+        assert_eq!(v7.previous_root, Some(snapshot_root(&v6).unwrap()));
         let committed: SignedSnapshot =
             serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
                 .unwrap();
-        assert_eq!(v6, committed.snapshot);
+        assert_eq!(v7, committed.snapshot);
         assert_eq!(
-            snapshot_root(&v6).unwrap().to_hex(),
-            "92d18f90b6cace23974118f90e9bb0d6f5e0aaedbaec09ca67b15206647dbbb8"
+            snapshot_root(&v7).unwrap().to_hex(),
+            "8874c4e03f7dd47d2cdc197e56f4317a5c8edb69e8571a3df383bd15f17b48eb"
+        );
+    }
+
+    /// Versions 1 to 6 declare the vocabulary they were signed with; version 7 declares the
+    /// enum's, which is that plus the range. A kind added to the enum without a successor shows
+    /// up here as a difference other than `range_i128`.
+    #[test]
+    fn historical_kinds_are_the_current_ones_minus_range() {
+        let mut current: Vec<&str> = Constraint::KINDS.to_vec();
+        current.retain(|kind| *kind != "range_i128");
+        assert_eq!(current, dev::CONSTRAINT_KINDS_V1_TO_V6);
+        assert_eq!(
+            Constraint::KINDS.len(),
+            dev::CONSTRAINT_KINDS_V1_TO_V6.len() + 1
+        );
+        let scope = |snapshot: RegistrySnapshot| {
+            snapshot.templates["policy-templates/scope@1"]
+                .constraint_kinds
+                .clone()
+        };
+        for version in 1..=6 {
+            let snapshot = dev::dev_trust_files(network(), version)
+                .map(|(json, _)| {
+                    serde_json::from_str::<SignedSnapshot>(&json)
+                        .unwrap()
+                        .snapshot
+                })
+                .unwrap();
+            assert_eq!(
+                scope(snapshot),
+                dev::CONSTRAINT_KINDS_V1_TO_V6,
+                "v{version}"
+            );
+        }
+        let v7 = dev::range_constraint_successor(network()).unwrap();
+        assert_eq!(scope(v7.clone()), Constraint::KINDS);
+        // The range and the template's review text are the only changes from version 6.
+        let mut v6 = dev::account_advisory_successor(network()).unwrap();
+        let template = v6.templates.get_mut("policy-templates/scope@1").unwrap();
+        template.constraint_kinds = scope(v7.clone());
+        template.review_reference = dev::SCOPE_TEMPLATE_REVIEW_V7.to_string();
+        v6.version = 7;
+        v6.log_index = 7;
+        v6.previous_root = v7.previous_root;
+        assert_eq!(v6, v7);
+    }
+
+    /// Versions 1 to 6 say the template pack was "audited with the template pack", which no
+    /// review supports; they are published and keep it. Version 7, the first unpublished one,
+    /// says what is true, and a refusal of an unknown family claims no audit either.
+    #[test]
+    fn the_current_template_entry_and_its_refusal_claim_no_audit() {
+        let review = |snapshot: RegistrySnapshot| {
+            snapshot.templates["policy-templates/scope@1"]
+                .review_reference
+                .clone()
+        };
+        assert_eq!(
+            review(dev::account_advisory_successor(network()).unwrap()),
+            "audited with the template pack"
+        );
+        let current = review(dev::range_constraint_successor(network()).unwrap());
+        assert_eq!(current, dev::SCOPE_TEMPLATE_REVIEW_V7);
+        for claim in ["audited", "reviewed with"] {
+            assert!(!current.contains(claim), "{current}");
+        }
+        for disclosure in ["not a review", "development root"] {
+            assert!(current.contains(disclosure), "{current}");
+        }
+        let refusal = RegistryError::UnknownTemplate("policy-templates/other@1".into()).to_string();
+        assert_eq!(
+            refusal,
+            "E_UNREGISTERED_TEMPLATE: no template family named policy-templates/other@1 is \
+             registered in this snapshot"
         );
     }
 
@@ -1684,8 +1829,8 @@ mod tests {
                 .unwrap();
         assert_eq!(committed.snapshot.version, dev::SIGNED_EXAMPLE_VERSION);
 
-        // An operator persisted a checkpoint at v3: v4 extends it directly, and v5 and the
-        // committed v6 follow in order.
+        // An operator persisted a checkpoint at v3: v4 extends it directly, and v5, v6 and the
+        // committed v7 follow in order.
         let mut registry = pinned_test_registry();
         for signed in [&v1, &v2, &v3] {
             registry.load_at(signed, 100).unwrap();
@@ -1710,6 +1855,12 @@ mod tests {
         )
         .unwrap();
         restored.load_at(&v5, 100).unwrap();
+        let v6 = sign_snapshot(
+            &dev::dev_signing_key(),
+            dev::account_advisory_successor(network()).unwrap(),
+        )
+        .unwrap();
+        restored.load_at(&v6, 100).unwrap();
         assert_eq!(
             committed.snapshot.previous_root,
             Some(restored.checkpoint().unwrap().root)
@@ -1805,7 +1956,7 @@ mod tests {
     /// constant; this test asserts the snapshot actually uses it.
     #[test]
     fn the_shipped_snapshot_pins_real_upstream_wasm_hashes() {
-        let snapshot = dev::account_advisory_successor(NetworkId::from_passphrase(
+        let snapshot = dev::range_constraint_successor(NetworkId::from_passphrase(
             ozpb_domain::TESTNET_PASSPHRASE,
         ))
         .unwrap();
@@ -2098,6 +2249,15 @@ mod tests {
         );
         assert_eq!(
             t.constraint_kinds,
+            dev::CONSTRAINT_KINDS_V1_TO_V6,
+            "version 1 declares the vocabulary it was signed with"
+        );
+        // The committed example, the version a reader runs, declares the enum's in full.
+        let committed: SignedSnapshot =
+            serde_json::from_str(include_str!("../../../docs/examples/registry.signed.json"))
+                .unwrap();
+        assert_eq!(
+            committed.snapshot.templates["policy-templates/scope@1"].constraint_kinds,
             Constraint::KINDS,
             "the scope template declares Constraint's full vocabulary"
         );
@@ -2606,6 +2766,69 @@ mod tests {
             Err(RegistryError::Revoked { reason, .. })
                 if reason == "critical authorization bypass"
         ));
+    }
+
+    /// A generated build has no entry of its own, so no `resolve_*` reaches a revocation of its
+    /// hash. Code revoked under any role is refused by hash alone, as the monitor reports it.
+    #[test]
+    fn code_revoked_under_any_role_is_refused_by_hash_alone() {
+        let build = sha256(b"a generated policy build");
+        let loaded = |snapshot: RegistrySnapshot| {
+            let mut loaded = registry();
+            loaded
+                .load(&sign_snapshot(&dev::dev_signing_key(), snapshot).unwrap())
+                .unwrap();
+            loaded
+        };
+        assert_eq!(
+            loaded(dev::dev_snapshot(network(), 1)).ensure_code_not_revoked(&build),
+            Ok(())
+        );
+        for kind in ["policy", "account", "verifier", "target_adapter"] {
+            let mut snapshot = dev::dev_snapshot(network(), 1);
+            snapshot.revocations.insert(
+                format!("{kind}/{}", build.to_hex()),
+                Revocation {
+                    reason: format!("{kind} build withdrawn"),
+                    effective_version: 1,
+                },
+            );
+            // A revocation of other code under the same role does not reach this build.
+            snapshot.revocations.insert(
+                format!("{kind}/{}", sha256(b"other code").to_hex()),
+                Revocation {
+                    reason: "other".to_string(),
+                    effective_version: 1,
+                },
+            );
+            let current = loaded(snapshot);
+            assert_eq!(
+                current.ensure_code_not_revoked(&build),
+                Err(RegistryError::Revoked {
+                    capability: format!("{kind}/{}", build.to_hex()),
+                    reason: format!("{kind} build withdrawn"),
+                }),
+                "{kind}"
+            );
+            assert_eq!(
+                current.ensure_code_not_revoked(&sha256(b"unrevoked code")),
+                Ok(())
+            );
+        }
+        // A template revocation names a family, never code.
+        let mut snapshot = dev::dev_snapshot(network(), 1);
+        snapshot.revocations.insert(
+            "template/policy-templates/scope@1".to_string(),
+            Revocation {
+                reason: "family withdrawn".to_string(),
+                effective_version: 1,
+            },
+        );
+        assert_eq!(loaded(snapshot).ensure_code_not_revoked(&build), Ok(()));
+        assert_eq!(
+            registry().ensure_code_not_revoked(&build),
+            Err(RegistryError::NotLoaded)
+        );
     }
 
     fn signed_successor(previous: &RegistrySnapshot, mut next: RegistrySnapshot) -> SignedSnapshot {

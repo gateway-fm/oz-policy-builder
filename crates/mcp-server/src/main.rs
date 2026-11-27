@@ -332,20 +332,74 @@ fn internal_tool_err(error: impl std::fmt::Display) -> CallToolResult {
     ))
 }
 
-fn rpc_tool_err(error: ozpb_source_rpc::RpcError) -> ToolError {
-    let code = match error {
-        ozpb_source_rpc::RpcError::NotFound(_) => ozpb_api_types::ErrorCode::ETxNotFound,
-        ozpb_source_rpc::RpcError::NetworkMismatch { .. } => {
-            ozpb_api_types::ErrorCode::ENetworkMismatch
+/// How a server words a failed RPC read for its client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RpcErrorText {
+    /// A stdio server: one user, reading an endpoint they named, in their own trust domain, as
+    /// the CLI does. The endpoint's words are theirs, and the useful part of the error.
+    Verbatim,
+    /// A hosted server: the endpoint is the operator's, and its words reach whoever holds the
+    /// token. A transport error quotes the URL, path included, where providers put API keys; a
+    /// JSON-RPC error carries the endpoint's message and data; a reply can reflect the request
+    /// or name anything as its network. Only the category reaches the client, as the authority
+    /// scan (`scan_tool_error`) and target capture already report it.
+    Withheld,
+}
+
+impl PolicyBuilderServer {
+    /// Hosted servers, the ones with an endpoint policy, withhold endpoint text.
+    fn rpc_error_text(&self) -> RpcErrorText {
+        match self.rpc_policy {
+            Some(_) => RpcErrorText::Withheld,
+            None => RpcErrorText::Verbatim,
         }
-        ozpb_source_rpc::RpcError::EnvelopeTooLarge(_) => ozpb_api_types::ErrorCode::EResourceLimit,
-        ozpb_source_rpc::RpcError::EnvelopeParse(_) => ozpb_api_types::ErrorCode::EEnvelopeParse,
-        ozpb_source_rpc::RpcError::UnsupportedEnvelope(_) => {
-            ozpb_api_types::ErrorCode::EUnsupportedEnvelope
+    }
+}
+
+/// The stable code of a failed RPC read.
+fn rpc_error_code(error: &ozpb_source_rpc::RpcError) -> ozpb_api_types::ErrorCode {
+    use ozpb_api_types::ErrorCode as EC;
+    use ozpb_source_rpc::RpcError as E;
+    match error {
+        E::NotFound(_) => EC::ETxNotFound,
+        E::NetworkMismatch { .. } => EC::ENetworkMismatch,
+        E::EnvelopeTooLarge(_) => EC::EResourceLimit,
+        E::EnvelopeParse(_) => EC::EEnvelopeParse,
+        E::UnsupportedEnvelope(_) => EC::EUnsupportedEnvelope,
+        _ => EC::ERpc,
+    }
+}
+
+/// A failed RPC read as a tool error, worded as `text` says. Withheld, an error keeps its code
+/// and its words only where nothing in them came from the endpoint: the caller's own envelope
+/// refused before any request, the caller's transaction hash, and the protocol numbers.
+fn rpc_tool_err(error: ozpb_source_rpc::RpcError, text: RpcErrorText) -> ToolError {
+    use ozpb_source_rpc::RpcError as E;
+    let code = rpc_error_code(&error);
+    let message = match (text, &error) {
+        (RpcErrorText::Verbatim, _)
+        | (
+            RpcErrorText::Withheld,
+            E::EnvelopeTooLarge(_)
+            | E::EnvelopeParse(_)
+            | E::UnsupportedEnvelope(_)
+            | E::NotFound(_)
+            | E::UnsupportedProtocol { .. },
+        ) => error.to_string(),
+        (RpcErrorText::Withheld, E::NetworkMismatch { .. }) => {
+            "E_NETWORK_MISMATCH: the RPC endpoint reports a different network than the one \
+             requested (endpoint detail withheld)"
+                .to_string()
         }
-        _ => ozpb_api_types::ErrorCode::ERpc,
+        (RpcErrorText::Withheld, E::Transport(_)) => {
+            "E_RPC: the RPC endpoint could not be reached (endpoint detail withheld)".to_string()
+        }
+        (RpcErrorText::Withheld, _) => {
+            "E_RPC: the RPC endpoint did not give a usable answer (endpoint detail withheld)"
+                .to_string()
+        }
     };
-    ToolError::new(code, error.to_string())
+    ToolError::new(code, message)
 }
 
 #[tool_router(router = tool_router)]
@@ -371,12 +425,21 @@ impl PolicyBuilderServer {
                 input.network_passphrase.as_deref(),
             )
             .map_err(tool_err)?;
+        // Checked here as well as by the read, whose refusal a hosted server would withhold as
+        // though the endpoint had answered badly.
+        if ozpb_domain::Hash32::from_hex(&input.tx_hash).is_err() {
+            return Err(tool_err(ToolError::new(
+                ozpb_api_types::ErrorCode::ERpc,
+                "transaction hash must be exactly 64 hexadecimal characters",
+            )));
+        }
+        let text = self.rpc_error_text();
         let request = ct.clone();
         let out = tokio::task::spawn_blocking(move || {
             let transport = cancel::transport(rpc_url, &request);
             let snapshot =
                 ozpb_source_rpc::get_transaction(&transport, &network_passphrase, &input.tx_hash)
-                    .map_err(rpc_tool_err)?;
+                    .map_err(|error| rpc_tool_err(error, text))?;
             let options = RecordOptions {
                 operation_index: input.operation_index,
                 allow_failed: input.allow_failed,
@@ -396,7 +459,8 @@ impl PolicyBuilderServer {
         description = "Record an unsigned transaction envelope via simulateTransaction in \
                        record mode into a RecordingBundle. Network read through the server's \
                        configured RPC source when there is one; the envelope is confidential \
-                       input."
+                       input. A hosted server refuses an envelope carrying signatures or signed \
+                       authorization entries."
     )]
     async fn record_simulation(
         &self,
@@ -410,6 +474,19 @@ impl PolicyBuilderServer {
                 input.network_passphrase.as_deref(),
             )
             .map_err(tool_err)?;
+        let text = self.rpc_error_text();
+        // As for preflight: a hosted server takes no signed material, and refuses it before any
+        // request. The check also refuses, with input codes, every envelope the read would
+        // refuse locally, so what the read reports afterwards is the endpoint's.
+        if text == RpcErrorText::Withheld
+            && ozpb_source_rpc::envelope_carries_signatures(&input.envelope_xdr_base64)
+                .map_err(|error| tool_err(rpc_tool_err(error, text)))?
+        {
+            return Err(tool_err(ToolError::new(
+                ozpb_api_types::ErrorCode::EUnsupportedEnvelope,
+                preflight::HOSTED_SIGNED_REFUSAL,
+            )));
+        }
         let request = ct.clone();
         let out = tokio::task::spawn_blocking(move || {
             let transport = cancel::transport(rpc_url, &request);
@@ -418,7 +495,7 @@ impl PolicyBuilderServer {
                 &network_passphrase,
                 &input.envelope_xdr_base64,
             )
-            .map_err(rpc_tool_err)?;
+            .map_err(|error| rpc_tool_err(error, text))?;
             ozpb_toolkit::record_snapshot(&snapshot, RecordOptions::default())
         })
         .await
@@ -688,6 +765,229 @@ pub(crate) mod tests {
             "../../../docs/examples/subscription-spec.json"
         ))
         .expect("example spec JSON")
+    }
+
+    /// The example invocation's envelope: one `InvokeHostFunction`, unsigned.
+    fn example_envelope() -> stellar_xdr::TransactionEnvelope {
+        use stellar_xdr::{Limits, ReadXdr, TransactionEnvelope};
+        let bundle: serde_json::Value =
+            serde_json::from_str(include_str!("../../../docs/examples/import-bundle.json"))
+                .expect("example bundle JSON");
+        TransactionEnvelope::from_xdr_base64(
+            bundle["envelope_xdr_base64"]
+                .as_str()
+                .expect("example envelope"),
+            Limits::none(),
+        )
+        .expect("example envelope XDR")
+    }
+
+    fn unsigned_envelope() -> String {
+        use stellar_xdr::{Limits, WriteXdr};
+        example_envelope()
+            .to_xdr_base64(Limits::none())
+            .expect("envelope XDR")
+    }
+
+    /// The example invocation with one transaction signature added.
+    pub(crate) fn signed_envelope() -> String {
+        use stellar_xdr::{
+            DecoratedSignature, Limits, Signature, SignatureHint, TransactionEnvelope, WriteXdr,
+        };
+        let mut envelope = example_envelope();
+        let TransactionEnvelope::Tx(v1) = &mut envelope else {
+            panic!("the example envelope is a v1 transaction");
+        };
+        v1.signatures = vec![DecoratedSignature {
+            hint: SignatureHint([1; 4]),
+            signature: Signature(vec![7; 64].try_into().expect("signature bytes")),
+        }]
+        .try_into()
+        .expect("one signature");
+        envelope
+            .to_xdr_base64(Limits::none())
+            .expect("signed envelope XDR")
+    }
+
+    /// Like `preflight_transaction`, a hosted `record_simulation` takes no signed material: the
+    /// endpoint it forwards to, and this server, would hold live authorizations. The allowlisted
+    /// endpoint does not resolve, so a request would have failed as `E_RPC` instead.
+    #[tokio::test]
+    async fn hosted_record_simulation_refuses_signed_material_before_any_request() {
+        let result = hosted()
+            .record_simulation(
+                Parameters(RecordSimulationInput {
+                    rpc_source: None,
+                    rpc_url: Some("https://rpc.allowed.example".into()),
+                    network_passphrase: Some(ozpb_domain::TESTNET_PASSPHRASE.into()),
+                    envelope_xdr_base64: signed_envelope(),
+                }),
+                Default::default(),
+            )
+            .await;
+        let Err(error) = result else {
+            panic!("a hosted server must not accept signed material");
+        };
+        let wire = serde_json::to_value(error).expect("tool error JSON");
+        assert_eq!(
+            wire["structuredContent"]["code"], "E_UNSUPPORTED_ENVELOPE",
+            "{wire}"
+        );
+        let message = wire["structuredContent"]["message"].as_str().unwrap_or("");
+        assert!(message.contains("live authorizations"), "{wire}");
+    }
+
+    const SECRET: &str = "operator-endpoint-key-7f3a9c";
+
+    /// A local endpoint answering its one request with `status` and `body`, then closing.
+    fn answering_once(status: u16, body: String) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            drop(reader);
+            write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        (url, server)
+    }
+
+    /// Each RPC read a hosted tool makes, through `transport`. Every one asks for the network
+    /// first, so a one-request endpoint reaches each of them.
+    #[allow(clippy::type_complexity)]
+    fn hosted_reads() -> Vec<(
+        &'static str,
+        Box<dyn Fn(&ozpb_source_rpc::HttpTransport) -> ozpb_source_rpc::RpcError>,
+    )> {
+        use stellar_xdr::{ContractId, Hash, InvokeContractArgs, ScAddress, ScVal};
+        let passphrase = ozpb_domain::TESTNET_PASSPHRASE;
+        vec![
+            (
+                "record_transaction",
+                Box::new(move |t| {
+                    ozpb_source_rpc::get_transaction(t, passphrase, &"ab".repeat(32)).unwrap_err()
+                }),
+            ),
+            (
+                "record_simulation",
+                Box::new(move |t| {
+                    ozpb_source_rpc::simulate_transaction(t, passphrase, &unsigned_envelope())
+                        .unwrap_err()
+                }),
+            ),
+            (
+                "preflight_transaction",
+                Box::new(move |t| {
+                    ozpb_source_rpc::preflight_transaction(t, passphrase, &unsigned_envelope())
+                        .unwrap_err()
+                }),
+            ),
+            (
+                "assemble_install_transaction",
+                Box::new(move |t| {
+                    let request = ozpb_source_rpc::InstallAssemblyRequest {
+                        invocation: InvokeContractArgs {
+                            contract_address: ScAddress::Contract(ContractId(Hash([9; 32]))),
+                            function_name: "add_context_rule".try_into().unwrap(),
+                            args: vec![ScVal::Void; 5].try_into().unwrap(),
+                        },
+                        fee_payer: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+                            .into(),
+                        max_fee_stroops: 50_000,
+                        validity_ledgers: 20,
+                        authority_observed_ledger: 99,
+                    };
+                    ozpb_source_rpc::assemble_install_transaction(t, passphrase, &request)
+                        .unwrap_err()
+                }),
+            ),
+        ]
+    }
+
+    /// What an endpoint controls reaches a hosted server's client only as a category. A provider
+    /// key in the URL path (which the transport error quotes), a JSON-RPC message and data, a
+    /// reflected id, a reported network name and a gateway's error page each reach the raw error
+    /// of at least one read; none reaches the hosted wire, and each keeps its code.
+    #[test]
+    fn hosted_rpc_errors_withhold_endpoint_controlled_text_from_every_read() {
+        let answers = [
+            (
+                200,
+                serde_json::json!({"jsonrpc":"2.0","id":1,
+                    "error":{"code":-32000,"message":SECRET,"data":{"url":SECRET}}}),
+            ),
+            (
+                200,
+                serde_json::json!({"jsonrpc":"2.0","id":SECRET,"result":{}}),
+            ),
+            (
+                200,
+                serde_json::json!({"jsonrpc":"2.0","id":1,
+                    "result":{"passphrase":SECRET,"protocolVersion":23}}),
+            ),
+        ]
+        .map(|(status, body)| (status, body.to_string()))
+        .into_iter()
+        .chain([(502, format!("<html>{SECRET}</html>"))]);
+        let mut leaked_raw = std::collections::BTreeSet::new();
+        let mut check = |read: &str, raw: ozpb_source_rpc::RpcError| {
+            if raw.to_string().contains(SECRET) {
+                leaked_raw.insert(read.to_string());
+            }
+            let code = rpc_error_code(&raw);
+            let withheld = rpc_tool_err(raw, RpcErrorText::Withheld);
+            assert_eq!(withheld.code, code, "{read}");
+            let wire = serde_json::to_string(&tool_err(withheld)).unwrap();
+            assert!(!wire.contains(SECRET), "{read}: {wire}");
+        };
+        for (status, body) in answers {
+            for (read, run) in hosted_reads() {
+                let (url, server) = answering_once(status, body.clone());
+                check(read, run(&ozpb_source_rpc::HttpTransport::new(url)));
+                server.join().unwrap();
+            }
+        }
+        // Nothing listens, so the transport fails, quoting the URL with its key-bearing path.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let unreachable = format!("http://{}/{SECRET}", closed.local_addr().unwrap());
+        drop(closed);
+        for (read, run) in hosted_reads() {
+            check(
+                read,
+                run(&ozpb_source_rpc::HttpTransport::new(unreachable.clone())),
+            );
+        }
+        for read in [
+            "record_transaction",
+            "record_simulation",
+            "preflight_transaction",
+        ] {
+            assert!(
+                leaked_raw.contains(read),
+                "the fixture did not put endpoint text in {read}'s raw error"
+            );
+        }
     }
 
     /// The structured code of a refused tool call.

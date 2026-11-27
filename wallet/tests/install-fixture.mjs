@@ -98,9 +98,9 @@ export function removalFor({ account, ruleId = RULE_ID, payer, sequence, ledger,
  * one), with every RPC read, CLI call and submission the installation and revocation make faked.
  * `f.onSubmit(envelopeXdr, stage)` may replace a submission's result.
  */
-export async function installable({ captureLedger = CAPTURE_LEDGER } = {}) {
+export async function installable({ captureLedger = CAPTURE_LEDGER, priorAuthorizationExpiry } = {}) {
   const holder = { runs: [] };
-  const f = await liveReviewed({ native: fakeNative(holder), ledger: BASE_LEDGER, maxCalls: 1, intentChange: (intent) => {
+  const f = await liveReviewed({ native: fakeNative(holder), ledger: BASE_LEDGER, maxCalls: 1, priorAuthorizationExpiry, intentChange: (intent) => {
     // The fixture intent was read at ledger 123456; this review reads it just before the checks start.
     intent.authority.verdict.observed_ledger = BASE_LEDGER - 4;
     intent.valid_until_ledger = VALID_UNTIL;

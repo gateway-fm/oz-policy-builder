@@ -40,6 +40,11 @@ on:
       - 'crates/toolkit/src/dry_run*'
       - 'crates/cli/src/dry_run/**'
       - 'contracts/**'
+      - 'wallet/**'
+      - 'testnet-harness/**'
+      - 'crates/cli/tests/publish_cli.rs'
+      - 'crates/toolkit/src/publication.rs'
+      - 'scripts/test-wallet-native-execution.sh'
       - 'execution-runtime/**'
       - 'rust-toolchain.toml'
       - 'scripts/test-pinned-account-authorization.sh'
@@ -307,7 +312,7 @@ jobs:
     # addressed by rust-lang/cargo#17522, not yet merged. The check stays byte-exact; the host is
     # a build input of that hash like rustc and the CLI.
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -412,12 +417,30 @@ jobs:
         run: bash scripts/test-pinned-account-authorization.sh
 
 
-      - name: Node for optional testnet helper probe
-        if: github.event_name == 'workflow_dispatch' && inputs.helper_probe
+      - name: Node for wallet execution and the optional testnet helper probe
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.15.0'
           package-manager-cache: false
+
+      - name: wallet CLI and native worker through the pinned account and captured target
+        run: |
+          set -euo pipefail
+          npm ci --prefix wallet --ignore-scripts --no-audit --no-fund
+          cargo build --locked -p ozpb-cli
+          target/debug/ozpb registry verify --signed docs/examples/registry.signed.json \
+            --registry-roots docs/examples/registry-roots.json \
+            --network 'Test SDF Network ; September 2015' > "$RUNNER_TEMP/dev-checkpoint.json"
+          root=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["root"])' "$RUNNER_TEMP/dev-checkpoint.json")
+          OZPB_REGISTRY_SNAPSHOT_ROOT="$root" bash scripts/test-wallet-native-execution.sh
+
+      - name: publish and verify generated Wasm with the pinned toolchain
+        run: |
+          set -euo pipefail
+          cargo test --locked -p ozpb-cli --test publish_cli \
+            a_generated_policy_publishes_and_reproduces_from_its_published_build -- --ignored --exact |
+            tee "$RUNNER_TEMP/publish-cli-test.log"
+          grep -Fx 'test a_generated_policy_publishes_and_reproduces_from_its_published_build ... ok' "$RUNNER_TEMP/publish-cli-test.log"
 
       - name: optional reviewed-helper testnet probe (automation, no human approval)
         if: github.event_name == 'workflow_dispatch' && inputs.helper_probe
@@ -426,7 +449,6 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --prefix testnet-harness/scripts --no-audit --no-fund
-          npm ci --prefix wallet --ignore-scripts --no-audit --no-fund
           cargo build --locked -p ozpb-cli
           node testnet-harness/scripts/deploy-live-helper.mjs \
             --evidence "$RUNNER_TEMP/atomic-live-helper-sdk28.json"

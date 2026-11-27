@@ -37,7 +37,28 @@ export const LIVE_MAX_PERMIT_STROOPS = 1_000_000n;
 export const LIVE_CASES = Object.freeze(['target:original:0', 'target:argument-denial:0']);
 export const LIVE_LABELS = Object.freeze(['state_dependent', 'simulation_only', 'signatures_valid_until_ledger',
   'delegate_is_wallet_in_memory_automation_key']);
+/**
+ * Who holds the grant's delegate key, by the session's funding model, as the consents, their labels and
+ * the live evidence name it. With the wallet's disposable fee payer (testnet) it is the backend's own
+ * in-memory automation key. Operator-funded (always on mainnet; on testnet when the operator configures
+ * its own fee payer) it is the agent's own key, which the agent holds and this backend holds too, from
+ * the operator's `delegateKeyPath` file.
+ */
+export const DELEGATE_HOLDERS = Object.freeze({
+  automation: Object.freeze({ label: LIVE_LABELS[3], evidence: 'wallet_in_memory_automation_key',
+    key: 'the wallet backend\'s in-memory automation key, discarded when it stops' }),
+  operator: Object.freeze({ label: 'delegate_is_agent_key_from_operator_file', evidence: 'agent_key_from_operator_file',
+    key: 'the agent\'s key, held by the agent and by this backend from the operator\'s file' }),
+});
 const refuse = () => { throw new Error('live check refused; prepare it again'); };
+/**
+ * The delegate key's holder (`DELEGATE_HOLDERS`) in a session on the network `networkId` names:
+ * `operatorFunded` is the session's funding model, and a mainnet session always is.
+ */
+export function delegateHolder(networkId, { operatorFunded = false } = {}) {
+  const network = networkById(networkId);
+  return network.name === 'mainnet' || operatorFunded === true ? DELEGATE_HOLDERS.operator : DELEGATE_HOLDERS.automation;
+}
 const sha256 = (value) => Buffer.from(hash(Buffer.from(value))).toString('hex');
 const integer = (n, min, max) => Number.isSafeInteger(n) && n >= min && n <= max;
 const same = (a, b) => Buffer.from(a.toXDR()).equals(Buffer.from(b.toXDR()));
@@ -146,10 +167,11 @@ export function liveCases({ approval, spec, helper, policyCodeHash, expectedRule
 }
 
 /**
- * The consent statement for the two cases: both exact calls, the expiry and the warning. The
+ * The consent statement for the two cases: both exact calls, the expiry and the warning, naming the
+ * delegate key's holder by the session's funding model (`operatorFunded`, `delegateHolder`). The
  * backend keeps its SHA-256; the browser shows this same object and returns that hash to consent.
  */
-export function consentDisplay(cases, { currentLedger }) {
+export function consentDisplay(cases, { currentLedger, operatorFunded = false }) {
   try {
     const [permit, denial] = cases;
     const network = networkById(permit.network_id);
@@ -168,6 +190,8 @@ export function consentDisplay(cases, { currentLedger }) {
         context_rule_ids: [c.expected_rule_id] },
     });
     const amount = (text) => stroopsText(text, network);
+    const holder = delegateHolder(network.networkId, { operatorFunded });
+    const agent = holder === DELEGATE_HOLDERS.operator;
     return freezeCopy({
       schema: 'ozpb-live-consent/v1', network: network.name, network_id: network.networkId,
       current_ledger: currentLedger, signature_expiration_ledger: n,
@@ -176,15 +200,20 @@ export function consentDisplay(cases, { currentLedger }) {
         context_rule_ids: [permit.owner_rule_id], authenticator: 'owner passkey' },
       cases: [call(permit, LIVE_CASES[0], 'permit'), call(denial, LIVE_CASES[1], 'deny (NoTupleMatched, code 6)')],
       warning: `Until ledger ${n}, these signatures are real and submittable. Your passkey signature alone is a complete installation `
-        + `of rule "${permit.rule_name}" on account ${permit.account}: submitted, it would give the delegate ${permit.delegate}, whose key `
-        + `this wallet backend holds, the grant's authority until ledger ${permit.valid_until_ledger}. With it, the delegate's signatures `
+        + `of rule "${permit.rule_name}" on account ${permit.account}: submitted, it would give the delegate ${permit.delegate}, `
+        + (agent ? 'the agent\'s own key, which the agent holds and this backend holds from the operator\'s file, '
+          : 'whose key this wallet backend holds, ')
+        + `the grant's authority until ledger ${permit.valid_until_ledger}. With it, the delegate's signatures `
         + `are a real transfer of ${amount(permit.amount)} to ${permit.recipient}, and of ${amount(denial.amount)}, which the policy must `
         + `refuse. None of them names the helper, so whoever obtains them before ledger ${n} could submit them without it, and every one `
         + `of them is sent to the operator's ${network.name} RPC endpoint inside the simulation requests. The wallet only simulates them and never `
-        + `submits them. After ledger ${n}, its replay check compares the account with what was read before they existed; run it before `
+        + `submits them. `
+        + (agent ? `The agent holds the delegate key too: if it obtains your passkey signature, the agent could submit the installation `
+          + `itself before ledger ${n} and then use the grant with its own key, without this wallet. ` : '')
+        + `After ledger ${n}, its replay check compares the account with what was read before they existed; run it before `
         + 'relying on the account.',
-      labels: [LIVE_LABELS[0], LIVE_LABELS[1], `${LIVE_LABELS[2]}:${n}`, LIVE_LABELS[3]],
-      delegate: { address: permit.delegate, key: 'the wallet backend\'s in-memory automation key, discarded when it stops' },
+      labels: [LIVE_LABELS[0], LIVE_LABELS[1], `${LIVE_LABELS[2]}:${n}`, holder.label],
+      delegate: { address: permit.delegate, key: holder.key },
     });
   } catch { return refuse(); }
 }

@@ -220,7 +220,9 @@ The source-reviewed account method inventory and its limits are described in
    refusal and nothing unresolved, returns the exact `add_context_rule` arguments derived from
    the grant the answer's commitment covers, with the answer attached. A new rule aimed at the
    account or one of its own policies, or one already expired at the read ledger, is refused
-   before any read or after it respectively. Freshness is the wallet's: it re-reads and
+   before any read or after it respectively; so is a rule that requires its target's code
+   (adapter-derived, or refuse on drift) when the same capture finds other code there
+   (`E_TARGET_CODE_CHANGED`). Freshness is the wallet's: it re-reads and
    compares the commitment immediately before signing.
 
 2. **A containerized default builder, and provenance someone else can check** (§4.4, §6.3).
@@ -234,7 +236,9 @@ The source-reviewed account method inventory and its limits are described in
    §4.6 are claimed only for worker mode, whose acceptance suite checks them on the chosen host.
    And every field is the producer's own statement: the builder is labelled `local-unattested`
    in every mode, which is what it is, and no signed attestation (SEP-55) or published rebuild
-   recipe (SEP-58) lets a third party check a manifest without rerunning `ozpb verify`. An image
+   recipe (SEP-58) lets a third party check a manifest without rerunning `ozpb verify`.
+   `ozpb publish-artifact` gives that rerun its inputs under the Wasm hash, and
+   `ozpb verify-published` runs it ([publishing](PUBLISHING.md)); it is still a rerun. An image
    built from the hosted build context (`scripts/hosted-context.py`) has no checkout to ask, so
    its manifests record the toolkit commit its build was given (`OZPB_TOOLKIT_SOURCE`, which
    the image workflows set to the exported commit), and none without it. §6.3's scope
@@ -404,3 +408,14 @@ The source-reviewed account method inventory and its limits are described in
    — snapshots do not carry the root policy — with the cutover order in
    [Rotation](REGISTRY-GOVERNANCE.md#rotation-lost-and-compromised-keys). The mainnet registry
    is an unsigned draft until its key ceremony ([`registry/mainnet/`](../registry/mainnet/README.md)).
+8. **Decision rules are synthesis's.** The rules that judge a user's widening — a bound may not
+   loosen what a bound adapter's role requires, a bound with no finite top must be rated high,
+   one widening loosens one recorded call — run in synthesis, which has the decisions, the
+   recorded values and the adapter roles. Validation holds only what a spec shows on its own: a
+   bound spanning the whole `i128` range, like `any_value`, needs `high`. `generate_code` and
+   `ozpb generate` take a spec and no decisions, so a spec edited by hand and passed straight to
+   them can carry an open-top bound rated low or medium, or a widening an adapter's role would
+   refuse; the generated policy enforces the bound as written, and only its rating is wrong.
+   No rule decides when a finite cap is too large: its rating is the user's, and the skill's card
+   sets each bound beside the recorded value instead
+   ([scoping decisions](SCOPING-DECISIONS.md#widenings-you-may-choose)).

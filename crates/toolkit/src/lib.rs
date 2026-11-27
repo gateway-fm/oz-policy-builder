@@ -26,6 +26,12 @@ use std::collections::BTreeMap;
 
 mod verification;
 pub use verification::{reference_suite, reference_suite_cases, verify_with_build_config};
+mod publication;
+pub use publication::{
+    check_published, check_republish, publish_artifact, PublishInput, PublishedArtifact,
+    MAX_PUBLISHED_BYTES, MAX_PUBLISHED_ENTRIES, PUBLISHED_INDEX, PUBLISHED_MANIFEST,
+    PUBLISHED_SOURCE_DIR, PUBLISHED_SPEC, PUBLISHED_WASM,
+};
 mod dry_run;
 pub use dry_run::prepare_dry_run_with_build_config;
 mod authority_text;
@@ -314,6 +320,10 @@ pub fn synthesize_policy(
             } else {
                 parse_hash(h)?
             };
+            // Code revoked under any role is refused by its hash, as recognition refuses it.
+            registry
+                .ensure_code_not_revoked(&hash)
+                .map_err(map_registry_err)?;
             let capability = registry.resolve_policy(&hash).map_err(map_registry_err)?;
             if capability.kind != "oz:spending_limit" {
                 return Err(ToolError::new(
@@ -455,15 +465,8 @@ pub fn registry_trust_from_roots_json(
         keys,
     };
     Registry::with_pinned_roots(root_policy.clone()).map_err(map_registry_err)?;
-    if config
-        .checkpoint
-        .as_ref()
-        .is_some_and(|checkpoint| checkpoint.version < minimum_version)
-    {
-        return Err(ToolError::new(
-            EC::ERegistryRollback,
-            "registry checkpoint is older than the configured minimum version",
-        ));
+    if let Some(checkpoint) = &config.checkpoint {
+        call_surface::refuse_checkpoint_below_floor(checkpoint, minimum_version)?;
     }
     Ok(RegistryTrust {
         root_policy,
@@ -656,7 +659,7 @@ fn within_declared_capabilities<'a>(
     }
     undeclared.sort();
     undeclared.dedup();
-    // Deliberately NOT `EUnregisteredTemplate`: that code means "no audited family by this
+    // Deliberately NOT `EUnregisteredTemplate`: that code means "no registered family by this
     // name", and an agent reading it would tell the user their family is unregistered or their
     // snapshot is stale. Here the family resolved fine and declares less than the spec uses,
     // and the remedy is the opposite — narrow the spec, or update the template entry. The
@@ -1217,6 +1220,175 @@ mod tests {
         );
     }
 
+    /// Two widenings of one argument reach a tool caller as an invalid decision that names the
+    /// argument, the way the other contradictory decisions do, rather than as a spec that
+    /// silently carries only the first.
+    #[test]
+    fn two_widenings_of_one_argument_are_an_invalid_decision() {
+        let token = fx::golden_token_strkey();
+        let mut decisions = serde_json::to_value(fx::golden_decisions()).unwrap();
+        decisions["widenings"] = serde_json::json!([
+            { "contract": token, "fn_name": "transfer", "arg_index": 2,
+              "bound": { "ge_i128": { "min": "1" } },
+              "intent": "at least one stroop", "blast_radius": "medium" },
+            { "contract": token, "fn_name": "transfer", "arg_index": 2,
+              "bound": { "ge_i128": { "min": "100" } },
+              "intent": "at least a hundred", "blast_radius": "medium" }
+        ]);
+        let rec = record_snapshot(&executed_snapshot(), RecordOptions::default()).unwrap();
+        let input = SynthesizeInput {
+            bundles: vec![rec.bundle],
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(signed_registry_json()),
+            decisions,
+            spending_limit_capability: Some(ozpb_api_types::PINNED_SPENDING_LIMIT.to_string()),
+            template_family: "policy-templates/scope@1".to_string(),
+        };
+        let err = synthesize_policy(&input, &registry_trust()).unwrap_err();
+        assert_eq!(err.code, EC::ESpecInvalid, "{err}");
+        assert_eq!(
+            err.details,
+            vec![format!(
+                "E_INVALID_DECISION: widening {token}/transfer arg 2: 2 widenings name this \
+                 argument, and an argument takes one bound; keep the one the user chose"
+            )]
+        );
+    }
+
+    /// The spending limit synthesis composes is recognized by its code hash, and code revoked
+    /// under any role is refused by that hash, as recognition and the monitor treat it.
+    #[test]
+    fn synthesis_refuses_a_spending_limit_whose_code_is_revoked_under_any_role() {
+        let pinned = ozpb_domain::pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM;
+        let input_under = |revoked: Option<&str>| {
+            let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+            let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+            if let Some(kind) = revoked {
+                snapshot.revocations.insert(
+                    format!("{kind}/{}", pinned.to_hex()),
+                    ozpb_registry::Revocation {
+                        reason: "spending limit build withdrawn".to_string(),
+                        effective_version: snapshot.version,
+                    },
+                );
+            }
+            let signed =
+                ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot)
+                    .unwrap();
+            SynthesizeInput {
+                bundles: vec![serde_json::to_value(fx::golden_bundle()).unwrap()],
+                selected_authorizer: Some(fx::golden_account_strkey()),
+                account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+                signed_registry_snapshot: Some(serde_json::to_value(signed).unwrap()),
+                decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
+                spending_limit_capability: Some(ozpb_api_types::PINNED_SPENDING_LIMIT.to_string()),
+                template_family: "policy-templates/scope@1".to_string(),
+            }
+        };
+        synthesize_policy(&input_under(None), &registry_trust()).unwrap();
+        for kind in ["policy", "account", "verifier", "target_adapter"] {
+            let err = synthesize_policy(&input_under(Some(kind)), &registry_trust()).unwrap_err();
+            assert_eq!(err.code, EC::ERegistryRevoked, "{kind}: {err}");
+            assert!(
+                err.message.contains("spending limit build withdrawn"),
+                "{err}"
+            );
+        }
+    }
+
+    /// A tool caller that writes a cap the way it was written before the acknowledgement
+    /// existed gets a question about the floor, never a grant that admits negative amounts
+    /// unannounced: absent reads as not acknowledged.
+    #[test]
+    fn a_cap_without_the_floor_acknowledgement_needs_a_decision() {
+        let token = fx::golden_token_strkey();
+        let cap = serde_json::json!({ "contract": token, "fn_name": "transfer", "arg_index": 2,
+            "bound": { "le_i128": { "max": "1000000000" } },
+            "intent": "headroom", "blast_radius": "medium" });
+        let input_with = |widening: serde_json::Value| {
+            let mut decisions = serde_json::to_value(fx::golden_decisions()).unwrap();
+            decisions["widenings"] = serde_json::json!([widening]);
+            SynthesizeInput {
+                bundles: vec![serde_json::to_value(fx::golden_bundle()).unwrap()],
+                selected_authorizer: Some(fx::golden_account_strkey()),
+                account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+                signed_registry_snapshot: Some(signed_registry_json()),
+                decisions,
+                spending_limit_capability: Some(ozpb_api_types::PINNED_SPENDING_LIMIT.to_string()),
+                template_family: "policy-templates/scope@1".to_string(),
+            }
+        };
+        let err = synthesize_policy(&input_with(cap.clone()), &registry_trust()).unwrap_err();
+        assert_eq!(err.code, EC::ENeedsDecision, "{err}");
+        assert_eq!(err.details.len(), 1, "{:?}", err.details);
+        assert!(
+            err.details[0].starts_with(&format!(
+                "E_NEEDS_DECISION: widening {token}/transfer arg 2: floor:"
+            )),
+            "{:?}",
+            err.details
+        );
+
+        let mut acknowledged = cap;
+        acknowledged["no_floor_acknowledged"] = serde_json::Value::Bool(true);
+        let output = synthesize_policy(&input_with(acknowledged), &registry_trust()).unwrap();
+        assert_eq!(
+            output.spec["rules"][0]["allowed_calls"][0]["args"][2]["c"],
+            serde_json::json!({ "le_i128": { "max": "1000000000" } })
+        );
+    }
+
+    /// "Spend up to X" as a range: the decisions name it, the spec carries it, and the template
+    /// family must declare it. Development registry version 7 does; version 6 predates the kind,
+    /// so the same decisions are refused there, naming the kind, rather than synthesized into a
+    /// grant the registry never vouched for.
+    #[test]
+    fn a_range_synthesizes_under_a_registry_that_declares_it_and_is_refused_under_one_that_does_not(
+    ) {
+        let token = fx::golden_token_strkey();
+        let mut decisions = serde_json::to_value(fx::golden_decisions()).unwrap();
+        decisions["widenings"] = serde_json::json!([
+            { "contract": token, "fn_name": "transfer", "arg_index": 2,
+              "bound": { "range_i128": { "min": "0", "max": "1000000000" } },
+              "intent": "spend up to ten times the recorded amount", "blast_radius": "medium" }
+        ]);
+        let testnet = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+        let input_under = |snapshot: ozpb_registry::RegistrySnapshot| SynthesizeInput {
+            bundles: vec![serde_json::to_value(fx::golden_bundle()).unwrap()],
+            selected_authorizer: Some(fx::golden_account_strkey()),
+            account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+            signed_registry_snapshot: Some(
+                serde_json::to_value(
+                    ozpb_registry::sign_snapshot(&registry_dev::dev_signing_key(), snapshot)
+                        .unwrap(),
+                )
+                .unwrap(),
+            ),
+            decisions: decisions.clone(),
+            spending_limit_capability: Some(ozpb_api_types::PINNED_SPENDING_LIMIT.to_string()),
+            template_family: "policy-templates/scope@1".to_string(),
+        };
+
+        let v7 = registry_dev::range_constraint_successor(testnet).unwrap();
+        let output = synthesize_policy(&input_under(v7), &registry_trust()).unwrap();
+        assert_eq!(
+            output.spec["rules"][0]["allowed_calls"][0]["args"][2]["c"],
+            serde_json::json!({ "range_i128": { "min": "0", "max": "1000000000" } })
+        );
+
+        let v6 = registry_dev::account_advisory_successor(testnet).unwrap();
+        let err = synthesize_policy(&input_under(v6), &registry_trust()).unwrap_err();
+        assert_eq!(err.code, EC::EUnsupportedPattern, "{err}");
+        assert!(
+            err.details
+                .iter()
+                .any(|detail| detail.ends_with("transfer/arg 2 constraint kind 'range_i128'")),
+            "{:?}",
+            err.details
+        );
+    }
+
     /// Synthesis stamps the snapshot root into the spec, and generation copies it into the
     /// BuildManifest, so this is where a mainnet artifact would come to carry a root anyone can
     /// sign. Refused here by the registry's own construction, with the root-policy code.
@@ -1549,6 +1721,50 @@ mod tests {
             bundle.contract_executables.clear();
             let err = derive_account_record(&[bundle], &named).unwrap_err();
             assert_eq!(err.code, EC::EIncompatibleAccount);
+        }
+
+        /// Anyone can attach an authorization entry for someone else's account to their own
+        /// successful transaction: the network never checks an entry no `require_auth` reaches.
+        /// Such an entry, naming the fixture account and a payment out of it, must leave the
+        /// account neither derivable nor selectable — otherwise a stranger's transaction would
+        /// be read as the account having authorized that payment.
+        #[test]
+        fn an_entry_the_network_never_checked_selects_no_account() {
+            use ozpb_recorder_core::fixtures as rec;
+            use stellar_xdr::{Limits, SorobanCredentials, WriteXdr};
+            let stranger = EvidenceSnapshot::from_rpc_transaction(
+                ozpb_domain::TESTNET_PASSPHRASE,
+                rec::envelope_with(vec![
+                    rec::auth_entry(SorobanCredentials::SourceAccount),
+                    rec::auth_entry(rec::address_credentials(99)),
+                ])
+                .to_xdr_base64(Limits::none())
+                .unwrap(),
+                Some(
+                    rec::meta_v3_consuming(&[])
+                        .to_xdr_base64(Limits::none())
+                        .unwrap(),
+                ),
+                4_200_100,
+                1_780_000_000,
+                true,
+            )
+            .with_rpc_result(rec::transaction_result_base64(true))
+            .with_contract_executables(rec::observed_executables());
+            let rec = record_snapshot(&stranger, RecordOptions::default()).unwrap();
+            let bundle: RecordingBundle = serde_json::from_value(rec.bundle.clone()).unwrap();
+            assert!(bundle
+                .authorizations
+                .iter()
+                .all(|a| a.authorizer != fx::golden_account_strkey()));
+
+            let err = derive_selected_authorizer(&[bundle]).unwrap_err();
+            assert_eq!(err.code, EC::EAuthorizerNotFound);
+
+            let mut named = explicit();
+            named.bundles = vec![rec.bundle];
+            let err = synthesize_policy(&named, &registry_trust()).unwrap_err();
+            assert_eq!(err.code, EC::EAuthorizerNotFound, "{}", err.message);
         }
 
         /// A recording whose only authorizer is a classic account has no account to synthesize

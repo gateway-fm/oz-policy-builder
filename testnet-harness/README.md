@@ -91,6 +91,11 @@ node testnet-harness/scripts/evidence.mjs --run-dir /path/to/run --write
 preserves the previous summary; an output symlink is replaced without writing to its target.
 Without `--write`, the command prints the summary to stdout.
 
+The summary's `schema_version` is 2: a Soroswap run's `operator_decisions` now also carry the
+decisions file's `schema` and `transfer_cap_no_floor_acknowledged`. A reader takes 1 and 2 alike,
+the fields absent from 1; the summaries committed under `docs/evidence/` were written at 1 and
+stay as written.
+
 Old runs say provenance is unavailable. A missing install record means installation was not
 recorded, not that nothing was submitted. Permits carry submitted transaction hashes; denials
 are labeled enforcing simulations and have no transaction hash. Artifact digests cover exact
@@ -175,7 +180,7 @@ a manual permission-bundle API invocation is a separate operator-controlled path
   instances bound to their spec indices. Other compositions are refused before deployment.
   The [Soroswap mode](../docs/WALKTHROUGH-PROTOCOLS.md) does not use this installer: it installs
   each of its two independent scope+count rules separately through `bundle-command.mjs`. Its
-  output floor and transfer cap are the operator's, read from `OZPB_SOROSWAP_DECISIONS`
+  output floor and transfer cap, with the cap's acknowledged open floor, are the operator's, read from `OZPB_SOROSWAP_DECISIONS`
   (example: `soroswap-decisions.json`); the router's input bound comes from [registry adapter v2](../docs/TARGET-ADAPTERS.md#current-binding-development-registry-version-5-carried-into-6),
   and the approved recorded deadline stays exact. That binding is a development-registry assertion, and the router's
   Wasm was not reproduced from source
@@ -643,10 +648,13 @@ worker for both `scripts/fixtures/synthetic-protocol-swap-observation.json` and
 claim authorization with an exact reserve-index vector; it is not an RPC recording
 or evidence that the Blend target executed. The two-rule Soroswap fixture started as a
 preserved unsigned simulation of a 0.7.2 account; its account executable and spec were moved
-to the 0.7.3 pin (GHSA-jpg9-m7w4-c7wc) and the spec re-hashed under development registry
-version 6, but its `record.recording_hash` and the spec's evidence recording hash are the
+to the 0.7.3 pin (GHSA-jpg9-m7w4-c7wc), and its spec now names development registry version 7
+(the committed example) and is re-hashed under it, as is the Blend fixture's, but its
+`record.recording_hash` and the spec's evidence recording hash are the
 preserved values and no longer derive from the edited bundle, whose schema predates the
-current recorder. It is a validation fixture, not an observation. The test reads hash-checked pinned
+current recorder. Its operator decisions were moved to schema v3, which adds the transfer cap's
+acknowledged open floor, and its rationale gained the line synthesis now writes for it; their
+`source_sha256` is the preserved value. It is a validation fixture, not an observation. The test reads hash-checked pinned
 account bytes from the committed protocol-30 capture unless `OZPB_ACCOUNT_WASM` is supplied.
 Enable it with `OZPB_PROTOCOL_DRY_RUN_E2E=1`, `OZPB_BIN` and
 `OZPB_NATIVE_WORKER`; it generates real policy Wasm and submits no transaction.

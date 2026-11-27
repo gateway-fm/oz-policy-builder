@@ -10,6 +10,7 @@ the reader it is mainly written for.
 - [SCOPING-DECISIONS.md](SCOPING-DECISIONS.md) — every decision that shapes a grant and what it means for safety.
 - [TRUST-BOUNDARIES.md](TRUST-BOUNDARIES.md) — what is guaranteed, who holds which key, where trust is checked.
 - [INCIDENT-RESPONSE.md](INCIDENT-RESPONSE.md) — what to do when something a grant relies on is revoked or compromised.
+- [PUBLISHING.md](PUBLISHING.md) — publish a generated policy under its Wasm hash, and check an installed one against its source.
 - [MCP-WALKTHROUGH.md](MCP-WALKTHROUGH.md) — the MCP server and Claude skill, and what each tool needs.
 - [WALKTHROUGH-SEP41.md](WALKTHROUGH-SEP41.md) — W2: a SEP-41 subscription with the reviewed spending limit.
 - [WALKTHROUGH-PROTOCOLS.md](WALKTHROUGH-PROTOCOLS.md) — W3: a bounded Soroswap swap, and W1: a Blend claim.
@@ -21,6 +22,7 @@ the reader it is mainly written for.
 - [AGENT-WALLET-HANDOFF.md](AGENT-WALLET-HANDOFF.md) — direct local delivery of a confirmed proposal from Claude to the wallet.
 - [INSTALL-ASSEMBLY.md](INSTALL-ASSEMBLY.md) — the unsigned install transaction and what a wallet must check before signing.
 - [LIVE-POLICY-CHECK.md](LIVE-POLICY-CHECK.md) — predicting one call against an installed rule.
+- [wire-contract.json](wire-contract.json) — every MCP tool's request and response JSON Schema and the `E_*` codes, as this tree serves them; TypeScript types for the install tools are in [`wallet/shared/install-wire.d.mts`](../wallet/shared/install-wire.d.mts).
 - [DRY-RUN-PREPARATION.md](DRY-RUN-PREPARATION.md) — the four dry-run layers and the report's acceptance fields.
 - [NATIVE-EXECUTION.md](NATIVE-EXECUTION.md) — the account-Wasm layer's native worker and `ozpb dry-run`.
 - [CAPTURED-TARGET-EXECUTION.md](CAPTURED-TARGET-EXECUTION.md) — the captured-target layer.
