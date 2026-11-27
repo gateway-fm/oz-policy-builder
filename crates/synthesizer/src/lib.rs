@@ -472,6 +472,7 @@ pub fn synthesize(
             .and_then(|t| input.adapters.iter().find(|a| a.target_code_hash == t.hash));
         // Dedup identical tuples; merge their evidence paths.
         let mut tuples: Vec<(AllowedCall, Vec<String>)> = Vec::new();
+        let mut requires_adapter = false;
         for o in calls {
             let matched_adapter =
                 adapter.filter(|adapter| adapter.matches_call(&o.fn_name, o.args));
@@ -483,6 +484,15 @@ pub fn synthesize(
                 &mut errors,
                 &mut rationale,
             );
+            if let Some(adapter) = matched_adapter {
+                requires_adapter |= args.iter().any(|arg| match arg.provenance {
+                    Provenance::AdapterDerived { .. } => true,
+                    Provenance::UserWidened { .. } => {
+                        adapter.role(&o.fn_name, arg.index as usize).is_some()
+                    }
+                    _ => false,
+                });
+            }
             let call = AllowedCall {
                 fn_name: o.fn_name.clone(),
                 args,
@@ -504,15 +514,9 @@ pub fn synthesize(
             })
             .collect();
 
-        // If the reviewed adapter introduced any code-hash-bound constraint, the rule's
-        // effect-minimality claim is valid only while the target's code hash holds — escalate
-        // the drift policy from evidence-only/warn to adapter-required/refuse (§6.1).
-        let adapter_derived = allowed_calls.iter().any(|c| {
-            c.args
-                .iter()
-                .any(|a| matches!(a.provenance, Provenance::AdapterDerived { .. }))
-        });
-        if adapter_derived {
+        // User-selected bounds checked against an adapter role also rely on that code, even
+        // when none of the constraints has adapter-derived provenance.
+        if requires_adapter {
             if let Some(t) = target_code_hash.as_mut() {
                 t.role = TargetHashRole::AdapterRequired;
                 t.on_drift = DriftResponse::Refuse;
@@ -906,19 +910,21 @@ fn validate_spending_limit_shape(
     Ok(())
 }
 
-/// What refuses a negative value at a capped argument of `rule`. Never the generated scope policy:
-/// a cap renders only `x > max → deny`. The reviewed spending limit refuses a negative transfer
-/// amount, and it reads argument 2 of the transfer-only rule it is composed into (composition
-/// refuses any other rule shape); anywhere else only the target contract is left.
+/// What refuses a negative value an open floor admits at a capped argument of `rule`. Never the
+/// generated scope policy: a cap renders only `x > max → deny`, with no non-negativity check (it
+/// still refuses the negative values above a negative cap). The reviewed spending limit refuses a
+/// negative transfer amount, and it reads argument 2 of the transfer-only rule it is composed into
+/// (composition refuses any other rule shape); anywhere else only the target contract is left.
 fn negative_amount_refusal(rule: &RuleSpec, arg_index: u32) -> &'static str {
     let spending_limit = rule.policies.iter().any(
         |policy| matches!(policy, PolicyRef::Reviewed { kind, .. } if kind == "oz:spending_limit"),
     );
     if spending_limit && arg_index == 2 {
-        "the generated scope policy refuses no negative amount; the composed spending limit does"
+        "the generated scope policy has no non-negativity check; the composed spending limit \
+         refuses a negative amount"
     } else {
-        "the generated scope policy refuses no negative amount, so only the target contract can \
-         refuse one"
+        "the generated scope policy has no non-negativity check, so only the target contract can \
+         refuse a negative amount the cap admits"
     }
 }
 
@@ -2045,8 +2051,8 @@ mod tests {
         };
         assert!(
             out.rationale.contains(&open_floor(
-                "the generated scope policy refuses no negative amount; the composed spending \
-                 limit does"
+                "the generated scope policy has no non-negativity check; the composed spending \
+                 limit refuses a negative amount"
             )),
             "{:#?}",
             out.rationale
@@ -2055,8 +2061,8 @@ mod tests {
         let uncomposed = synthesize(&input, &d).unwrap();
         assert!(
             uncomposed.rationale.contains(&open_floor(
-                "the generated scope policy refuses no negative amount, so only the target \
-                 contract can refuse one"
+                "the generated scope policy has no non-negativity check, so only the target \
+                 contract can refuse a negative amount the cap admits"
             )),
             "{:#?}",
             uncomposed.rationale
@@ -2912,12 +2918,14 @@ mod tests {
         let cap = WideningBound::LeI128 {
             max: "1000000000".to_string(),
         };
-        // What refuses a negative amount here. Never the generated scope policy; the reviewed
-        // spending limit does, for the transfer amount (argument 2) of a rule it is composed into.
-        const COMPOSED: &str =
-            "the generated scope policy refuses no negative amount; the composed spending limit does";
-        const TARGET_ONLY: &str = "the generated scope policy refuses no negative amount, so only \
-                                   the target contract can refuse one";
+        // What refuses a negative amount the cap admits. Never the generated scope policy, which
+        // has no non-negativity check; the reviewed spending limit does, for the transfer amount
+        // (argument 2) of a rule it is composed into.
+        const COMPOSED: &str = "the generated scope policy has no non-negativity check; the \
+                                composed spending limit refuses a negative amount";
+        const TARGET_ONLY: &str = "the generated scope policy has no non-negativity check, so \
+                                   only the target contract can refuse a negative amount the cap \
+                                   admits";
         let question = |contract: &str, arg: u32, refusal: &str| {
             SynthError::NeedsDecision(format!(
                 "widening {contract}/transfer arg {arg}: floor: the cap at 1000000000 on this \
@@ -3460,6 +3468,31 @@ mod tests {
             );
         }
 
+        // All positions normally widened by the adapter now have explicit decisions. The
+        // output's low-risk open upper bound is still justified by the reviewed router code.
+        let mut d = decisions.clone();
+        let mut floor = swap_widening(
+            &router,
+            1,
+            WideningBound::GeI128 {
+                min: "950".to_string(),
+            },
+        );
+        floor.blast_radius = BlastRadius::Low;
+        d.widenings = vec![swap_widening(&router, 0, range("0", "2000")), floor];
+        let bound = synthesize(&input, &d).unwrap();
+        let rule = &bound.spec.rules[0];
+        assert!(rule
+            .allowed_calls
+            .iter()
+            .flat_map(|call| &call.args)
+            .all(|arg| !matches!(arg.provenance, Provenance::AdapterDerived { .. })));
+        let hash = rule.context.target_code_hash.as_ref().unwrap();
+        assert_eq!(hash.role, TargetHashRole::AdapterRequired);
+        assert_eq!(hash.on_drift, DriftResponse::Refuse);
+        let (unbound, _, _) = adapted_swap(false);
+        assert!(synthesize(&unbound, &d).is_err());
+
         // Without the binding nothing declares the role, so the decision is the user's alone.
         let (unbound, _, _) = adapted_swap(false);
         let mut d = decisions;
@@ -3638,8 +3671,8 @@ mod tests {
                 "widening {contract}/transfer arg 2: floor: the range {min}..=1000000000, which \
                  starts at i128::MIN and so is the cap at 1000000000, on this signed amount sets \
                  no floor, so every smaller value passes it, negative amounts included; the \
-                 generated scope policy refuses no negative amount, so only the target contract \
-                 can refuse one. Bound both ends instead with a floor above i128::MIN (such as \
+                 generated scope policy has no non-negativity check, so only the target contract \
+                 can refuse a negative amount the cap admits. Bound both ends instead with a floor above i128::MIN (such as \
                  0..=1000000000), or acknowledge the open floor (no_floor_acknowledged, only on \
                  the user's explicit acceptance), or keep the argument exact"
             ))]
@@ -3651,8 +3684,61 @@ mod tests {
                 "{contract}/transfer arg 2: NO FLOOR — the user acknowledged that the range \
                  {min}..=1000000000, which starts at i128::MIN and so is the cap at 1000000000, \
                  admits every smaller value, negative amounts included; the generated scope \
-                 policy refuses no negative amount, so only the target contract can refuse one"
+                 policy has no non-negativity check, so only the target contract can refuse a \
+                 negative amount the cap admits"
             )),
+            "{:#?}",
+            out.rationale
+        );
+    }
+
+    /// What the rationale says of an open floor is the missing non-negativity check, not that the
+    /// generated policy refuses no negative amount: under a negative cap it refuses the negative
+    /// amounts above that cap. Recorded at -10 and capped at -5, it refuses -4 to -1.
+    #[test]
+    fn a_negative_cap_is_described_by_its_missing_non_negativity_check() {
+        let contract = transfer_bundle().authorizations[0].root.call_contract();
+        let negative = bundle_with_subs(
+            (
+                &contract,
+                "transfer",
+                vec![
+                    ArgSummary::Address(account_strkey()),
+                    ArgSummary::Address(merchant_strkey()),
+                    ArgSummary::I128(-10),
+                ],
+            ),
+            vec![],
+        );
+        let mut synthesis_input = input();
+        synthesis_input.bundles = vec![negative];
+        let mut d = decisions();
+        d.spending_limit = None;
+        let cap = WideningBound::LeI128 {
+            max: "-5".to_string(),
+        };
+        d.widenings = vec![amount_widening(cap, true)];
+        let out = synthesize(&synthesis_input, &d).unwrap();
+        assert_eq!(
+            out.spec.rules[0].allowed_calls[0].args[2].constraint,
+            Constraint::LeI128 {
+                max: "-5".to_string()
+            }
+        );
+        assert!(
+            out.rationale.contains(&format!(
+                "{contract}/transfer arg 2: NO FLOOR — the user acknowledged that the cap at -5 \
+                 admits every smaller value, negative amounts included; the generated scope \
+                 policy has no non-negativity check, so only the target contract can refuse a \
+                 negative amount the cap admits"
+            )),
+            "{:#?}",
+            out.rationale
+        );
+        assert!(
+            out.rationale
+                .iter()
+                .all(|line| !line.contains("refuses no negative amount")),
             "{:#?}",
             out.rationale
         );

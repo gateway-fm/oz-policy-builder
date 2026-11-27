@@ -135,15 +135,51 @@ function transferredExactly(net, events, { account, recipient, amount }) {
  */
 export function createWalletActions({ session, toolchain, network, native = null, live = null,
   delegates = new DelegateCapabilities(network?.profile ?? null), pause = sleep, handoff = new AgentHandoff({ network: network?.profile }),
-  pinnedWasmDir = null }) {
+  pinnedWasmDir = null, priorAuthorizationExpiry = () => 0 }) {
   const net = network?.profile;
   if (!net || typeof net.networkId !== 'string' || !Object.isFrozen(net)) refuse();
-  // The session's fee caps: testnet's fixed ceilings, or the mainnet operator's configured caps.
+  // The session's fee caps: testnet's fixed ceilings, or the operator's configured caps.
   const fees = network.fees;
-  /** Mainnet: the owner funds every account; the wallet funds nothing and moves no XLM of the fee payer's. */
-  const ownerFunded = !net.friendbot;
+  /**
+   * Operator-funded (always on mainnet; on testnet when the operator configures its own fee payer): the
+   * owner funds the account and the fee payer; the wallet moves no XLM of the fee payer's and holds the
+   * operator's caps. Friendbot stays the network's: on testnet it still creates a delegate's account.
+   */
+  const ownerFunded = !net.friendbot || network.operatorFunded === true;
+  /**
+   * The direct hand-off from the local agent: its `connect_wallet` accepts a testnet connection only, so
+   * no other session offers or pairs it, and the agent's proposal comes in through manual import.
+   */
+  const agentHandoff = net.name === 'testnet';
   /** The fee payer is only a transaction source and fee payer, never a signer or delegate on an account. */
   const notPayer = (address) => { if (address === network.payerAddress) refuse(); };
+  async function requireEarlierAuthorizationExpiry(account, observedLedger) {
+    const expires = priorAuthorizationExpiry(account);
+    if (!expires) return;
+    const latest = observedLedger ?? await clockedLedger(network);
+    if (!Number.isSafeInteger(latest) || latest <= expires) throw because('signatures_still_valid');
+  }
+
+  /**
+   * One attempt at fee-payer writes the session makes once (an account's creation, a policy's
+   * deployment); `send(write)` runs one of them. After a refusal, `unsent()` says whether the attempt
+   * may be made again because nothing left: it was refused outside every write before any returned (the
+   * payer, pinned code), or inside one before the fee payer signed it (the counted spend unmoved and no
+   * submission uncertain: the payer cannot pay, a cap). A write that may have left, or a refusal after
+   * one returned, spends the attempt.
+   */
+  function oneAttempt() {
+    let inside = null, returned = false;
+    return {
+      send: async (write) => {
+        inside = network.spentStroops;
+        const value = await write();
+        inside = null; returned = true;
+        return value;
+      },
+      unsent: () => (inside === null ? !returned : network.spentStroops === inside && network.canSubmit === true),
+    };
+  }
   /** The pinned code an account needs, refused with its upload command when it is missing on the network. */
   async function requirePinned(hash) {
     const read = await network.codePresent(hash);
@@ -183,6 +219,12 @@ export function createWalletActions({ session, toolchain, network, native = null
   let accountCheckRunning = false;
   let liveRunning = false;
   let accountAttempted = false;
+  /**
+   * The verifier an account creation deployed before the account's own creation was refused unsent. The
+   * verifier holds no credential or owner (the account's signer names both), so the next try reuses it
+   * once it reads back with the pinned code, rather than paying for a second one.
+   */
+  let createdVerifier = null;
   let sampleAccount = null;
   let sampleSubmitted = false;
   /** Independent reads at once; every one settles before the first failure is reported. */
@@ -398,6 +440,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         fees: { ...fees, spentStroops: network.spentStroops }, pinned, helper });
     },
     'pair-agent': async (input) => {
+      if (!agentHandoff) refuse();
       exact(input, ['wallet', 'delegate']);
       const wallet = walletIdentity(input.wallet);
       exact(input.delegate, ['address', 'capabilityId']);
@@ -423,7 +466,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         fees: { maxFeeStroops: fees.maxFeeStroops, maxUploadFeeStroops: fees.maxUploadFeeStroops,
           sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops },
         feePayer: { address: network.payerAddress, ownerFunded },
-        capabilities: { delegateKey: delegates.available, agentHandoff: true, record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
+        capabilities: { delegateKey: delegates.available, agentHandoff, record: true, generate: true, importProposal: true, deploy: true, sampleTransfer: true, accountCheck: native !== null,
           liveCheck: live !== null, monitoring: [...installations.values()].some((held) => held.record.status === 'installed' && !held.removal), replacement: replaceable(), install: [...reviews.values()].some(installable),
           lifecycle: [...installations.values()].some((held) => !held.removalAttempted && Number.isSafeInteger(held.record.ruleId)),
           grantUse: [...installations.values()].some(usable), grantRepeat: [...installations.values()].some(repeatable) },
@@ -438,7 +481,10 @@ export function createWalletActions({ session, toolchain, network, native = null
       if (handoff.view().pairingPending || handoff.view().connection) refuse();
       credential(input);
       if (accountAttempted) refuse();
-      // On mainnet the wallet deploys two contracts and funds nothing: the owner sends the account its XLM.
+      // Operator-funded, no confirmation is offered while the operator's account cannot pay one
+      // transaction: the least the first write needs (`fundPayer`).
+      if (ownerFunded) await network.payerCovers(fees.maxFeeStroops);
+      // Operator-funded, the wallet deploys two contracts and funds nothing: the owner sends the account its XLM.
       const summary = { credentialId: input.credentialId, publicKey: input.publicKey, accountWasm: ACCOUNT_WASM,
         verifierWasm: WEBAUTHN_WASM, sampleFundingStroops: ownerFunded ? '0' : '10000000', maxFeeStroops: fees.maxFeeStroops,
         maxTotalFeeStroops: (ownerFunded ? 2 : 3) * fees.maxFeeStroops, ownerFunds: ownerFunded,
@@ -451,15 +497,29 @@ export function createWalletActions({ session, toolchain, network, native = null
         if (handoff.view().pairingPending || handoff.view().connection) refuse();
         if (accountAttempted) refuse();
         accountAttempted = true;
-        await network.assertNetwork();
-        // Pinned code is never uploaded by the wallet: a missing one refuses with its upload command (`readiness`).
-        await requirePinned(ACCOUNT_WASM);
-        await requirePinned(WEBAUTHN_WASM);
-        await network.fundPayer();
-        const verifier = await network.create(WEBAUTHN_WASM, [], 'deploy-verifier');
-        const signer = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'), new Address(verifier.contractId).toScVal(),
-          xdr.ScVal.scvBytes(credential(selected))]);
-        const account = await network.create(ACCOUNT_WASM, [xdr.ScVal.scvVec([signer]), xdr.ScVal.scvMap([])], 'deploy-account');
+        // Refused before anything left (no funded payer, pinned code missing, a cap), it may be confirmed again.
+        const attempt = oneAttempt();
+        let verifier, signer, account;
+        try {
+          await network.assertNetwork();
+          // Pinned code is never uploaded by the wallet: a missing one refuses with its upload command (`readiness`).
+          await requirePinned(ACCOUNT_WASM);
+          await requirePinned(WEBAUTHN_WASM);
+          await network.fundPayer();
+          if (createdVerifier) {
+            // A verifier that no longer reads back is not reused: this try deploys a new one.
+            try { await network.requireInstance(createdVerifier.contractId, WEBAUTHN_WASM); verifier = createdVerifier; }
+            catch { createdVerifier = null; }
+          }
+          verifier ??= await attempt.send(() => network.create(WEBAUTHN_WASM, [], 'deploy-verifier'));
+          createdVerifier = verifier;
+          signer = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('External'), new Address(verifier.contractId).toScVal(),
+            xdr.ScVal.scvBytes(credential(selected))]);
+          account = await attempt.send(() => network.create(ACCOUNT_WASM, [xdr.ScVal.scvVec([signer]), xdr.ScVal.scvMap([])], 'deploy-account'));
+        } catch (error) {
+          if (attempt.unsent()) accountAttempted = false;
+          throw error;
+        }
         // From a node at or past the deployment: one behind it does not know the account yet, so its
         // failed call is asked again too, a few times.
         const observed = await readAfter(async () => {
@@ -467,7 +527,7 @@ export function createWalletActions({ session, toolchain, network, native = null
         }, account.receipt.ledger);
         if (observed.ledger < account.receipt.ledger || observed.ledger - account.receipt.ledger > 12) refuse();
         freshOwner(observed.value, signer);
-        // Testnet: the disposable fee payer funds the sample. Mainnet: the owner funds the account.
+        // The disposable fee payer funds the sample; operator-funded, the owner funds the account.
         const funded = ownerFunded ? null : await network.submitOperation(Operation.invokeContractFunction({
           contract: net.nativeAsset, function: 'transfer', args: [
             new Address(network.payerAddress).toScVal(), new Address(account.contractId).toScVal(),
@@ -545,44 +605,64 @@ export function createWalletActions({ session, toolchain, network, native = null
       const held = toolchain.artifact(input.artifactId);
       const { response: artifact } = held;
       if (attemptedArtifacts.has(input.artifactId) || attemptedArtifacts.size >= 8) refuse();
-      // Mainnet: the upload's simulated cost is shown first, and refused before consent when either cap would be passed.
-      let uploadSimulatedFeeStroops = null;
+      // Operator-funded: the upload's simulated cost is shown first, and refused before consent when either cap would be passed.
+      // Code already stored (an upload that returned before its creation was refused) is not uploaded again
+      // (`confirm-deploy`), so only the policy's creation is simulated, counted and asked of the payer.
+      let uploadSimulatedFeeStroops = null, codeStored = null;
       if (ownerFunded) {
-        const cost = await network.uploadCost(Buffer.from(held.wasmBase64, 'base64'));
-        uploadSimulatedFeeStroops = cost.feeStroops;
-        // A refusal names the operator setting that refused it, the simulated cost and the least value that lets it through.
-        const capped = (reason, setting, needed) => Object.assign(because(reason),
-          { limit: { setting, simulatedFeeStroops: cost.feeStroops, neededStroops: needed.toString() } });
-        if (BigInt(cost.feeStroops) > BigInt(fees.maxUploadFeeStroops)) throw capped('fee_cap', 'maxUploadFeeStroops', BigInt(cost.feeStroops));
-        // The upload, the policy's creation, and room for an installation and its removal.
-        const needed = BigInt(network.spentStroops) + BigInt(cost.feeStroops) + 3n * BigInt(fees.maxFeeStroops);
+        codeStored = (await network.codePresent(artifact.wasmHash)).present === true;
+        const cost = codeStored ? null : await network.uploadCost(Buffer.from(held.wasmBase64, 'base64'));
+        const uploadFee = cost ? BigInt(cost.feeStroops) : 0n;
+        uploadSimulatedFeeStroops = cost?.feeStroops ?? null;
+        // A refusal names the operator setting that refused it, the simulated upload cost and the least value that lets it
+        // through; with no upload to simulate, it names only the cap.
+        const capped = (reason, setting, needed) => (cost ? Object.assign(because(reason),
+          { limit: { setting, simulatedFeeStroops: cost.feeStroops, neededStroops: needed.toString() } }) : because(reason));
+        if (uploadFee > BigInt(fees.maxUploadFeeStroops)) throw capped('fee_cap', 'maxUploadFeeStroops', uploadFee);
+        // The upload unless stored, the policy's creation, and room for an installation and its removal.
+        const needed = BigInt(network.spentStroops) + uploadFee + 3n * BigInt(fees.maxFeeStroops);
         if (needed > BigInt(fees.sessionSpendCapStroops)) throw capped('spend_cap', 'sessionSpendCapStroops', needed);
+        // And the operator's account must be able to pay the upload, unless stored, and the policy's creation now, before consent.
+        await network.payerCovers(uploadFee + BigInt(fees.maxFeeStroops));
       }
-      return { action: session.issue('deploy', { artifactId: input.artifactId }), summary: {
+      const uploadAllowed = codeStored !== true;
+      return { action: session.issue('deploy', { artifactId: input.artifactId, uploadAllowed }), summary: {
         specHash: artifact.specHash, wasmHash: artifact.wasmHash, maxFeeStroops: fees.maxFeeStroops,
-        maxUploadFeeStroops: fees.maxUploadFeeStroops, maxTotalFeeStroops: fees.maxUploadFeeStroops + fees.maxFeeStroops,
-        uploadSimulatedFeeStroops, sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops,
+        maxUploadFeeStroops: fees.maxUploadFeeStroops,
+        maxTotalFeeStroops: (uploadAllowed ? fees.maxUploadFeeStroops : 0) + fees.maxFeeStroops,
+        uploadSimulatedFeeStroops, codeStored, sessionSpendCapStroops: fees.sessionSpendCapStroops, spentStroops: network.spentStroops,
       } };
     },
     'confirm-deploy': async (input) => {
       exact(input, ['id']);
-      return session.consume(input.id, 'deploy', async ({ artifactId }) => {
+      return session.consume(input.id, 'deploy', async ({ artifactId, uploadAllowed }) => {
         if (attemptedArtifacts.has(artifactId)) refuse();
         attemptedArtifacts.add(artifactId);
-        const held = toolchain.artifact(artifactId);
-        const artifact = held.response;
-        await network.fundPayer();
-        const upload = await network.upload(Buffer.from(held.wasmBase64, 'base64'), artifact.wasmHash);
-        const deployed = await network.create(artifact.wasmHash, [], 'deploy-policy');
-        const deploymentId = id();
-        const request = toolchain.bindingRequest(artifactId, deployed.contractId, `wallet-deployment:${deployed.receipt.hash}`);
-        const checked = await toolchain.authority('check-policy-call-surface', request);
-        if (!HASH.test(checked.binding_set_hash) || checked.spec_hash !== artifact.specHash) refuse();
-        const response = freezeCopy({ deploymentId, policyAddress: deployed.contractId, wasmHash: artifact.wasmHash,
-          bindingSet: request.binding_set, bindingSetHash: checked.binding_set_hash,
-          receipts: [upload, deployed.receipt].map(receipt) });
-        deployments.set(deploymentId, { artifactId, request, response });
-        return response;
+        // Refused before anything left (no funded payer, a cap), the artifact may be deployed again. A
+        // creation refused that way after its upload returned finds the code stored and does not upload
+        // it twice; creation reads it back by its hash either way.
+        const attempt = oneAttempt();
+        try {
+          const held = toolchain.artifact(artifactId);
+          const artifact = held.response;
+          await network.fundPayer();
+          const stored = (await network.codePresent(artifact.wasmHash)).present === true;
+          if (!stored && uploadAllowed !== true) throw because('deployment_quote_stale');
+          const upload = stored ? null : await attempt.send(() => network.upload(Buffer.from(held.wasmBase64, 'base64'), artifact.wasmHash));
+          const deployed = await attempt.send(() => network.create(artifact.wasmHash, [], 'deploy-policy'));
+          const deploymentId = id();
+          const request = toolchain.bindingRequest(artifactId, deployed.contractId, `wallet-deployment:${deployed.receipt.hash}`);
+          const checked = await toolchain.authority('check-policy-call-surface', request);
+          if (!HASH.test(checked.binding_set_hash) || checked.spec_hash !== artifact.specHash) refuse();
+          const response = freezeCopy({ deploymentId, policyAddress: deployed.contractId, wasmHash: artifact.wasmHash,
+            bindingSet: request.binding_set, bindingSetHash: checked.binding_set_hash,
+            receipts: [upload ? receipt(upload) : { status: 'already_stored', wasmHash: artifact.wasmHash }, receipt(deployed.receipt)] });
+          deployments.set(deploymentId, { artifactId, request, response });
+          return response;
+        } catch (error) {
+          if (attempt.unsent()) attemptedArtifacts.delete(artifactId);
+          throw error;
+        }
       });
     },
     review: async (input) => {
@@ -627,11 +707,11 @@ export function createWalletActions({ session, toolchain, network, native = null
     'create-delegate': async (input) => {
       exact(input, []);
       if (!native && !live || handoff.view().pairingPending || handoff.view().connection) refuse();
-      // Mainnet: no delegate key unless the operator supplied one; the grant then names the agent's own key.
+      // Operator-funded: no delegate key unless the operator supplied one; the grant then names the agent's own key.
       if (!delegates.available) throw because('delegate_key_unavailable');
       const created = delegates.create();
-      if (ownerFunded) {
-        // Mainnet: the operator's key; the wallet creates no account for it. Until its owner funds it,
+      if (!net.friendbot) {
+        // Mainnet: no Friendbot, so the wallet creates no account for the delegate. Until its owner funds it,
         // every check that needs it refuses as `delegate_unfunded`.
         const account = await network.classicAccount(created.address);
         return { ...created, account: { exists: account.exists, minimumStroops: account.minimumStroops } };
@@ -784,6 +864,7 @@ export function createWalletActions({ session, toolchain, network, native = null
       delegates.check(input.capabilityId, delegate);
       session.invalidate('live');
       session.invalidate('live_sign');
+      await requireEarlierAuthorizationExpiry(review.approval.wallet.contractId);
       // Earlier signatures still valid: a new check would add more before the replay check can run.
       if (liveRecords.length && (await clockedLedger(network)) <= Math.max(...liveRecords.map((r) => r.signatureExpirationLedger))) {
         throw Object.assign(new Error('wallet action refused; refresh and review again'), { reason: 'signatures_still_valid' });
@@ -811,7 +892,8 @@ export function createWalletActions({ session, toolchain, network, native = null
       return session.consume(input.id, 'live', async (held) => {
         if (!live || input.statementSha256 !== held.prepared.statementSha256) refuse();
         const review = get(reviews, held.reviewId);
-        await consentWindow({ network, prepared: held.prepared });
+        const consentLedger = await consentWindow({ network, prepared: held.prepared });
+        await requireEarlierAuthorizationExpiry(review.approval.wallet.contractId, Math.min(consentLedger, held.prepared.snapshot.ledger));
         const record = replayRecord(held.prepared);
         network.recordLiveObligation(record);
         liveRecords.push(record);
@@ -864,6 +946,8 @@ export function createWalletActions({ session, toolchain, network, native = null
       const deployment = get(deployments, review.deploymentId);
       const { response: artifact } = toolchain.artifact(deployment.artifactId);
       await network.assertNetwork();
+      // No entry is released for the passkey while the fee payer cannot pay the installation (operator-funded).
+      await network.payerCovers(fees.maxFeeStroops);
       await installPreconditions(review, deployment, artifact);
       const assembly = await toolchain.authority('assemble-install-transaction', { intent_request: deployment.request,
         fee_payer: network.payerAddress, max_fee_stroops: fees.maxFeeStroops, validity_ledgers: INSTALL_VALIDITY_LEDGERS });
@@ -878,12 +962,13 @@ export function createWalletActions({ session, toolchain, network, native = null
         validityLedgers: INSTALL_VALIDITY_LEDGERS, currentLedger };
       const checked = validateAssembly({ approval: review.approval, assembly, ownerRuleXdr: owner.ownerRuleXdr, limits });
       const display = installConsent({ approval: review.approval, checked, spec: artifact.spec, maxFeeStroops: fees.maxFeeStroops,
-        ruleId: review.nextRuleId });
+        ruleId: review.nextRuleId, operatorFunded: ownerFunded });
       const snapshot = await network.liveState({ account: review.approval.wallet.contractId,
         policy: deployment.response.policyAddress, ruleId: review.nextRuleId });
       // Assembly and the subsequent reads take time. Recheck the bounded ledger clock before
       // recording any signing obligation or releasing an owner entry to the browser.
       const releaseLedger = await clockedLedger(network);
+      await requireEarlierAuthorizationExpiry(review.approval.wallet.contractId, Math.min(releaseLedger, snapshot.ledger, observed));
       installGate({ review, deployment, artifact, currentLedger: releaseLedger });
       limits.currentLedger = releaseLedger;
       validateAssembly({ approval: review.approval, assembly, ownerRuleXdr: owner.ownerRuleXdr, limits });
@@ -898,7 +983,8 @@ export function createWalletActions({ session, toolchain, network, native = null
         ownerRuleXdr: owner.ownerRuleXdr, limits, display });
     },
     // Installation, step 2: the owner's passkey signature of exactly the released entry. Consuming the
-    // action spends the review whatever follows. Everything the gate depends on is read again; the fee
+    // action spends the review whatever follows, unless the fee payer refuses before signing (below).
+    // Everything the gate depends on is read again; the fee
     // payer then enforce-simulates, signs, journals and submits once, and the result is recorded first
     // as confirmed and counts as installed only with the account's own event and a read-back.
     submit: async (input) => {
@@ -929,7 +1015,18 @@ export function createWalletActions({ session, toolchain, network, native = null
         const signed = await validateSignedAuthorization({ approval, checked: held.checked,
           signedAuthEntriesXdr: input.signedAuthEntriesXdr, origin: LIVE_ORIGIN });
         session.invalidate('install');
-        const submitted = await network.submitEnvelope(signed.envelopeXdr, 'install-policy');
+        // Refused before the fee payer signed (the counted spend unmoved, no submission uncertain: the payer
+        // cannot pay, a cap), nothing left and the review keeps its attempt. The entry released for it stays
+        // an open obligation, so the next is released only once this one has expired unused.
+        const before = network.spentStroops;
+        let submitted;
+        try { submitted = await network.submitEnvelope(signed.envelopeXdr, 'install-policy'); } catch (error) {
+          if (network.spentStroops === before && network.canSubmit === true) {
+            reviews.set(held.reviewId, { ...get(reviews, held.reviewId), installAttempted: false });
+            installAttempts--;
+          }
+          throw error;
+        }
         const account = approval.wallet.contractId;
         const policy = deployment.response.policyAddress;
         // Confirmed: keep its identity before any verification can refuse, so it can still be seen and removed.
@@ -1110,9 +1207,9 @@ export function createWalletActions({ session, toolchain, network, native = null
       const owner = listed.rules.find((rule) => rule.owner);
       const target = listed.rules.find((rule) => rule.id === ruleId);
       if (!owner || !target || target.owner || !target.grant) refuse();
-      // A restarted backend has funded nothing yet: the removal's own fee payer is checked (mainnet: the
-      // operator's account, then this removal's fee against its balance) or funded (testnet: Friendbot)
-      // here, so removal never waits for a deployment.
+      // A restarted backend has funded nothing yet: the removal's own fee payer is checked (operator-funded:
+      // the operator's account, then this removal's fee against its balance) or funded (the disposable
+      // testnet key: Friendbot) here, so removal never waits for a deployment.
       await network.fundRemoval();
       session.invalidate('revoke');
       const record = { account: wallet.contractId, ruleId, ledger: 0 };

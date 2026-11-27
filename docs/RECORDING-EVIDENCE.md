@@ -151,5 +151,5 @@ A refresh changes more than the anchors. `getLedgerEntries` returns current stat
 observed ledgers move. Two endpoints can also return different meta bytes for the same
 transaction: diagnostic events carry node-local timings, and the order of ledger changes in an
 operation can differ. The authorizations and their fingerprints are unchanged, but recording
-hashes are not. When mainnet moves to protocol 30, a refresh must also update
-`CAPTURED_PROTOCOL` in `mainnet_corpus.rs`.
+hashes are not. Mainnet now runs protocol 30 (reported on 25 November 2026), so a refresh must
+also update `CAPTURED_PROTOCOL` in `mainnet_corpus.rs`.

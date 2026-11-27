@@ -120,8 +120,8 @@ declares a role, and your decision stands as made.
 ## Open question: negative values under a cap
 
 A cap (`le_i128`) admits every smaller value, negatives included: the generated check refuses only
-values above the maximum, and an `i128` is signed. The generated scope policy does not refuse a
-negative amount on its own and leaves it to the target contract to refuse. OpenZeppelin's v0.7.0
+values above the maximum, and an `i128` is signed. The generated scope policy has no
+non-negativity check: a negative amount the cap admits is left to the target contract to refuse. OpenZeppelin's v0.7.0
 audit finding L-06 is about the same assumption in their spending-limit policy, which upstream
 fixed in the policy.
 

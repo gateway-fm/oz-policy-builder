@@ -92,7 +92,7 @@ stands. Security scope, threat model and known limits are in [AUDIT-SCOPE.md](AU
 
 | Component | Versions | Where pinned |
 | --- | --- | --- |
-| Generated policies | `soroban-sdk =28.0.0`, `stellar-accounts =0.8.0`, rustc 1.91.1 | `Cargo.toml` of `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy` and `contracts/two-payment-policy`; `Pins::default` in `crates/codegen/src/lib.rs` |
+| Generated policies | `soroban-sdk =28.0.0`, `stellar-accounts =0.8.0`, rustc 1.91.1 | `Cargo.toml` of `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy` and `contracts/two-payment-policy`; `Pins::default` in `crates/codegen/src/lib.rs` |
 | Recognized account | Your `examples/multisig-smart-account/account` at v0.7.3 (`stellar-accounts` 0.7.3, `soroban-sdk` 26.1.0), built here from source | Exact hash in `ozpb_domain::pinned_upstream` |
 | ed25519 and WebAuthn verifiers, reviewed spending-limit policy | Your `examples/multisig-smart-account` at v0.7.2 (`stellar-accounts` 0.7.2, `soroban-sdk` 26.1.0), built here from source | Exact hashes in `ozpb_domain::pinned_upstream` |
 
@@ -134,15 +134,17 @@ exists for each.
 
 ## Upstream items
 
-- **Unbounded enforce events.** Your three policies embed the whole `Context` in their enforce
-  event, so a permitted call with a large enough argument fails on the network's event-size limit
-  ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15, divergence 9 and "Three upstream
-  defects"). Reported as
-  [OpenZeppelin/stellar-contracts#852](https://github.com/OpenZeppelin/stellar-contracts/issues/852),
-  where the direction discussed is a bounded projection of the context (`EnforcedContext`) rather
-  than a digest. `stellar-accounts` 0.8.0 still embeds the `Context`, so generated policies keep
-  `context_hash`; they may move to a released projection type, which would change every
-  generated Wasm and the asserted event size.
+- **Unbounded enforce events.** In `stellar-accounts` 0.8.0 your three policies embed the whole
+  `Context` in their enforce event, so a permitted call with a large enough argument fails on the
+  network's event-size limit ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15,
+  divergence 9 and "Three upstream defects"). Reported as
+  [OpenZeppelin/stellar-contracts#852](https://github.com/OpenZeppelin/stellar-contracts/issues/852)
+  and fixed by
+  [OpenZeppelin/stellar-contracts#896](https://github.com/OpenZeppelin/stellar-contracts/pull/896),
+  merged on 20 November 2026, which replaces the `Context` with a bounded `EnforcedContext`
+  projection. No release carries it yet; v0.8.0 is the latest. Generated policies keep
+  `context_hash`: a generated policy cannot name a type its pinned `stellar-accounts` lacks. Moving to it would change every generated Wasm
+  and the asserted event size.
 - **Your checklist's `cargo build --target wasm32v1-none --release`** cannot succeed inside your
   own workspace, whose root enables soroban-sdk's `experimental_spec_shaking_v2`; `stellar
   contract build` sets what that feature's build script requires (§15, "Three upstream defects").
@@ -153,7 +155,9 @@ No change to generated code is planned for this milestone beyond the upstream it
 Encoded-literal rendering, which would embed addresses as encoded bytes and change every
 generated source and Wasm hash, stays deferred to template-pack v2
 ([SCOPE.md item 4](SCOPE.md#implementation-boundaries)). The audited revision is the freeze commit
-[AUDIT-SCOPE.md](AUDIT-SCOPE.md) names when the audit starts.
+[AUDIT-SCOPE.md](AUDIT-SCOPE.md) names; this review and the external audit both start on it. A
+change to generated code this review asks for before its sign-off goes to the auditor too, and
+is within the scope of the audit's remediation.
 
 Already in this tree: the `contractmeta!` provenance above, which changed every generated source
 and Wasm hash ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2, action 1); BuildManifest
@@ -176,7 +180,10 @@ wallet support described in [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md).
 
 Records OpenZeppelin's documented sign-off on generated-code quality when it is given, one row
 per review, with a link to where the review itself can be read. An empty table means no review
-has been recorded.
+has been recorded. The sign-off row comes before the mainnet installation: the mainnet registry's
+template pack cites it as its review reference, and the release candidate the installation is
+made from carries it, without waiting for the audit's report
+([the order for 1.0.0](VERSIONING.md#the-order-for-100)).
 
 | Date | Reviewer | Scope | Outcome | Link |
 | --- | --- | --- | --- | --- |

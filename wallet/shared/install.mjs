@@ -2,6 +2,7 @@
 // browser and the backend from the reviewed grant and the validated unsigned assembly. Both must
 // produce the same display before the passkey is asked.
 import { freezeCopy } from './approval.mjs';
+import { DELEGATE_HOLDERS, delegateHolder } from './live-consent.mjs';
 import { networkById, stroopsText } from './networks.mjs';
 
 /**
@@ -15,15 +16,16 @@ const integer = (n, min, max) => Number.isSafeInteger(n) && n >= min && n <= max
 /**
  * `approval` is the reviewed approval (`reviewIntent`), `checked` the validated assembly
  * (`validateAssembly`), `spec` the retained specification, `ruleId` the context rule ID the
- * installation will create (the one every layer ran with) and `maxFeeStroops` the fee payer's
- * ceiling after enforce-mode re-simulation.
+ * installation will create (the one every layer ran with), `maxFeeStroops` the fee payer's ceiling
+ * after enforce-mode re-simulation and `operatorFunded` the session's funding model.
  */
-export function installConsent({ approval, checked, spec, maxFeeStroops, ruleId }) {
+export function installConsent({ approval, checked, spec, maxFeeStroops, ruleId, operatorFunded = false }) {
   try {
     const intent = approval.intent;
     const network = networkById(approval.networkId);
-    // On mainnet the delegate is the agent's own key (the operator's delegateKeyPath), which the agent holds too.
-    const agent = network.name === 'mainnet';
+    // Operator-funded (mainnet always is), the delegate is the agent's own key (the operator's delegateKeyPath),
+    // which the agent holds too.
+    const agent = delegateHolder(network.networkId, { operatorFunded }) === DELEGATE_HOLDERS.operator;
     const rule = spec?.rules?.[0];
     const signers = intent.delegate_signers;
     const delegates = rule?.authorization?.signers;

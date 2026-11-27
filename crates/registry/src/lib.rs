@@ -694,6 +694,10 @@ impl Registry {
         // A registry built without a network could not decide at construction; the snapshot's
         // own network decides here, so the unpinned constructor is not a way around the rule.
         self.refuse_development_root_for(snapshot.network_id)?;
+        if snapshot.network_id == NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE) {
+            governance::require_no_pending_review(snapshot)
+                .map_err(|error| RegistryError::Parse(error.to_string()))?;
+        }
         check_snapshot_validity(snapshot, now_unix)?;
         validate_capability_keys(snapshot)?;
         for (capability, revocation) in &snapshot.revocations {

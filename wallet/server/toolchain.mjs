@@ -279,8 +279,8 @@ export class WalletToolchain {
    * revoked }`, each revoked item `{ watched, capability, reason, effectiveVersion }` with `watched`
    * as the CLI names it, `{ code }` or `{ template_family }`; or `{ status: 'not_configured' }`. A log
    * the CLI says cannot be verified (exit 1 naming a registry fault), or a report whose status
-   * disagrees with its exit status or whose revocations name nothing this call watched, is
-   * `log_unverifiable`: an incident. A run that reached no verdict (no CLI, a timeout, a refused root
+   * disagrees with its exit status or with its revocations, or whose revocations name nothing this
+   * call watched, is `log_unverifiable`: an incident. A run that reached no verdict (no CLI, a timeout, a refused root
    * policy, a watch item the head does not know, any other failure) is `monitor_unavailable`.
    */
   async registryMonitor({ wasmHashes, templates = [] }) {
@@ -310,8 +310,9 @@ export class WalletToolchain {
         || !Array.isArray(report.revoked) || typeof report.head?.version !== 'string') return unverifiable();
       const revoked = report.revoked.map((r) => ({ watched: watched(r?.watched), capability: r?.capability, reason: r?.reason,
         effectiveVersion: r?.effective_version }));
+      // The CLI's status is `revoked` exactly when it lists a revocation.
       if (revoked.some((r) => r.watched === null || typeof r.capability !== 'string' || typeof r.reason !== 'string'
-        || typeof r.effectiveVersion !== 'string')) return unverifiable();
+        || typeof r.effectiveVersion !== 'string') || (known.status === 'revoked') !== (revoked.length > 0)) return unverifiable();
       return freezeCopy({ status: known.status, exit: ran.status, meaning: known.meaning, action: known.action,
         headVersion: report.head.version, expiresAtUnix: String(report.expires_at_unix), revoked });
     } catch { return unverifiable(); }

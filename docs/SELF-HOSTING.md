@@ -6,23 +6,22 @@ cloud infrastructure or establish that an endpoint has been deployed. Releases m
 publishing workflows were added also publish images and binaries; see
 [Production release](#production-release).
 
-The hosted testnet deliverable means running the MCP tools behind an authenticated HTTPS
-address for authorized remote clients. It is not a wallet or a Stellar validator/RPC node:
-it records, synthesizes, builds and verifies policies through operator-allowed testnet RPC
-sources. User signing and installation approval remain in the wallet. A working local image
-or this guide alone does not establish that the hosted service is running.
+The third milestone's production versioned endpoint is this package as a release that operators
+run themselves ([below](#production-release)); Gateway operates no service for it. It is not a
+wallet or a Stellar validator/RPC node: it records, synthesizes, builds and verifies policies
+through operator-allowed RPC sources. User signing and installation approval remain in the
+wallet. A working local image or this guide alone does not establish that any endpoint is
+running.
 
-For a reference deployment offered during a testnet review, publish its access window and
-shutdown condition alongside its HTTPS address. Keep the self-hostable image and instructions
-available for use after that window. A temporary testnet instance is not evidence of a
-production endpoint or an ongoing availability commitment.
+A reference deployment offered for a review, as the second milestone's hosted testnet instance
+was ([its acceptance check](TESTNET-EVIDENCE-TRANCHE-2.md#26-hosted-reference-instance-acceptance-check-11-november-2026)),
+publishes its access window and shutdown condition alongside its HTTPS address; for ongoing use,
+self-host. Such an instance is not evidence of a production endpoint or an ongoing availability
+commitment, and it needs its own security and operational acceptance checks.
 
-Use the disposable-worker mode below when preparing the hosted testnet deployment. Choosing
-its hosting provider is an operational decision, not a separate milestone requirement.
-Present the actual account, hostname/TLS plan, image digest, client access boundary, cost,
-budget alert and stop condition before creating paid resources. Tranche 3 delivers a production
-versioned release that operators run themselves; Gateway operates no production service. The
-testnet deployment still needs its own security and operational acceptance checks.
+Before creating paid resources for any deployment, present the actual account, hostname/TLS plan,
+image digest, client access boundary, cost, budget alert and stop condition. Choosing a hosting
+provider is an operational decision.
 
 **The API and compiler still share a trust domain.** Container resource limits, Cargo's
 offline setting and environment filtering are useful bounds, but they do not isolate each
@@ -41,7 +40,6 @@ A release is software you run yourself; Gateway operates no service for it. What
 number keeps stable, and for how long, is [VERSIONING.md](VERSIONING.md). Each published GitHub
 Release carries:
 
-- the API and TLS proxy images ([below](#build-the-reviewed-revision));
 - for Linux x86_64, Linux aarch64 and macOS arm64, one archive per binary with the licence files:
   `ozpb` (the CLI), `ozpb-mcp-server` (stdio, or `--http` for this endpoint) and
   `ozpb-execution-runtime` (the [native worker](NATIVE-EXECUTION.md) behind `ozpb dry-run`);
@@ -49,25 +47,32 @@ Release carries:
   Schema, and the `E_*` codes;
 - `SHA256SUMS`, and a GitHub build-provenance attestation for every asset, `SHA256SUMS` included.
 
+The API and TLS proxy images are not release assets: publishing the release runs
+`publish-image.yml`, which pushes them, for amd64 and arm64, to Docker Hub
+(`docker.io/gatewayfm/oz-policy-builder` and `docker.io/gatewayfm/oz-policy-builder-proxy`;
+[below](#build-the-reviewed-revision)).
+
 ### Obtain and verify
 
 ```sh
 tag=vX.Y.Z    # the release you are installing
+revision='<tested-release-commit>'
+target=x86_64-unknown-linux-gnu    # or aarch64-unknown-linux-gnu, aarch64-apple-darwin
 gh release download "$tag" --repo gateway-fm/oz-policy-builder \
-  --pattern '*-x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS
+  --pattern "*-$target.tar.gz" --pattern SHA256SUMS
 # On macOS, `shasum -a 256 --check` in place of `sha256sum --check`.
-grep -- '-x86_64-unknown-linux-gnu.tar.gz$' SHA256SUMS | sha256sum --check
+grep -- "-$target.tar.gz\$" SHA256SUMS | sha256sum --check
 # A subshell, so the first failure stops the loop without closing your shell.
 ( set -e
   for asset in *.tar.gz SHA256SUMS; do
     gh attestation verify "$asset" --repo gateway-fm/oz-policy-builder \
       --signer-workflow gateway-fm/oz-policy-builder/.github/workflows/release-binaries.yml \
-      --source-ref "refs/tags/$tag" --deny-self-hosted-runners
+      --source-ref "refs/tags/$tag" --source-digest "$revision" --deny-self-hosted-runners
   done )
 ```
 
-`--repo` alone accepts an attestation from any workflow in the repository; the other three
-flags require the one that publishes releases, run for this tag on a GitHub-hosted runner.
+The attestation checks require the release workflow, this tag, the tested source commit and a
+GitHub-hosted runner.
 Verify images the same way, by digest (below). The Linux
 binaries are built on Ubuntu 24.04 and may need a glibc as new as its; on an older host, build
 from the tag instead (`cargo build --locked --release -p ozpb-cli -p ozpb-mcp-server`, and the
@@ -155,7 +160,8 @@ decide whether a Rust source file contains confidential information.
 The context carries no `.git`, so the image cannot ask which commit it is built from: the
 `OZPB_TOOLKIT_SOURCE` build argument tells it, and every BuildManifest the image writes records
 that commit as `producer.toolkit_source`. Without the argument, they record none. Like every
-manifest field it is the builder's statement, not something `verify` checks.
+manifest field it is the builder's statement, not something `verify` checks; the integration check
+below refuses an image whose manifests do not record the clean commit it was given.
 
 The base image and TLS proxy are pinned by digest. Rust and Stellar CLI match the recorded
 Wasm build inputs; Stellar downloads are checked by SHA-256. OS packages resolve during
@@ -167,23 +173,23 @@ than a mutable tag. `self-hosted.yml` builds and tests in CI and never pushes.
 For each published GitHub Release whose tag (`v` plus the workspace version in `Cargo.toml`)
 contains it, `publish-image.yml` builds both images for amd64 and arm64 from the release tag,
 runs every check `self-hosted.yml` runs on each, and publishes them to
-`ghcr.io/gateway-fm/oz-policy-builder` and `ghcr.io/gateway-fm/oz-policy-builder-proxy` under
+`docker.io/gatewayfm/oz-policy-builder` and `docker.io/gatewayfm/oz-policy-builder-proxy` under
 the release tag, with a GitHub build-provenance attestation. The workflow summary lists both
 `@sha256` references; use those, and check each with
 
 ```sh
 gh attestation verify "oci://<reference>" --repo gateway-fm/oz-policy-builder \
   --signer-workflow gateway-fm/oz-policy-builder/.github/workflows/publish-image.yml \
-  --source-ref "refs/tags/<tag>" --deny-self-hosted-runners
+  --source-ref "refs/tags/<tag>" --source-digest "<release commit>" --deny-self-hosted-runners
 ```
 
-A published
-image is software for operators to run; it does not mean an endpoint is running.
+A published image is software for operators to run; it does not mean an endpoint is running.
 
-GHCR creates a new package as private. After the first publication an organization owner makes
-both packages public once, under the package's settings; GitHub does not allow making a public
-package private again. Until then, pulls and attestation checks from outside the organization
-are refused. `v0.1.0` predates the workflow and has no images.
+An organization owner creates both public Docker Hub repositories, with immutable tags, before
+publication. The existing 0.2.0 pre-release images remain on GHCR. If publication fails after
+staging a platform image or manifest, rerun the same GitHub Actions run: it reuses that run's
+staged digests and verifies any final tag already published. GitHub stores the attestations for
+each image digest.
 
 ## Configure the operator boundary
 
@@ -273,13 +279,19 @@ Run the disposable integration check against a locally built image:
 ```sh
 OZPB_IMAGE="$(docker image inspect ozpb-self-host:reviewed --format '{{.Id}}')" \
 OZPB_PROXY_IMAGE="$(docker image inspect ozpb-proxy:reviewed --format '{{.Id}}')" \
+OZPB_TOOLKIT_COMMIT="$revision" \
   bash scripts/test-hosted-container.sh
 ```
 
 It generates a local test certificate, verifies it, checks authentication, host/origin/path
 guards, initialization, body limits and the request quota, then tears that endpoint down.
 Fresh service containers then run real MCP `generate_code` and `verify` through TLS, checking
-the returned Wasm digest and explicit source/Wasm/manifest reproduction dimensions.
+the returned Wasm digest, the toolkit commit its manifest records, and explicit
+source/Wasm/manifest reproduction dimensions. These containers keep their output (`json-file` in
+place of the package's `none`), and `check-hosted-retention.py` then sends a canary bearer token,
+builds a spec named with a canary and sends a signed canary envelope, and fails if the token or
+any canary is in either container's output, its tmpfs files or the files it changed, or if the
+output is anything but the server's startup line.
 A separate container also runs real `generate` and `verify` with `--network none` and no mounted
 credentials. The standalone `check-hosted-endpoint.py` exhausts its supplied quota on
 purpose: use it only against a fresh isolated endpoint, not another operator's active service.
@@ -292,7 +304,9 @@ tracing, body logging, crash uploads or request analytics. This reduces diagnost
 operator investigating startup failure should reproduce with synthetic input in an isolated
 environment and review any output before retaining it. `scripts/check-log-redaction.py` fails
 CI if a file of this package turns a log back on, prints the bearer token or the trust inputs,
-or links a log subscriber into the server; it does not cover your ingress or host.
+or links a log subscriber into the server; it does not cover your ingress or host. The
+disposable integration check, `scripts/test-hosted-container.sh`, reads what a running package
+retains, with its output kept, and fails if the token or canary request content is in it.
 
 Request data is processed in memory and temporary files. Each MCP session also retains up to
 eight generated artifacts in memory for verification by reference. This is a count limit,
