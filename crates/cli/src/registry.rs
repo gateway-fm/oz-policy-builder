@@ -45,7 +45,10 @@ pub enum Command {
         out: PathBuf,
     },
     /// Print the canonical root of an unsigned snapshot, or sign it into a detached signature
-    /// with a 0600 key file or an Ed25519 signature produced elsewhere over that root.
+    /// with a 0600 key file or an Ed25519 signature produced elsewhere over that root. For a
+    /// snapshot still carrying a pending review reference, --print-root lists the entries under
+    /// `pending_review` and warns on stderr, and neither signing form nor `combine` accepts a
+    /// signature over its root.
     Sign(SignArgs),
     /// Assemble detached signatures into a signed snapshot, checking each against the pinned
     /// root policy and the threshold, and load the result as a consumer would before writing it.
@@ -69,10 +72,12 @@ pub enum Command {
     /// roots and network; print the checkpoint a consumer persists. The gate before distribution.
     Verify(VerifyArgs),
     /// Compare a consumer's checkpoint with the published log: newer version, validity expiry,
-    /// revocations of watched Wasm hashes and template families. Prints JSON; the exit status is for cron: 0 current,
-    /// 3 newer version, 4 expiring within the window, 5 expired, 6 a watched hash or template family revoked, 7 the
-    /// head's interval has not started, and 1 when the published log cannot be verified against
-    /// the checkpoint or a watch item is one the head neither registers nor revokes.
+    /// revocations of watched Wasm hashes and template families. Prints JSON; the exit status is
+    /// for cron: 0 current, 3 newer version, 4 expiring within the window, 5 expired, 6 a watched
+    /// hash or template family revoked, 7 the head's interval has not started; 1 when the
+    /// published log cannot be verified against the checkpoint or a watch item is one the head
+    /// neither registers nor revokes, or any other error; 2 a usage error (a malformed or missing
+    /// flag), with nothing checked. Treat any other non-zero status as an alert too.
     Monitor(MonitorArgs),
 }
 
@@ -126,7 +131,9 @@ pub struct VerifyArgs {
     #[arg(long, conflicts_with = "replay")]
     checkpoint: Option<PathBuf>,
     /// With --signed: the minimum acceptable version. A checkpoint (given, or the roots file's)
-    /// older than it is refused with E_REGISTRY_ROLLBACK, as consumers refuse it.
+    /// older than it is refused with E_REGISTRY_ROLLBACK, as consumers refuse it. Not read from
+    /// OZPB_REGISTRY_MIN_VERSION: a floor belongs to one roots file, and this command takes its
+    /// roots file on the command line, never from the environment.
     #[arg(long, conflicts_with = "replay", default_value_t = 0)]
     min_version: u64,
     /// Trusted current time (Unix seconds); defaults to the system clock.
@@ -150,8 +157,9 @@ pub struct MonitorArgs {
     /// A Wasm hash the consumer relies on (an installed account, policy or verifier); repeat.
     #[arg(long = "wasm-hash")]
     wasm_hashes: Vec<String>,
-    /// A template family an installed generated policy was built from (its revocation is the one
-    /// that reaches a generated policy), e.g. `policy-templates/scope@1`; repeat.
+    /// A template family an installed generated policy was built from (a generated policy has no
+    /// entry of its own, so its family is what can be watched), e.g. `policy-templates/scope@1`;
+    /// repeat.
     #[arg(long = "template")]
     templates: Vec<String>,
     /// Trusted current time (Unix seconds); defaults to the system clock.
@@ -174,7 +182,7 @@ pub fn run(command: Command) -> Result<()> {
             let changes: ChangeSet = read_json(&changes)?;
             let next = governance::successor(roots, network, &parent, &changes, now(at)?)?;
             write_new(&out, &next)?;
-            print_json(&root_summary(&next)?)
+            print_root_summary(&next)
         }
         Command::Sign(args) => sign(args),
         Command::Combine {
@@ -225,7 +233,7 @@ fn keygen(out: &Path, key_id: Option<String>) -> Result<()> {
 fn sign(args: SignArgs) -> Result<()> {
     let snapshot: RegistrySnapshot = read_json(&args.snapshot)?;
     if args.print_root {
-        return print_json(&root_summary(&snapshot)?);
+        return print_root_summary(&snapshot);
     }
     let (Some(key_id), Some(out)) = (args.key_id, args.out) else {
         bail!("signing needs --key-id and --out (or --print-root to only print the root)");
@@ -357,10 +365,22 @@ fn monitor(args: MonitorArgs) -> Result<()> {
     Ok(())
 }
 
-/// What a custodian checks before signing: the root and the fields it commits to that decide
-/// where and when the snapshot is trusted.
-fn root_summary(snapshot: &RegistrySnapshot) -> Result<serde_json::Value> {
-    Ok(serde_json::json!({
+/// Print what a custodian checks before signing: the root, the fields it commits to that decide
+/// where and when the snapshot is trusted, and every entry whose review reference is still
+/// pending. A custodian signing on a device signs whatever root it is shown, before any hand-in
+/// can refuse it, so a root over pending references is also marked on stderr as one no signing
+/// step accepts.
+fn print_root_summary(snapshot: &RegistrySnapshot) -> Result<()> {
+    let pending = governance::pending_reviews(snapshot);
+    if !pending.is_empty() {
+        eprintln!(
+            "root for review only: {} still carry a pending review reference, and `registry sign` \
+             and `registry combine` accept no signature over this root; replace them, then print \
+             the root again",
+            pending.join(", ")
+        );
+    }
+    print_json(&serde_json::json!({
         "root": snapshot_root(snapshot)?,
         "network_id": snapshot.network_id,
         "version": snapshot.version.to_string(),
@@ -369,6 +389,7 @@ fn root_summary(snapshot: &RegistrySnapshot) -> Result<serde_json::Value> {
         "valid_from_unix": snapshot.valid_from_unix.to_string(),
         "expires_at_unix": snapshot.expires_at_unix.to_string(),
         "revocations": snapshot.revocations.keys().collect::<Vec<_>>(),
+        "pending_review": pending,
     }))
 }
 

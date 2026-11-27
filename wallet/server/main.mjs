@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadWalletConfig } from './config.mjs';
 import { createWalletServer } from './http.mjs';
-import { WalletNetwork, journaledSpend } from './network.mjs';
+import { WalletNetwork, earlierAuthorizationExpiry, journaledSpend } from './network.mjs';
 import { AgentHandoff } from './agent-handoff.mjs';
 import { DelegateCapabilities } from './native-execution.mjs';
 import { WalletSession } from './session.mjs';
@@ -29,7 +29,7 @@ export async function networkPreflight(network) {
   try { await network.assertNetwork(); return null; } catch (error) {
     if (error?.reason === 'protocol_unsupported') {
       return `The RPC endpoint reports protocol ${error.protocolVersion ?? 'unknown'} for ${network.profile.name}; this wallet runs on `
-        + `protocol 30 only. A network still on an earlier protocol is refused until its validators have upgraded to 30.`;
+        + `protocol 30 only.`;
     }
     if (error?.reason === 'network_mismatch') {
       return `The RPC endpoint does not serve ${network.profile.name}, the network this session was configured for (operator \`network\`).`;
@@ -49,18 +49,20 @@ export async function createWalletRuntime(configPath, { actionsFactory } = {}) {
   const toolchain = new WalletToolchain(config);
   const journalRoot = join(toolchain.sessionRoot, 'journal');
   mkdirSync(journalRoot, { mode: 0o700 });
-  // On mainnet the spend cap counts what earlier sessions in this (network-bound) work root sent.
-  const spentStroops = config.network.friendbot ? '0' : journaledSpend(config.workRoot, config.network, config.fees);
+  // Operator-funded, the spend cap counts what earlier sessions in this (network-bound) work root sent.
+  const spentStroops = config.feePayer.operator ? journaledSpend(config.workRoot, config.network, config.fees) : '0';
   const network = new WalletNetwork({ rpcUrl: config.rpcUrl, journalRoot, network: config.network, feePayer: config.feePayer, fees: config.fees,
     spentStroops });
   const createActions = actionsFactory ?? (await import('./actions.mjs')).createWalletActions;
   const native = config.nativeExecutable ? Object.freeze({ executable: config.nativeExecutable }) : null;
   const live = config.liveHelper ? Object.freeze({ helper: config.liveHelper }) : null;
   const handoff = new AgentHandoff({ network: config.network });
-  // Disposable automation keys on testnet; on mainnet only the operator's delegate key, if any.
-  const delegates = new DelegateCapabilities(config.network, { random: Boolean(config.network.friendbot),
+  // Disposable automation keys with the disposable fee payer; operator-funded, only the operator's delegate key, if any.
+  const delegates = new DelegateCapabilities(config.network, { random: !config.feePayer.operator,
     key: config.delegateKey ? config.delegateKey.keypair() : null });
-  const actions = createActions({ session, toolchain, network, native, live, handoff, delegates, pinnedWasmDir: config.pinnedWasmDir });
+  const priorAuthorizationExpiry = (account) => earlierAuthorizationExpiry(config.workRoot, toolchain.sessionRoot, config.network, account);
+  const actions = createActions({ session, toolchain, network, native, live, handoff, delegates, priorAuthorizationExpiry,
+    pinnedWasmDir: config.pinnedWasmDir });
   const server = createWalletServer({ session, actions, handoff });
   return { server, network: config.network, preflight: () => networkPreflight(network),
     launchUrl: `${ORIGIN}/policy-builder#session=${secret}&network=${config.network.name}` };

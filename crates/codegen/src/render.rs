@@ -367,6 +367,16 @@ impl I128Literal {
             _ => Err(CodegenError::I128(raw.to_string())),
         }
     }
+
+    /// `i128::MIN`: no `i128` lies below it, so a floor here refuses nothing.
+    pub fn is_type_min(&self) -> bool {
+        self.0 == i128::MIN
+    }
+
+    /// `i128::MAX`: no `i128` lies above it, so a cap here refuses nothing.
+    pub fn is_type_max(&self) -> bool {
+        self.0 == i128::MAX
+    }
 }
 
 impl fmt::Display for I128Literal {
@@ -472,6 +482,11 @@ pub enum RenderConstraint {
     EqI128(I128Literal),
     LeI128(I128Literal),
     GeI128(I128Literal),
+    /// Inclusive `min..=max`; the spec's validation guarantees `min <= max`.
+    RangeI128 {
+        min: I128Literal,
+        max: I128Literal,
+    },
     EqScval(ByteArray),
     AnyValue,
 }
@@ -560,6 +575,10 @@ impl RenderRule {
                             Constraint::GeI128 { min } => {
                                 RenderConstraint::GeI128(I128Literal::new(min)?)
                             }
+                            Constraint::RangeI128 { min, max } => RenderConstraint::RangeI128 {
+                                min: I128Literal::new(min)?,
+                                max: I128Literal::new(max)?,
+                            },
                             Constraint::EqScval { xdr_base64 } => {
                                 RenderConstraint::EqScval(ByteArray::from_base64(xdr_base64)?)
                             }

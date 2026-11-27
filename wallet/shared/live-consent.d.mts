@@ -7,6 +7,9 @@ export const LIVE_RUN_MIN_LEDGERS: number;
 export const LIVE_MAX_PERMIT_STROOPS: bigint;
 export const LIVE_CASES: readonly ['target:original:0', 'target:argument-denial:0'];
 export const LIVE_LABELS: readonly string[];
+export type DelegateHolder = { readonly label: string; readonly evidence: string; readonly key: string };
+export const DELEGATE_HOLDERS: { readonly automation: DelegateHolder; readonly operator: DelegateHolder };
+export function delegateHolder(networkId: string, options?: { operatorFunded?: boolean }): DelegateHolder;
 export type LiveGrant =
   | { readonly supported: true; readonly account: string; readonly delegate: string; readonly recipient: string;
     readonly amount: string; readonly maxCalls: number }
@@ -34,6 +37,6 @@ export function liveShape(input: { spec: unknown; intent: unknown; wallet: unkno
 export function liveCases(input: {
   approval: Approval; spec: unknown; helper: string; policyCodeHash: string; expectedRuleId: number; signatureExpirationLedger: number;
 }): readonly [LiveCase, LiveCase];
-export function consentDisplay(cases: readonly LiveCase[], options: { currentLedger: number }): ConsentDisplay;
+export function consentDisplay(cases: readonly LiveCase[], options: { currentLedger: number; operatorFunded?: boolean }): ConsentDisplay;
 export function statementHash(display: ConsentDisplay): string;
 export function checkLiveOwnerEntry(input: { approval: Approval; cases: readonly LiveCase[]; ownerEntryXdr: string }): LiveOwnerChecked;

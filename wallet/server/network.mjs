@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Account, Address, Keypair, Operation, StrKey, TransactionBuilder, hash, rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { PROTOCOL_VERSION } from '../shared/networks.mjs';
@@ -14,13 +14,14 @@ import { directAddressCredentials } from '../shared/auth-credentials.mjs';
 export const MAX_FEE_STROOPS = 10_000_000;
 /**
  * Testnet's code upload cap: testnet's resource fee for a ~21 KB policy Wasm passed 10 XLM in
- * October 2026. Every other transaction keeps MAX_FEE_STROOPS. Mainnet's is the operator's setting.
+ * October 2026. Every other transaction keeps MAX_FEE_STROOPS. An operator-funded session's is the
+ * operator's setting.
  */
 export const MAX_UPLOAD_FEE_STROOPS = 150_000_000;
 /**
  * Refusals the page can explain: the endpoint serves another network, or another protocol than 30;
- * a transaction above the per-transaction fee cap or the session spend cap; a mainnet fee payer or
- * delegate account the owner has not funded yet; pinned code missing on the network.
+ * a transaction above the per-transaction fee cap or the session spend cap; an operator's fee payer,
+ * or a mainnet delegate account, the owner has not funded yet; pinned code missing on the network.
  */
 export const NETWORK_REASONS = Object.freeze(['network_mismatch', 'protocol_unsupported', 'fee_cap', 'spend_cap', 'payer_unfunded',
   'delegate_unfunded', 'pinned_code_missing', 'no_diagnostic_events']);
@@ -28,10 +29,64 @@ const refuse = (cause) => {
   throw Object.assign(new Error('wallet network operation refused; inspect the local journal before retrying'),
     NETWORK_REASONS.includes(cause?.reason) ? { reason: cause.reason, ...(cause.protocolVersion !== undefined ? { protocolVersion: cause.protocolVersion } : {}) } : {});
 };
+function readJournalEntry(path) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('invalid journal entry');
+    const buffer = Buffer.alloc(stat.size);
+    if (readSync(fd, buffer, 0, buffer.length, 0) !== buffer.length) throw new Error('incomplete journal entry');
+    return buffer.toString('utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Latest still-possible authorization from a prior backend using this network's work root. */
+export function earlierAuthorizationExpiry(workRoot, currentSession, network, account) {
+  if (!StrKey.isValidContract(account)) refuse();
+  let expires = 0;
+  try {
+    for (const session of readdirSync(workRoot).filter((name) => name.startsWith('wallet-session-'))) {
+      if (session === basename(currentSession)) continue;
+      const directory = join(workRoot, session);
+      if (!lstatSync(directory).isDirectory()) refuse();
+      const journal = join(directory, 'journal');
+      try {
+        if (!lstatSync(journal).isDirectory()) refuse();
+      } catch (error) {
+        // A failed startup can leave a session directory before creating the journal.
+        if (error?.code === 'ENOENT') continue;
+        throw error;
+      }
+      const records = readdirSync(journal).filter((name) => /^[0-9]{4,}\.(?:live-check|install-release)\.json$/.test(name));
+      if (!records.length) continue;
+      try {
+        const binding = JSON.parse(readJournalEntry(join(journal, '0000.session.json')));
+        if (binding.networkId !== network.networkId) refuse();
+      } catch (error) {
+        // Sessions predating the network marker belonged to testnet. Mainnet startup rejects
+        // unbound work roots and mainnet journals always include the session binding.
+        if (network.name !== 'testnet' || error?.code !== 'ENOENT') throw error;
+      }
+      for (const name of records) {
+        const record = JSON.parse(readJournalEntry(join(journal, name)));
+        const affected = record.snapshot?.account;
+        if (!StrKey.isValidContract(affected)) refuse();
+        const expiry = ledger(record.signatureExpirationLedger);
+        if (affected === account) expires = Math.max(expires, expiry);
+      }
+    }
+  } catch {
+    throw Object.assign(new Error('wallet replay journal could not be verified'), { reason: 'replay_journal_unavailable' });
+  }
+  return expires;
+}
+
 /**
  * The fees every earlier session in this work root may have been charged: the full fee of each
- * transaction it journaled as intended before sending, whatever happened next. A mainnet session
- * starts its spend cap from this, so restarting the backend gives back no budget. The work root is
+ * transaction it journaled as intended before sending, whatever happened next. An operator-funded
+ * session starts its spend cap from this, so restarting the backend gives back no budget. The work root is
  * bound to one network; an entry for another, or one that does not decode, refuses startup, except
  * a session's last entry that is not JSON at all: a crash while writing it, after which whether the
  * transaction left is unknown. That one counts as the most one transaction may cost under `caps`
@@ -51,18 +106,13 @@ export function journaledSpend(workRoot, network, caps = null) {
       names = readdirSync(journal);
     } catch (error) { if (error?.code === 'ENOENT') continue; refused(); }
     // Serials are padded to four digits and grow past them; the last is the highest of any phase.
-    const serial = (entry) => /^([0-9]{4,})\.[a-z]+\.json$/.exec(entry)?.[1];
+    const serial = (entry) => /^([0-9]{4,})\.[a-z-]+\.json$/.exec(entry)?.[1];
     const last = names.map(serial).filter(Boolean).map(BigInt).reduce((a, b) => (b > a ? b : a), -1n);
     for (const name of names.filter((entry) => /^[0-9]{4,}\.intended\.json$/.test(entry))) {
-      let fd;
       try {
-        fd = openSync(join(journal, name), constants.O_RDONLY | constants.O_NOFOLLOW);
-        const stat = fstatSync(fd);
-        if (!stat.isFile() || stat.size > 1024 * 1024) refused();
-        const buffer = Buffer.alloc(stat.size);
-        if (readSync(fd, buffer, 0, buffer.length, 0) !== buffer.length) refused();
+        const text = readJournalEntry(join(journal, name));
         let entry;
-        try { entry = JSON.parse(buffer.toString('utf8')); } catch (error) {
+        try { entry = JSON.parse(text); } catch (error) {
           const truncated = error instanceof SyntaxError && BigInt(serial(name)) === last
             && names.filter((other) => serial(other) === serial(name)).length === 1;
           if (!truncated || !caps || !Number.isSafeInteger(caps.maxFeeStroops) || !Number.isSafeInteger(caps.maxUploadFeeStroops)) refused();
@@ -73,7 +123,7 @@ export function journaledSpend(workRoot, network, caps = null) {
         const envelope = xdr.TransactionEnvelope.fromXDR(entry.envelopeXdr, 'base64');
         if (envelope.type !== 'envelopeTypeTx' || !Number.isSafeInteger(envelope.v1.tx.fee)) refused();
         total += BigInt(envelope.v1.tx.fee);
-      } catch { refused(); } finally { if (fd !== undefined) closeSync(fd); }
+      } catch { refused(); }
     }
   }
   return total.toString();
@@ -208,6 +258,24 @@ export function assembleTransaction(raw, simulation) {
   return { build: () => assembled };
 }
 
+/**
+ * Whether `op` is exactly a removal from `account`: one `remove_context_rule(u32)` call on that
+ * account, with one authorization entry, the account's own address credentials, for exactly that call
+ * and nothing under it. Only such a transaction gets the removal stage's exemptions.
+ */
+function isRemoval(op, account) {
+  try {
+    if (!StrKey.isValidContract(account) || op.hostFunction.type !== 'hostFunctionTypeInvokeContract' || op.auth.length !== 1) return false;
+    const call = op.hostFunction.invokeContract;
+    const [entry] = op.auth;
+    return Address.fromScAddress(call.contractAddress).toString() === account && call.functionName.toString() === 'remove_context_rule'
+      && call.args.length === 1 && call.args[0].type === 'scvU32'
+      && Address.fromScAddress(directAddressCredentials(entry.credentials).address).toString() === account
+      && entry.rootInvocation.function.type === 'sorobanAuthorizedFunctionTypeContractFn'
+      && same(entry.rootInvocation.function.contractFn, call) && entry.rootInvocation.subInvocations.length === 0;
+  } catch { return false; }
+}
+
 function confirmed(receipt, sent) {
   if (receipt.status !== 'SUCCESS' || !same(receipt.envelopeXdr, sent.toEnvelope())
     || receipt.resultXdr?.result.type !== 'txSuccess' || receipt.feeBump === true) refuse();
@@ -241,16 +309,18 @@ function confirmed(receipt, sent) {
  */
 export class WalletNetwork {
   #server; #payer; #fees; #spent = 0n; #fetch; #journal; #assemble; #pause; #rpcUrl; #network;
-  #funded = false; #fundingAttempted = false; #ambiguous = false; #serial = 0; #installed = 0; #delegatesFunded = new Set();
+  #funded = false; #removalPayer = false; #ambiguous = false; #serial = 0; #installed = 0; #delegatesFunded = new Set();
   /**
-   * `feePayer` and `fees` are the session's funding model: on testnet a disposable key and testnet's
-   * ceilings; on mainnet the operator's own key and its configured caps, a session cap included.
+   * `feePayer` and `fees` are the session's funding model: a disposable key and testnet's ceilings
+   * (testnet only), or the operator's own key and its configured caps, a session cap included
+   * (operator-funded: always on mainnet, on testnet when the operator configures it).
    */
   constructor({ rpcUrl, journalRoot, network, server, fetchImpl = fetch, assemble = assembleTransaction, pause = sleep,
     feePayer = network?.friendbot ? FeePayer.disposable() : null, fees = network?.friendbot ? TESTNET_FEES : null, spentStroops = '0' }) {
     if (!network || typeof network.passphrase !== 'string' || typeof network.networkId !== 'string' || !Object.isFrozen(network)) refuse();
-    // Without Friendbot, only the operator's own funded key pays, and only within a session cap.
-    if (!(feePayer instanceof FeePayer) || (!network.friendbot && (!feePayer.operator || !Number.isSafeInteger(fees?.sessionSpendCapStroops)))
+    // Without Friendbot, only the operator's own funded key pays; the operator's key pays only within a session cap.
+    if (!(feePayer instanceof FeePayer) || (!network.friendbot && !feePayer.operator)
+      || (feePayer.operator && !Number.isSafeInteger(fees?.sessionSpendCapStroops))
       || ![fees?.maxFeeStroops, fees?.maxUploadFeeStroops].every((n) => Number.isSafeInteger(n) && n >= 100)) refuse();
     this.#payer = feePayer;
     this.#fees = Object.freeze({ ...fees });
@@ -268,16 +338,22 @@ export class WalletNetwork {
   /** The session's network profile. */
   get profile() { return this.#network; }
   get payerAddress() { return this.#payer.address; }
+  /**
+   * Whether the session is operator-funded: its fee payer is the operator's own key, which the wallet
+   * never funds and which moves no XLM. Always on mainnet; on testnet when the operator configures it.
+   */
+  get operatorFunded() { return this.#payer.operator; }
   /** The session's fee caps, shown to the owner before anything is signed. */
   get fees() { return this.#fees; }
   /** The most this session's sent transactions can have been charged: each one's full fee, whatever a receipt reports. */
   get spentStroops() { return this.#spent.toString(); }
   /** Whether a submission could start now: the payer is funded and no earlier result is uncertain. */
   get canSubmit() { return this.#funded && !this.#ambiguous; }
+  /** Whether a removal could be submitted now: the payer can pay one (`fundRemoval`) and no earlier result is uncertain. */
+  get canSubmitRemoval() { return (this.#funded || this.#removalPayer) && !this.#ambiguous; }
   /**
    * The endpoint must serve the session's network, at protocol 30: another network refuses as
-   * `network_mismatch`, another protocol (mainnet before its upgrade to 30, for one) as
-   * `protocol_unsupported`, carrying the protocol it reported.
+   * `network_mismatch`, another protocol as `protocol_unsupported`, carrying the protocol it reported.
    */
   async assertNetwork() {
     const reported = await this.#server.getNetwork();
@@ -344,6 +420,9 @@ export class WalletNetwork {
       const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
       checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase, this.#fees);
       const final = assembled.toEnvelope();
+      // Operator-funded: the owner is asked to sign only a sample the operator's account can pay for,
+      // since a refusal after the signature would spend the sample's one attempt.
+      if (this.#payer.operator) await this.#payerCovers(final.v1.tx.fee);
       const restored = final.v1.tx.ext.sorobanData.ext;
       const assembly = {
         envelope_xdr_base64: final.toXDR('base64'), envelope_xdr_sha256: digest(bytes(final)), network_id: this.#network.networkId,
@@ -371,25 +450,60 @@ export class WalletNetwork {
     if (this.#funded) return;
     if (this.#payer.operator) {
       // The operator's key is never funded by the wallet: its account must exist, funded by its owner,
-      // with at least one transaction's fee to spend above its reserve.
+      // with at least one transaction's fee to spend above its reserve. Each write is then checked
+      // against its own fee before it is signed (`submitEnvelope`).
       const account = await this.payerAccount();
       if (!account.exists || BigInt(account.spendableStroops) < BigInt(this.#fees.maxFeeStroops)) refuse({ reason: 'payer_unfunded' });
       this.#funded = true;
       return;
     }
-    // Friendbot exists on testnet alone; no disposable key is ever funded on another network.
-    if (this.#fundingAttempted || !this.#network.friendbot) refuse();
-    this.#fundingAttempted = true;
-    const response = await this.#fetch(`${this.#network.friendbot}/?addr=${this.payerAddress}`, {
-      method: 'GET', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(30_000),
-    });
-    await boundedText(response, 256 * 1024);
-    await this.source();
+    // Friendbot exists on testnet alone; no disposable key is ever funded on another network. The
+    // account reading back decides, a few times over as a lagging node catches up: Friendbot answers
+    // an account it already funded with an error. One that does not read back leaves funding to the
+    // next step, with a reason the page explains.
+    if (!this.#network.friendbot) refuse();
+    try {
+      const response = await this.#fetch(`${this.#network.friendbot}/?addr=${this.payerAddress}`, {
+        method: 'GET', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(30_000),
+      });
+      await boundedText(response, 256 * 1024);
+    } catch { /* the read-back below decides */ }
+    for (let attempt = 1; ; attempt++) {
+      try { await this.source(); break; } catch {
+        if (attempt >= 5) refuse({ reason: 'payer_unfunded' });
+        await this.#pause(2000);
+      }
+    }
     this.#funded = true;
+  }
+  /**
+   * The fee payer for a removal, which never waits for an account creation or a deployment: a
+   * disposable key is funded as `fundPayer` does; the operator's account must exist, and each removal's
+   * own fee is checked against what it can spend before the removal is drafted and again before it is
+   * signed (`#payerCovers`). It opens no other write.
+   */
+  async fundRemoval() {
+    await this.assertNetwork();
+    if (this.#funded || this.#removalPayer) return;
+    if (!this.#payer.operator) return this.fundPayer();
+    if (!(await this.payerAccount()).exists) refuse({ reason: 'payer_unfunded' });
+    this.#removalPayer = true;
+  }
+  /**
+   * Refuses `payer_unfunded` unless the fee payer can pay `stroops` now: operator-funded (always on
+   * mainnet), the operator's account must spend it above its reserve; testnet's disposable payer, which
+   * Friendbot funds, is not read. Asked before the owner consents to, or signs for, a write the payer
+   * will pay for.
+   */
+  async payerCovers(stroops) { if (this.#payer.operator) await this.#payerCovers(stroops); }
+  /** The operator's account can spend `fee` above its reserve now. */
+  async #payerCovers(fee) {
+    const account = await this.payerAccount();
+    if (!account.exists || BigInt(account.spendableStroops) < BigInt(fee)) refuse({ reason: 'payer_unfunded' });
   }
   #save(serial, phase, value) {
     writeFileSync(join(this.#journal, `${String(serial).padStart(4, '0')}.${phase}.json`),
-      JSON.stringify(value), { mode: 0o600, flag: 'wx' });
+      JSON.stringify(value), { mode: 0o600, flag: 'wx', flush: true });
   }
   /**
    * The fee payer is the transaction's source and pays its fee; it is never a signer on an account.
@@ -397,7 +511,7 @@ export class WalletNetwork {
    * its address or carries the payer's key in its signature payload, as a smart account's
    * `Delegated(payer)` signer would. An entry resting on the source account's own signature is the
    * payer's own deployment of a contract (it is the deployer address) or, with a disposable testnet
-   * key only, its own transfer funding the sample; the operator's mainnet key authorizes nothing else.
+   * key only, its own transfer funding the sample; the operator's key authorizes nothing else.
    */
   #assertPayerNotSigner(assembled) {
     const op = assembled.toEnvelope().v1.tx.operations[0].body.invokeHostFunctionOp;
@@ -425,14 +539,22 @@ export class WalletNetwork {
       .addOperation(sourceAuthorization(operation, this.payerAddress)).setTimeout(120).build();
     return this.submitEnvelope(tx.toEnvelope().toXDR('base64'), stage);
   }
-  async submitEnvelope(envelopeXdr, stage) {
+  /**
+   * `stage` names the step in the journal. `revoke-policy` (with `{ account }`) is a removal: exempt
+   * from the session cap and needing only `fundRemoval`, given only to exactly a removal from that
+   * account (`isRemoval`); anything else under that label is refused.
+   */
+  async submitEnvelope(envelopeXdr, stage, { account = null } = {}) {
     try {
-      if (!this.#funded || this.#ambiguous || typeof stage !== 'string' || !/^[a-z][a-z0-9-]{0,47}$/.test(stage)) refuse();
+      // A removal needs only `fundRemoval`; every other write a funded payer (`fundPayer`).
+      if (!(stage === 'revoke-policy' ? this.canSubmitRemoval : this.canSubmit) || typeof stage !== 'string'
+        || !/^[a-z][a-z0-9-]{0,47}$/.test(stage)) refuse();
       await this.assertNetwork();
       const original = TransactionBuilder.fromXDR(envelopeXdr, this.#network.passphrase);
       if (original.source !== this.payerAddress || original.toEnvelope().type !== 'envelopeTypeTx'
         || original.signatures.length || original.operations.length !== 1 || original.toEnvelope().v1.tx.operations[0].sourceAccount !== null
         || original.toEnvelope().v1.tx.operations[0].body.type !== 'invokeHostFunction') refuse();
+      if (stage === 'revoke-policy' && !isRemoval(original.toEnvelope().v1.tx.operations[0].body.invokeHostFunctionOp, account)) refuse();
       const expected = bytes(original.toEnvelope());
       const simulation = await this.#server.simulateTransaction(original, undefined, 'enforce');
       if (rpc.Api.isSimulationError(simulation) || !simulation.result) refuse();
@@ -453,6 +575,12 @@ export class WalletNetwork {
       }
       checkPreparedEnvelope(assembled, expected, this.#network.passphrase, this.#fees);
       this.#assertPayerNotSigner(assembled);
+      // Operator-funded: every write is signed only when the operator's account can pay this transaction's fee
+      // now. `fundPayer` checked the per-transaction cap once; an upload, held to its own larger cap,
+      // can cost far more, and the account can be drawn down between writes. Refused here, nothing is
+      // journaled or counted and no submission is left uncertain, so the session can still write once the
+      // operator funds the account (the actions let such a refused step be confirmed again).
+      if (this.#payer.operator) await this.#payerCovers(fee);
       this.#payer.signTransaction(assembled);
       const txHash = Buffer.from(assembled.hash()).toString('hex');
       const serial = ++this.#serial;
@@ -728,7 +856,9 @@ export class WalletNetwork {
   /**
    * A classic account as the owner must fund it, read only: `{ exists: false, minimumStroops, ledger }`
    * or `{ exists: true, balanceStroops, minimumStroops, spendableStroops, ledger }`. The minimum is the
-   * network's base reserve, from the latest ledger header, times two plus the account's subentries.
+   * network's base reserve, from the latest ledger header, times two plus the account's subentries
+   * plus the reserves it sponsors less those sponsored for it; what it can spend is its balance less
+   * that minimum and less its selling liabilities (XLM its open offers have set aside).
    */
   async classicAccount(address) {
     try {
@@ -746,10 +876,16 @@ export class WalletNetwork {
       const [entry] = response.entries;
       const account = entry.val?.type === 'account' ? entry.val.account : refuse();
       if (response.entries.length !== 1 || !same(entry.key, key) || !Number.isSafeInteger(account.numSubEntries)) refuse();
-      const minimum = (2n + BigInt(account.numSubEntries)) * reserve;
+      const v1 = account.ext?.type === 'v1' ? account.ext.v1 : null;
+      const v2 = v1?.ext?.type === 'v2' ? v1.ext.v2 : null;
+      const selling = v1 ? BigInt(v1.liabilities.selling) : 0n;
+      const entries = 2n + BigInt(account.numSubEntries) + BigInt(v2?.numSponsoring ?? 0) - BigInt(v2?.numSponsored ?? 0);
+      if (entries < 0n || selling < 0n) refuse();
+      const minimum = entries * reserve;
       const balance = BigInt(account.balance);
+      const spendable = balance - minimum - selling;
       return { exists: true, balanceStroops: balance.toString(), minimumStroops: minimum.toString(),
-        spendableStroops: (balance > minimum ? balance - minimum : 0n).toString(), ledger: observed };
+        spendableStroops: (spendable > 0n ? spendable : 0n).toString(), ledger: observed };
     } catch (error) { refuse(error); }
   }
   /**
@@ -889,7 +1025,7 @@ export class WalletNetwork {
    */
   async prepareRemoval({ wallet, ruleId, ownerReadLedger }) {
     try {
-      if (!this.#funded || this.#ambiguous || !StrKey.isValidContract(wallet?.contractId)) refuse();
+      if (!this.canSubmitRemoval || !StrKey.isValidContract(wallet?.contractId)) refuse();
       await this.assertNetwork();
       const captured = await this.sourceCapture();
       if (captured.ledger < ledger(ownerReadLedger) || captured.ledger - ownerReadLedger > 12) refuse();
@@ -915,6 +1051,8 @@ export class WalletNetwork {
       const assembled = this.#assemble(unsigned, { ...simulation, result: { ...simulation.result, auth: [entry] } }).build();
       checkPreparedEnvelope(assembled, bytes(envelope), this.#network.passphrase, this.#fees);
       const final = assembled.toEnvelope();
+      // Operator-funded: the owner is asked to sign only a removal the operator's account can pay for.
+      if (this.#payer.operator) await this.#payerCovers(final.v1.tx.fee);
       const restored = final.v1.tx.ext.sorobanData.ext;
       return { assembly: {
         envelope_xdr_base64: final.toXDR('base64'), envelope_xdr_sha256: digest(bytes(final)), network_id: this.#network.networkId,

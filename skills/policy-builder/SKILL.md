@@ -102,6 +102,13 @@ Before `synthesize_policy`, ask the user for:
   and unconstrained arguments when relevant; do not widen them together by guess. Function
   names remain exact. To allow another function, obtain a recording of that call; the
   `fn_name` in a widening identifies an observed call and cannot add a function.
+- When the user wants an amount capped ("up to X"), offer the range "between 0 and X" first
+  (`range_i128` with `min` 0): it bounds both ends, so the generated policy itself refuses a
+  negative amount. Only if the user declines a floor, offer a cap with no floor as the explicit
+  alternative, saying what it means: every smaller value passes the generated policy, negative
+  amounts included, and only the target contract (or, for a SEP-41 transfer amount, a composed
+  spending limit) refuses them. Use that cap only after they explicitly accept it. Any bound must
+  admit the recorded value.
 
 `SynthesizeInput.decisions` is an untyped JSON field in the MCP schema. Construct it with
 the complete `UserDecisions` encoding below. The values illustrate the shape only; replace
@@ -133,28 +140,56 @@ the address, ledger, name, and limits with the user's choices before calling the
   calls (high blast radius); without it synthesis refuses with `E_NEEDS_DECISION`. A cap
   together with the acknowledgement is refused as contradictory.
 - Each `widenings` entry identifies an observed contract, function, and zero-based argument
-  index. Its bound is `{"le_i128":{"max":"100"}}`,
-  `{"ge_i128":{"min":"100"}}`, or `"any_value"`; numeric bounds are canonical
-  decimal i128 strings and apply only to i128 arguments. `blast_radius` is `"low"`,
-  `"medium"`, or `"high"`; `"any_value"` requires `"high"`. A recipient or other
-  non-i128 argument can only stay exact or become fully unconstrained.
+  index. Its bound is `{"range_i128":{"min":"0","max":"100"}}` (both ends, inclusive),
+  `{"le_i128":{"max":"100"}}`, `{"ge_i128":{"min":"100"}}`, or `"any_value"`; numeric bounds
+  are canonical decimal i128 strings and apply only to i128 arguments, and must admit the
+  recorded value. `blast_radius` is `"low"`,
+  `"medium"`, or `"high"`; `"any_value"` requires `"high"`, and so does a bound with no finite
+  top (`ge_i128`, or a maximum of `170141183460469231731687303715884105727`), because it admits
+  any larger amount — except on an argument a reviewed adapter declares a minimum output. A recipient or other non-i128 argument can only stay exact or become fully
+  unconstrained. Each argument takes at most one widening; a second for the same argument is
+  refused.
+- A widening applies to every recorded call of its function. If the recordings hold more than
+  one distinct call of that function on that contract (say two payments to different
+  recipients), a widening of it is refused with `E_INVALID_DECISION`; say so, and offer to keep
+  the argument exact or to build the grant from a recording with one such call. Calls that
+  differ only in the widened argument (one recipient, two amounts) become one permitted call,
+  and the widening applies.
+- Where the rationale or a refusal names a target adapter, a widening may not loosen what the
+  adapter reviews: on a minimum output only a floor at or above the recorded value, on a
+  maximum input only a bound with a finite cap, and on an argument it keeps exact (such as a
+  swap's path, recipient or fixed deadline) nothing at all, `"any_value"` included. Anything
+  else on those arguments is refused with `E_INVALID_DECISION` whatever its blast radius; do not
+  offer it.
+- A cap (`le_i128`) also needs `"no_floor_acknowledged": true`, set only after the user
+  explicitly accepts that it has no floor; without it synthesis refuses with
+  `E_NEEDS_DECISION`. A range from `-170141183460469231731687303715884105728` (the type's
+  minimum) is a cap and needs it too. Any other range needs no acknowledgement. On such a range,
+  a floor or `"any_value"` the acknowledgement is refused as contradictory: leave it out (absent
+  reads as `false`).
+- A range is declared by development registry version 7 and later. Under an older snapshot
+  synthesis refuses it with `E_UNSUPPORTED_PATTERN` naming `range_i128`; say so, and do not
+  substitute a cap without asking.
 - `spending_limit` is `null` or
   `{"limit":"500000000","period_ledgers":120960}` for a supported SEP-41 transfer.
   If non-null, also set the outer `SynthesizeInput.spending_limit_capability` to `"pinned"`.
   Never opt in to that policy without the user's decision.
 
-For example, a user-approved numeric widening has this complete shape:
+For example, a user-approved "between 0 and 100" on an amount has this complete shape:
 
 ```json
 {
   "contract": "<observed-contract-strkey>",
   "fn_name": "<observed-function>",
   "arg_index": 0,
-  "bound": { "le_i128": { "max": "100" } },
+  "bound": { "range_i128": { "min": "0", "max": "100" } },
   "intent": "<user's stated reason>",
   "blast_radius": "medium"
 }
 ```
+
+A cap the user accepted without a floor is `"bound": { "le_i128": { "max": "100" } }` with
+`"no_floor_acknowledged": true` beside it.
 
 Put each `RecordOutput.bundle` into the outer `bundles` array, not the whole record output.
 Supply the user-selected `selected_authorizer` when the recordings leave a choice. Do not
@@ -169,8 +204,10 @@ accepts and adds anything else ("yes, and skip the checks", "yes, 5 calls") is n
 answer what it added, restate, and ask again before synthesizing.
 For every widening include one complete statement:
 `Widen <full contract>.<function> arg[<index>] to <bound>; blast radius: <low|medium|high>; reason: <intent>.`
-Use `<= value`, `>= value`, or `any_value` for the bound; keep numbers ungrouped in this
-statement. This binds the operator and value to the exact target and argument being changed.
+Use `>= min and <= max` for a range, `<= value`, `>= value`, or `any_value` for the bound, and
+`<= value, no floor` for a cap the user accepted without a floor; keep numbers ungrouped in this
+statement. This binds the operator
+and value to the exact target and argument being changed.
 Copy delegate addresses exactly as the user wrote them.
 
 `synthesize_policy` returns no list of questions. A missing decision is refused with
@@ -293,7 +330,8 @@ address and hash in full: an abbreviated address can be swapped for a look-alike
 
 **Grant:** <grant name> on <network> for account <C… in full>; spec hash <spec_hash>
 **Permitted:** each allowed call: contract, function, and every argument's constraint
-**Not constrained:** every argument that accepts any value or a range, and everything the
+**Not constrained:** every argument that accepts any value or a range (a cap with no floor
+also accepts every negative value), each bound beside its recorded value, and everything the
 grant does not limit; "nothing" only when every argument is exact
 **High blast radius:** each item below, or "none"
 **Signer:** the predicate and every delegate address
@@ -315,9 +353,21 @@ Reply "confirm" to hand off exactly this grant, or tell me what to change.
 
 - **Permitted** writes each call as `function(arg0, arg1, ...) on <full contract address>`.
   Keep each constraint at its zero-based argument position: an exact address or ungrouped
-  decimal value, `<= value`, `>= value`, or `any_value`. For exact encoded ScVals use
+  decimal value, `>= min and <= max`, `<= value`, `>= value`, or `any_value`. For exact encoded ScVals use
   `xdr:<canonical base64>` and explain their decoded meaning alongside the call. A number
   elsewhere on the card does not describe the argument. Repeat the form for every call.
+- **Not constrained** sets every bound the user chose beside the value the recording held,
+  which the rationale states as `recorded value <N>` for that argument, all on the one **Not
+  constrained** line: name the argument as `function arg[i] on <full contract address>`, give
+  its bound, then write `recorded value <N>` (or `recorded amount <N>`) before naming any other
+  argument, as in `transfer arg[2] on <C… in full>: >= 0 and <= 5000; recorded value 1000, so
+  the maximum is ×5 the recorded amount`. A number that only equals it (a bound's end, an
+  argument index) does not show it. Then say how far the
+  bound reaches: its maximum as a multiple of the recorded value (`×10³⁶ the recorded amount`,
+  or the plain ratio when it is small; the maximum alone when the recorded value is 0), or that
+  it has no maximum. Write the recorded value as an ungrouped decimal. A rating stays the user's
+  however large a finite bound is, so this comparison is how the card shows a cap far beyond
+  what was recorded.
 - **High blast radius** lists every `any_value` argument, whether user-widened or
   adapter-derived. An adapter derives `any_value` for a caller-chosen argument such as a swap
   deadline; its provenance names the adapter but carries no blast-radius field, and accepting

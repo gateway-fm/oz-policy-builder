@@ -377,6 +377,12 @@ pub struct BuildConfig {
     /// The requesting caller's cancellation. `None`, the default, builds until completion or
     /// timeout. Set per request on a clone of the operator's configuration, never shared.
     pub cancel: Option<BuildCancel>,
+    /// Set by a server many clients share (`--http`); the CLI and a stdio server leave it off.
+    /// A failed local build then reports its exit status without the compiler's output, which
+    /// names the host's paths, and each local build removes the crate it built from the shared
+    /// cache, keeping the dependencies: otherwise every distinct spec name a client chooses
+    /// leaves its outputs there for good. A disposable worker does both by construction.
+    pub shared_server: bool,
 }
 
 /// A fail-fast bound on concurrent builds. Clones share one count, so every holder of a cloned
@@ -476,6 +482,7 @@ impl Default for BuildConfig {
             builder: Builder::Local,
             slots: None,
             cancel: None,
+            shared_server: false,
         }
     }
 }
@@ -597,14 +604,17 @@ fn parse_u64(key: &str, raw: &str) -> Result<u64, BuildError> {
 /// plant dependency artifacts that cargo links into the policy wasm — and since `verify`
 /// reproduces through the same cache, the reproduction would agree with the poisoned build.
 ///
-/// The `workspace` argument is deliberately unused — it must not influence the cache.
-pub fn resolve_target_dir(config: &BuildConfig, _workspace: &Path) -> PathBuf {
+/// It sits in `parent`, the directory the build workspaces are created in, which
+/// [`workspace_parent`] has established only root and this user can add entries to. The check
+/// on the cache itself does not reach its parent: under a parent others can write and that is
+/// not sticky, another user could rename the checked cache away and put their own in its place.
+pub fn resolve_target_dir(config: &BuildConfig, parent: &Path) -> PathBuf {
     config.target_dir.clone().unwrap_or_else(|| {
         #[cfg(unix)]
         let name = format!("ozpb-build-cache-{}", nix::unistd::getuid());
         #[cfg(not(unix))]
         let name = "ozpb-build-cache".to_string();
-        std::env::temp_dir().join(name)
+        parent.join(name)
     })
 }
 
@@ -674,6 +684,156 @@ pub fn prepare_cache_dir(path: &Path) -> Result<(), BuildError> {
     {
         std::fs::create_dir_all(path).map_err(|error| unusable(&format!("{error}")))
     }
+}
+
+/// The directory a build's workspace is created in.
+///
+/// Cargo reads `.cargo/config.toml` (and the older `.cargo/config`) from the directory it runs
+/// in and from every parent of it, and looks upward from the generated manifest for a workspace
+/// root `Cargo.toml`, whose `[patch]` sections and profiles would then apply. The build runs in
+/// its workspace, so whoever can add an entry to any parent of it chooses the compiler
+/// (`build.rustc-wrapper`), its flags or the dependency sources: code that runs as the caller,
+/// who may hold keys, and a Wasm that `verify` on the same host then reproduces. Clearing
+/// environment variables, as [`sanitize_build_environment`] does, does not reach files. Linux's
+/// shared `/tmp` is such a parent: any local user can create `/tmp/.cargo`.
+///
+/// So a workspace is created only under a directory that, like each of its parents up to `/`,
+/// only root and this user can add entries to; a directory on a read-only mount qualifies, since
+/// nobody can through this mount (a read-only view of a directory others write to elsewhere, such
+/// as a host's `/tmp` mounted read-only into a container, is not detected). The system temporary
+/// directory is used when it qualifies, as macOS's per-user one does; otherwise `ozpb/build` in
+/// the user's cache directory (`$XDG_CACHE_HOME`, else `~/.cache`), created owner-only; and when
+/// neither qualifies the build is refused before anything runs. The default build cache sits in
+/// the same directory ([`resolve_target_dir`]). A disposable worker builds in its job's private
+/// mount instead (`worker.rs`).
+#[cfg(unix)]
+fn workspace_parent() -> Result<PathBuf, BuildError> {
+    let absolute = |name: &str| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    let user_cache = absolute("XDG_CACHE_HOME")
+        .or_else(|| absolute("HOME").map(|home| home.join(".cache")))
+        .map(|cache| cache.join("ozpb").join("build"));
+    workspace_parent_from(
+        &std::env::temp_dir(),
+        user_cache.as_deref(),
+        cargo_home().as_deref(),
+    )
+}
+
+/// Cargo's own home, by the rule `sanitize_build_environment` passes to the builder.
+#[cfg(unix)]
+fn cargo_home() -> Option<PathBuf> {
+    std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_absolute())
+                .map(|home| home.join(".cargo"))
+        })
+}
+
+#[cfg(not(unix))]
+fn workspace_parent() -> Result<PathBuf, BuildError> {
+    Ok(std::env::temp_dir())
+}
+
+/// [`workspace_parent`] over explicit candidates: `temp`, else `fallback`, created owner-only.
+#[cfg(unix)]
+fn workspace_parent_from(
+    temp: &Path,
+    fallback: Option<&Path>,
+    cargo_home: Option<&Path>,
+) -> Result<PathBuf, BuildError> {
+    use std::os::unix::fs::DirBuilderExt;
+    let refused = match private_ancestry(temp, cargo_home) {
+        Ok(canonical) => return Ok(canonical),
+        Err(reason) => reason,
+    };
+    if let Some(fallback) = fallback {
+        let created = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(fallback);
+        if let Some(canonical) = created
+            .ok()
+            .and_then(|()| private_ancestry(fallback, cargo_home).ok())
+        {
+            return Ok(canonical);
+        }
+    }
+    Err(BuildError::Unavailable(format!(
+        "no private directory to build in: the temporary directory {refused}, and no private \
+         user cache directory stands in. Cargo reads its configuration from every parent of the \
+         directory it builds in, so set TMPDIR to a directory that only you and root can write \
+         to, inside directories only you and root can write to (for example one made with \
+         `mkdir -m 700` in your home directory)"
+    )))
+}
+
+/// `dir` resolved, when it and each of its parents admit new entries from root and this user
+/// only, and none of them already holds a `.cargo` (other than `cargo_home`, which cargo reads
+/// anyway) or a `Cargo.toml`; otherwise why not. The path stays out of the reason: it reaches MCP
+/// clients (§6.5).
+///
+/// The entries are refused as well as the modes because the modes do not say everything: a
+/// read-only mount can show a directory others write to elsewhere, and macOS access-control
+/// entries (`chmod +a`) can let others write where the mode bits say they cannot. Those are not
+/// read; an entry already planted through either is.
+#[cfg(unix)]
+fn private_ancestry(dir: &Path, cargo_home: Option<&Path>) -> Result<PathBuf, &'static str> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    // Resolved first: a link is only a name, and cargo reads the parents of where it leads.
+    let canonical = std::fs::canonicalize(dir).map_err(|_| "could not be resolved")?;
+    let cargo_home = cargo_home.and_then(|home| std::fs::canonicalize(home).ok());
+    let uid = nix::unistd::getuid().as_raw();
+    for ancestor in canonical.ancestors() {
+        let itself = ancestor == canonical;
+        let metadata =
+            std::fs::metadata(ancestor).map_err(|_| "has a parent that could not be inspected")?;
+        let foreign = metadata.uid() != 0 && metadata.uid() != uid;
+        let shared = metadata.permissions().mode() & 0o022 != 0;
+        if (foreign || shared) && !on_read_only_mount(ancestor) {
+            return Err(match (itself, foreign) {
+                (true, true) => "is owned by another user",
+                (true, false) => "is writable by its group or by every user",
+                (false, true) => "has a parent owned by another user",
+                (false, false) => "has a parent writable by its group or by every user",
+            });
+        }
+        let configuration = ancestor.join(".cargo");
+        let is_cargo_home = cargo_home.as_ref().is_some_and(|home| {
+            std::fs::canonicalize(&configuration).is_ok_and(|resolved| &resolved == home)
+        });
+        if std::fs::symlink_metadata(&configuration).is_ok() && !is_cargo_home {
+            return Err(match itself {
+                true => "holds a .cargo directory, whose configuration cargo would read",
+                false => {
+                    "has a parent holding a .cargo directory, whose configuration cargo would read"
+                }
+            });
+        }
+        if std::fs::symlink_metadata(ancestor.join("Cargo.toml")).is_ok() {
+            return Err(match itself {
+                true => "holds a Cargo.toml, which cargo would take for a workspace root",
+                false => {
+                    "has a parent holding a Cargo.toml, which cargo would take for a workspace root"
+                }
+            });
+        }
+    }
+    Ok(canonical)
+}
+
+/// Nobody can add an entry to a directory through a read-only mount, whatever its mode says: the
+/// container images' `/tmp` under a read-only root filesystem.
+#[cfg(unix)]
+fn on_read_only_mount(path: &Path) -> bool {
+    use nix::sys::statvfs::{statvfs, FsFlags};
+    statvfs(path).is_ok_and(|stats| stats.flags().contains(FsFlags::ST_RDONLY))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1160,15 +1320,25 @@ fn build_local(
     request: &BuildRequest<'_>,
     config: &BuildConfig,
 ) -> Result<BuildArtifact, BuildError> {
+    build_local_in(request, config, &workspace_parent()?)
+}
+
+/// [`build_local`] with its workspace created in `parent`, which the caller has established is
+/// a directory nobody else can add entries to (see [`workspace_parent`]).
+fn build_local_in(
+    request: &BuildRequest<'_>,
+    config: &BuildConfig,
+    parent: &Path,
+) -> Result<BuildArtifact, BuildError> {
     validate_generated(request.generated)?;
     let workspace = tempfile::Builder::new()
         .prefix("ozpb-build-")
-        .tempdir()
+        .tempdir_in(parent)
         .map_err(|error| BuildError::Internal(error.to_string()))?;
     write_generated(workspace.path(), request.generated)?;
     let output_dir = workspace.path().join("out");
     std::fs::create_dir(&output_dir).map_err(|error| BuildError::Internal(error.to_string()))?;
-    let target_dir = resolve_target_dir(config, workspace.path());
+    let target_dir = resolve_target_dir(config, parent);
     prepare_cache_dir(&target_dir)?;
     let manifest_path = workspace.path().join("Cargo.toml");
     // The manifest records `build_target` from the crate's own declaration. The CLI picks the
@@ -1182,6 +1352,17 @@ fn build_local(
         .join(ozpb_codegen::BUILD_TARGET)
         .join("release")
         .join(&expected_name);
+    // A shared server's builds take the cache one at a time, and the build's own outputs leave
+    // it on every path out of this function. The wait counts against the build's time limit.
+    let deadline = std::time::Instant::now() + config.timeout;
+    let evicting = match config.shared_server {
+        true => Some(EvictCrateOutputs {
+            _exclusive: exclusive_cache(deadline, config.cancel.as_ref())?,
+            release: target_dir.join(ozpb_codegen::BUILD_TARGET).join("release"),
+            crate_name: request.generated.crate_name.clone(),
+        }),
+        false => None,
+    };
     let started = std::time::SystemTime::now();
 
     let command = build_command(
@@ -1191,13 +1372,22 @@ fn build_local(
         &output_dir,
         &target_dir,
     );
-    let output = run_bounded_until(command, config.timeout, config.cancel.as_ref())?;
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    let output = run_bounded_until(command, remaining, config.cancel.as_ref())?;
     if !output.status.success() {
-        return Err(BuildError::Failed(format!(
-            "stellar contract build exited with {}; output: {}",
-            output.status,
-            String::from_utf8_lossy(&output.combined)
-        )));
+        return Err(BuildError::Failed(match config.shared_server {
+            // The output names this host's paths and its toolchain's layout; a shared server's
+            // clients get the status, as a disposable worker's do.
+            true => format!(
+                "stellar contract build exited with {}; compiler output withheld by this server",
+                output.status
+            ),
+            false => format!(
+                "stellar contract build exited with {}; output: {}",
+                output.status,
+                String::from_utf8_lossy(&output.combined)
+            ),
+        }));
     }
 
     if !written_since(&compiled, started) {
@@ -1217,6 +1407,8 @@ fn build_local(
     }
     let wasm =
         std::fs::read(&wasm_path).map_err(|error| BuildError::Internal(error.to_string()))?;
+    // Nothing below reads the cache: evict and give the next build its turn before the probes.
+    drop(evicting);
     let toolchain = ToolchainIdentity {
         // Both probes run from the build workspace, so they report the tools that actually
         // produced this Wasm rather than whatever the caller's directory resolves to.
@@ -1249,6 +1441,87 @@ fn build_local(
         manifest_hash,
         wasm,
     })
+}
+
+/// Local builds of a shared server, one at a time. Builds sharing a cache already queue on
+/// cargo's lock while they compile; this extends the turn to the eviction after it, so a build
+/// never removes a same-named crate another is compiling. It is this process's: two servers
+/// sharing one cache directory are not serialized against each other's evictions.
+static SHARED_CACHE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Wait for [`SHARED_CACHE`] until `deadline`, or until the caller cancels.
+fn exclusive_cache(
+    deadline: std::time::Instant,
+    cancel: Option<&BuildCancel>,
+) -> Result<std::sync::MutexGuard<'static, ()>, BuildError> {
+    loop {
+        match SHARED_CACHE.try_lock() {
+            Ok(guard) => return Ok(guard),
+            // Nothing panics while the lock is held but an eviction, which leaves no state.
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if cancel.is_some_and(BuildCancel::is_cancelled) {
+            return Err(BuildError::Cancelled);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(BuildError::Timeout);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// On drop, removes one crate's own outputs from a shared target directory's release profile:
+/// its Wasm and dependency file at the top and under `deps/`, any library form of it, and its
+/// fingerprint. Names are matched exactly, so another crate whose name extends this one's stays.
+/// Best effort: what cannot be removed is left, and the next build of that name replaces it.
+struct EvictCrateOutputs {
+    _exclusive: std::sync::MutexGuard<'static, ()>,
+    release: PathBuf,
+    crate_name: String,
+}
+
+impl Drop for EvictCrateOutputs {
+    fn drop(&mut self) {
+        let stem = self.crate_name.replace('-', "_");
+        let hashed = |name: &str, prefix: &str| {
+            name.strip_prefix(prefix)
+                .and_then(|rest| rest.strip_prefix('-'))
+                .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        };
+        let output = |name: &str| {
+            let Some((base, extension)) = name.rsplit_once('.') else {
+                return false;
+            };
+            matches!(extension, "wasm" | "d" | "rlib" | "rmeta")
+                && [Some(base), base.strip_prefix("lib")]
+                    .into_iter()
+                    .flatten()
+                    .any(|base| base == stem || hashed(base, &stem))
+        };
+        for directory in [self.release.clone(), self.release.join("deps")] {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_str().is_some_and(output) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(self.release.join(".fingerprint")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name
+                    .to_str()
+                    .is_some_and(|name| hashed(name, &self.crate_name))
+                {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+    }
 }
 
 /// Allowance for filesystems that store modification times coarsely (whole or even two seconds):
@@ -1678,6 +1951,9 @@ fn sanitize_build_environment(command: &mut Command) {
     command.env_clear();
     for name in [
         "PATH",
+        // `0` makes rustup refuse a missing toolchain or component rather than download it; the
+        // image and the worker launcher set it.
+        "RUSTUP_AUTO_INSTALL",
         "TMPDIR",
         "TEMP",
         "TMP",
@@ -2983,8 +3259,16 @@ mod tests {
                         Constraint::EqI128 {
                             value: i128::MIN.to_string(),
                         },
+                        // One below the type's limit: a bound at the limit is vacuous, so codegen
+                        // emits only the type check for it, and the 40-digit positive literal
+                        // this case exists to compile would not reach the compiler.
                         Constraint::LeI128 {
-                            max: i128::MAX.to_string(),
+                            max: (i128::MAX - 1).to_string(),
+                        },
+                        // Both ends one inside the limits: two 40-digit literals in one range.
+                        Constraint::RangeI128 {
+                            min: (i128::MIN + 1).to_string(),
+                            max: (i128::MAX - 1).to_string(),
                         },
                     ],
                 )],
@@ -3422,6 +3706,106 @@ mod tests {
         }
     }
 
+    /// An operator's `RUSTUP_AUTO_INSTALL=0` (the image and the worker launcher set it) has to
+    /// reach rustup, or a missing toolchain component is downloaded rather than refused.
+    #[test]
+    #[cfg(unix)]
+    fn the_operators_rustup_auto_install_setting_reaches_the_builder() {
+        let _guard = serialized();
+        let previous = std::env::var_os("RUSTUP_AUTO_INSTALL");
+        std::env::set_var("RUSTUP_AUTO_INSTALL", "0");
+        let mut command = Command::new("env");
+        sanitize_build_environment(&mut command);
+        let output = command.output().unwrap();
+        match previous {
+            Some(value) => std::env::set_var("RUSTUP_AUTO_INSTALL", value),
+            None => std::env::remove_var("RUSTUP_AUTO_INSTALL"),
+        }
+        let environment = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            environment
+                .lines()
+                .any(|line| line == "RUSTUP_AUTO_INSTALL=0"),
+            "{environment}"
+        );
+    }
+
+    /// A shared server neither hands a client the compiler's output, which names the host's
+    /// paths, nor keeps each client's crate in the shared cache: a distinct spec name per request
+    /// grew it by about 100 KB each, never reclaimed. The dependencies, the point of the shared
+    /// cache, and other crates' outputs stay. The CLI and a stdio server keep both.
+    #[test]
+    #[cfg(unix)]
+    fn a_shared_server_withholds_compiler_output_and_evicts_the_crate_it_built() {
+        let _guard = serialized();
+        let base = private_base();
+        let target = base.path().join("target");
+        let release = target.join(ozpb_codegen::BUILD_TARGET).join("release");
+        let script = fixture_script(
+            base.path(),
+            &format!(
+                "release=\"$CARGO_TARGET_DIR/{}/release\"\n\
+                 mkdir -p \"$release/deps\" \"$release/.fingerprint/generated-test-r0-0123456789abcdef\"\n\
+                 for f in generated_test_r0.wasm generated_test_r0.d deps/generated_test_r0.wasm \
+                 deps/generated_test_r0.d; do : > \"$release/$f\"; done\n\
+                 echo \"error[E0425]: in /home/operator/HOST-PATH/src/contract.rs\" >&2\n\
+                 exit 1",
+                ozpb_codegen::BUILD_TARGET
+            ),
+        );
+        let built = [
+            "generated_test_r0.wasm",
+            "generated_test_r0.d",
+            "deps/generated_test_r0.wasm",
+            "deps/generated_test_r0.d",
+            ".fingerprint/generated-test-r0-0123456789abcdef",
+        ];
+        let others = [
+            "deps/libsoroban_sdk-0123456789abcdef.rlib",
+            ".fingerprint/soroban-sdk-0123456789abcdef",
+            "generated_test_r0_other_r0.wasm",
+            ".fingerprint/generated-test-r0-other-r0-0123456789abcdef",
+        ];
+        std::fs::create_dir_all(release.join("deps")).unwrap();
+        std::fs::create_dir_all(release.join(".fingerprint")).unwrap();
+        for other in others {
+            std::fs::write(release.join(other), b"cached").unwrap();
+        }
+        let pins = Pins::default();
+        let crate_files = generated("source");
+        let request = BuildRequest {
+            generated: &crate_files,
+            spec_hash: sha256(b"spec"),
+            registry_snapshot: sha256(b"registry"),
+            rule_index: 0,
+            template_family: "policy-templates/scope@1",
+            pins: &pins,
+        };
+        for shared in [false, true] {
+            let config = BuildConfig {
+                stellar_binary: script.clone(),
+                target_dir: Some(target.clone()),
+                shared_server: shared,
+                ..BuildConfig::default()
+            };
+            let Err(BuildError::Failed(message)) = build_local_in(&request, &config, base.path())
+            else {
+                panic!("the stand-in builder fails");
+            };
+            assert_eq!(message.contains("HOST-PATH"), !shared, "{message}");
+            for path in built {
+                assert_eq!(
+                    release.join(path).exists(),
+                    !shared,
+                    "shared={shared}: {path}"
+                );
+            }
+            for path in others {
+                assert!(release.join(path).exists(), "shared={shared}: {path}");
+            }
+        }
+    }
+
     #[test]
     fn sanitized_builder_environment_does_not_expose_an_inherited_secret() {
         let _guard = serialized();
@@ -3537,17 +3921,16 @@ mod tests {
 
     #[test]
     fn the_default_target_dir_is_shared_across_builds_not_per_build() {
-        let config = BuildConfig::default();
-        let first = resolve_target_dir(&config, Path::new("/nonexistent/workspace-a"));
-        let second = resolve_target_dir(&config, Path::new("/nonexistent/workspace-b"));
+        // Every build's workspace is created in the same checked parent; the cache sits beside
+        // them, never inside one.
+        let parent = Path::new("/nonexistent/private-parent");
+        let cache = resolve_target_dir(&BuildConfig::default(), parent);
         assert_eq!(
-            first, second,
+            cache.parent(),
+            Some(parent),
             "the default cache must be shared, or every build recompiles the whole \
-             dependency tree from scratch inside the timeout"
-        );
-        assert!(
-            !first.starts_with("/nonexistent/workspace-a"),
-            "the default must not live inside the per-build workspace: {first:?}"
+             dependency tree from scratch inside the timeout; and it belongs in the parent \
+             checked for other users' writes: {cache:?}"
         );
     }
 
@@ -3631,6 +4014,142 @@ mod tests {
                 "mode {mode:o} must be refused as unusable by its owner"
             );
         }
+    }
+
+    /// A private directory the way a build would get one. Not beside the test binary: its
+    /// parents include this checkout's `Cargo.toml`, which a build directory may not have.
+    #[cfg(unix)]
+    fn private_base() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(".ozpb-ancestry-")
+            .tempdir_in(workspace_parent().unwrap())
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn directory(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir(path).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    // Cargo reads `.cargo/config.toml` from the directory it runs in and every parent, and takes
+    // a parent's `Cargo.toml` as the workspace root. A parent another user can add entries to
+    // lets that user choose the compiler — measured: a `/tmp/.cargo/config.toml` naming a
+    // `rustc-wrapper` ran the wrapper as the caller. A build directory is created only under
+    // parents nobody else can add to.
+    #[test]
+    #[cfg(unix)]
+    fn a_build_directory_whose_parents_another_user_can_write_is_refused() {
+        let base = private_base();
+        // The user's own cargo home, as the builder passes it: a test base under the home
+        // directory (a Linux runner's, beside `~/.cargo`) is otherwise refused for it.
+        let own = cargo_home();
+        let private = base.path().join("private");
+        directory(&private, 0o700);
+        let shared = base.path().join("shared");
+        directory(&shared, 0o1777);
+        let group = base.path().join("group");
+        directory(&group, 0o770);
+        // Private itself, inside a shared parent: cargo still reads the parent.
+        let inside_shared = shared.join("mine");
+        directory(&inside_shared, 0o700);
+        // A private-looking link that resolves into the shared directory.
+        let link = private.join("link");
+        std::os::unix::fs::symlink(&inside_shared, &link).unwrap();
+
+        assert_eq!(
+            workspace_parent_from(&private, None, own.as_deref()).unwrap(),
+            private.canonicalize().unwrap()
+        );
+        for refused in [&shared, &group, &inside_shared, &link] {
+            match workspace_parent_from(refused, None, own.as_deref()) {
+                Err(BuildError::Unavailable(message)) => assert!(
+                    message.contains("TMPDIR") && !message.contains(".ozpb-ancestry-"),
+                    "{message}"
+                ),
+                other => panic!("{refused:?} must be refused, got {other:?}"),
+            }
+        }
+    }
+
+    /// Below the ownership check, a `.cargo` or a `Cargo.toml` already in the build directory or
+    /// a parent is refused as well: one a read-only mount shows but does not let anyone remove,
+    /// or one written through a macOS access-control entry the mode bits do not show. The
+    /// user's own cargo home is read by cargo in any case, and does not count.
+    #[test]
+    #[cfg(unix)]
+    fn a_build_directory_under_cargo_configuration_or_a_manifest_is_refused() {
+        let base = private_base();
+        let own = cargo_home();
+        let configured = base.path().join("configured");
+        directory(&configured, 0o700);
+        directory(&configured.join(".cargo"), 0o700);
+        let below_configured = configured.join("inside");
+        directory(&below_configured, 0o700);
+        let manifest = base.path().join("manifest");
+        directory(&manifest, 0o700);
+        std::fs::write(manifest.join("Cargo.toml"), "[workspace]\n").unwrap();
+        let below_manifest = manifest.join("inside");
+        directory(&below_manifest, 0o700);
+        for (refused, names) in [
+            (&configured, ".cargo"),
+            (&below_configured, ".cargo"),
+            (&below_manifest, "Cargo.toml"),
+        ] {
+            match workspace_parent_from(refused, None, own.as_deref()) {
+                Err(BuildError::Unavailable(message)) => {
+                    assert!(
+                        message.contains(names) && message.contains("TMPDIR"),
+                        "{message}"
+                    )
+                }
+                other => panic!("{refused:?} must be refused, got {other:?}"),
+            }
+        }
+        let home = base.path().join("home");
+        directory(&home, 0o700);
+        directory(&home.join(".cargo"), 0o700);
+        let below_home = home.join("tmp");
+        directory(&below_home, 0o700);
+        // A `.cargo` that is the cargo home does not count. Where the base already sits beside the
+        // real cargo home (a Linux runner's home directory), that one shows it; elsewhere a
+        // stand-in home does.
+        match private_ancestry(base.path(), None) {
+            Ok(_) => assert!(
+                workspace_parent_from(&below_home, None, Some(&home.join(".cargo"))).is_ok()
+            ),
+            Err(reason) => {
+                assert!(reason.contains(".cargo"), "{reason}");
+                assert!(workspace_parent_from(base.path(), None, own.as_deref()).is_ok());
+            }
+        }
+        assert!(workspace_parent_from(&below_home, None, own.as_deref()).is_err());
+    }
+
+    /// Where the temporary directory is shared — `/tmp` on Linux — the user's cache stands in,
+    /// created owner-only; one that is not private itself is refused as well.
+    #[test]
+    #[cfg(unix)]
+    fn a_private_user_cache_stands_in_for_a_shared_temporary_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = private_base();
+        let shared = base.path().join("shared");
+        directory(&shared, 0o1777);
+        let cache = base.path().join("cache").join("ozpb").join("build");
+        let own = cargo_home();
+        let chosen = workspace_parent_from(&shared, Some(&cache), own.as_deref()).unwrap();
+        assert_eq!(chosen, cache.canonicalize().unwrap());
+        let mode = std::fs::metadata(&cache).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "created group- or world-accessible: {mode:o}"
+        );
+        assert!(matches!(
+            workspace_parent_from(&shared, Some(&shared.join("cache")), own.as_deref()),
+            Err(BuildError::Unavailable(_))
+        ));
     }
 
     #[test]

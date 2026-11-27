@@ -162,8 +162,9 @@ replay-invariant **RecordingBundle** with an acquisition-derived evidence label.
 **Inputs (three paths, same output type):**
 
 - *Executed:* Stellar RPC `getTransaction(hash)` → decode `envelopeXdr` →
-  `InvokeHostFunctionOp.auth: Vec<SorobanAuthorizationEntry>` (the authorization tree the
-  network actually verified), plus `resultXdr` — whose decoded outcome must agree with the
+  `InvokeHostFunctionOp.auth: Vec<SorobanAuthorizationEntry>` (the entries the submitter
+  attached, of which the network checked only those a `require_auth` reached), plus
+  `resultXdr` — whose decoded outcome must agree with the
   reported status before the response becomes evidence — and `resultMetaXdr` for effects. **Retention caveat
   (documented, surfaced in the UI):** standard RPC retention is short (typically 24 hours,
   up to 7 days) — recording by hash only works within that window.
@@ -249,6 +250,13 @@ definitions and CAP-46-11):
   Protocol 27 (CAP-71) additions `AddressV2` and `AddressWithDelegates` (recursing the
   delegate signature tree). The credential *kind* is recorded; signature material irrelevant
   to policy synthesis is not retained in the fingerprint.
+- **An attached entry is not an authorization.** The host authenticates an entry only when a
+  `require_auth` reaches it, and a transaction succeeds with entries nothing used. An executed
+  address credential counts as an authorization only when the operation's meta shows its nonce
+  consumed. Any other entry is a labeled note and never a selectable authorizer
+  ([recording evidence](RECORDING-EVIDENCE.md#which-authorization-entries-are-evidence)). A
+  `SourceAccount` credential resolves to the operation's source account, or the (inner)
+  transaction's when the operation names none.
 - Fee-bump and multi-operation envelopes are parsed with explicit operation selection.
 - Failed executed transactions are rejected as behavior examples unless the user explicitly
   opts into a failure-analysis mode.
@@ -263,9 +271,9 @@ definitions and CAP-46-11):
   selected operation index, ledger anchor, decoded evidence and notes, executable
   observations, evidence trust level, schema version, and canonicalization version; uniquely
   identifies one recording. Authorizer selection and multi-recording grouping happen in
-  synthesis, not in the recording: a bundle carries **all** authorizers, and the resulting
-  PolicySpec pins the recording hashes it was derived from next to the selected smart
-  account.
+  synthesis, not in the recording: a bundle carries **all** authorizers the evidence shows
+  authorized, and the resulting PolicySpec pins the recording hashes it was derived from next
+  to the selected smart account.
 
 Raw XDR is always preserved alongside decoded views — decoding never replaces evidence.
 Recording sessions group multiple transactions (the RFP's canonical "claim on Blend, then
@@ -386,9 +394,12 @@ Key properties:
 - **Every constraint carries provenance:** `observed_exact`, `user_widened` (with the user's
   stated intent and a blast-radius label), or `adapter_derived` (with the adapter identity
   and code-hash binding). For adapter-derived claims the expected target hash is a canonical
-  spec input, checked at generation, installation, and live preflight; where it cannot be
-  enforced on-chain, reports call it monitored state-dependent evidence, not a permanent
-  invariant.
+  spec input. Synthesis selects the adapter by the recording's observed hash, which the caller
+  supplies, so that is a match, not a check of the chain; the install intent (and unsigned
+  assembly) reads the target's code in the same capture as the authority check and refuses
+  other code (`E_TARGET_CODE_CHANGED`), and the live policy check refuses it too. The generated
+  policy does not enforce it on-chain, so after installation reports call it monitored
+  state-dependent evidence, not a permanent invariant.
 - **Enforceable vs observational is explicit.** Constraints derive only from the
   authorization context; event/state evidence appears in rationale fields.
 - **State semantics are executable invariants** (§4.4).
@@ -429,11 +440,18 @@ Derivation rules:
      the skill/wallet), with a blast-radius label proportional to what it unconstrains —
      e.g. accepting "any deadline" is flagged high-blast-radius, with the report stating the
      downstream argument is then unconstrained (the rule's own `valid_until` still bounds
-     *when* authorization can occur); or
+     *when* authorization can occur). The label is not only self-declared: a bound with no
+     finite top admits any larger amount and must be rated high, unless an adapter declares the
+     argument a minimum output, and a bound spanning the whole `i128` range is held to high by
+     spec validation, as `any_value` is. A decision names an argument, not a recorded call, so
+     one that would loosen several distinct recorded calls of a function is refused; or
   2. a **versioned contract adapter** bound to a verified target code hash that declares
      argument semantics — max-input vs min-output vs deadline vs identifier — for that
      specific contract (§6.1). The XDR type alone never determines direction: lowering a
      minimum-output makes a swap *less* safe, so `<= observed` as a generic rule is unsound.
+     Where an adapter declares a role, a user decision may not loosen what it requires either:
+     a bound admitting values below the recorded minimum output, one leaving the maximum input
+     uncapped, or any widening of an argument the adapter keeps exact is refused.
 - **Value caps:** token-movement events *suggest* which argument carries value; the
   suggestion is presented as evidence for the user/adapter decision, never applied silently.
   SEP-41 `transfer` cadence/rate limiting composes the audited OZ `spending_limit`
@@ -720,7 +738,7 @@ endpoint; API role + isolated sandbox-worker role, §3).
 | Tool | Classification | Purpose |
 |---|---|---|
 | `record_transaction` | network read | tx hash (+ configured source, or URL and network) → RecordingBundle (`rpc_reported`) |
-| `record_simulation` | network read; **confidential input** | unsigned envelope → RecordingBundle (RPC `authMode: record`) |
+| `record_simulation` | network read; **confidential input** | unsigned envelope → RecordingBundle (RPC `authMode: record`); a hosted server refuses envelopes carrying signatures |
 | `preflight_transaction` | network read, state-dependent; **confidential input**, and signed entries in it are live authorizations | exact envelope with its intended authorization entries → one RPC `authMode: enforce` simulation: outcome, endpoint-reported ledger, each declared footprint list that is not exactly the simulated one and each disk-read or write limit below the use, and, as advice only, declared instructions or fee below the endpoint's padded estimate. Not a policy, installation, or authority verdict, and never submits; a hosted server refuses envelopes carrying signatures |
 | `capture_target` | network read, state-dependent; **confidential input** | operator-configured `rpc_source` name (never a URL) + unsigned envelope whose only call is a native SAC `transfer(contract account, G recipient, amount)` → the `rpc_reported` target capture (ledger header, state-archival configuration, call, account Wasm hash and footprint entries at one ledger) that the captured-target layer reads. Record mode is acquisition only, never evidence that a policy permits the call; any other target is refused. Never signs, submits or runs the layer |
 | `import_recording` | pure | raw XDR evidence bundle → RecordingBundle (`self_supplied` when the bundle's transaction result XDR backs its claimed outcome, `incomplete` without it — synthesis refuses the latter; `ledger_verified` only when the bundle carries a self-contained inclusion proof checked against a pinned trusted checkpoint — consulting any external backend is a network-read acquisition instead) |
@@ -953,9 +971,12 @@ verification steps that make it trustworthy:**
      a rule — a k-of-n threshold, guarded recovery, anything — is refused: the account skips
      its own signer check for a rule with policies, lets the submitter choose that rule and
      hands the policies whatever signers authenticated, possibly none. A rule on the target may
-     carry policies whose signer semantics are established (a recognized registry policy; a
-     generated policy only once its own artifact is reproduced, which Tranche 2 does not do, so
-     it is refused) and is then described by those semantics, never projected to `all_of`
+     carry policies whose signer semantics are established (a recognized registry policy whose
+     semantics were reviewed for its exact build: compiled in by Wasm hash and kind, as the
+     owner verifiers' schemes are, today only OZ's spending limit, so an entry under another
+     hash labelled with that kind is not readable; a generated policy only once its own
+     artifact is reproduced, which Tranche 2 does not do, so it is refused) and is then
+     described by those semantics, never projected to `all_of`
      from its stored signer list. Such rules — who else can call the target — are shown, not
      decided on: their access is their own, not a way around the agent's limit. A rule in
      several sets gets the stricter, protected-surface treatment.
@@ -995,7 +1016,13 @@ verification steps that make it trustworthy:**
      account, spec, bindings, rule index, the exact `add_context_rule` arguments); the human's
      approval binds to it, and the re-read immediately before signing recomputes it at the new
      ledger — re-evaluating expiry, liveness and recognition — so any difference needs approval
-     again. A freshness window is retry policy, never a security-validity interval: without an
+     again. The commitment does not cover the code at the rule's target. Where the rule requires
+     that code (adapter-derived, or refuse on drift), `prepare_install_intent` reads it in the
+     same capture and refuses other code (`E_TARGET_CODE_CHANGED`), so a change between approval
+     and signing is caught only because what the wallet re-runs immediately before signing is
+     the install intent itself: the reference wallet's preparation runs
+     `assemble_install_transaction`, which re-runs it. A wallet that re-runs only
+     `check_policy_call_surface` gets an unchanged commitment and no target check. A freshness window is retry policy, never a security-validity interval: without an
      on-chain rules-version precondition the toolkit cannot know that no unobserved mutation
      happened in between. The result is recorded in the InstallationRecord. Post-install
      monitoring alerts and offers the emergency-removal flow if a later check fails.
@@ -1217,6 +1244,9 @@ contracts/          # separate workspace, pinned soroban-sdk + stellar-accounts
   golden-transfer-policy/    # excluded from the workspace so it builds standalone with its
                              # own profile: generated policy, exactly as codegen emits it
   soroswap-swap-policy/      # excluded likewise: second generated example (W3 router rule)
+  two-payment-policy/        # excluded likewise: test fixture, a rule with two tuples of one
+                             # function (cross products)
+  range-transfer-policy/     # excluded likewise: third generated example (a ranged amount)
 execution-runtime/  # separate workspace: native account-Wasm and captured-target worker
 scripts/            # release gates, CI checks, fixtures and the MCP development launcher
 tests/support/      # local RPC responders shared by the CLI and MCP boundary tests
@@ -1307,8 +1337,12 @@ determinism CI job (two cold builds, byte-equal); `cargo-deny` for licenses and 
 pinned `rust-toolchain.toml` + MSRV.
 
 **Wallet (TypeScript) specifics.** The policy builder is one package inside the pollywallet
-workspace. MCP payload types are **generated from the `api-types` JSON Schemas** — no
-hand-duplicated types, no drift. The install flow is an explicit state machine over
+workspace. The wallet-facing install DTOs (`prepare_install_intent` and
+`assemble_install_transaction`, request and response) are **hand-written type declarations**,
+`wallet/shared/install-wire.d.mts`, not generated: no generator dependency is added. They are held
+to the published `api-types` JSON Schemas in `docs/wire-contract.json` by a drift test,
+`wallet/tests/install-wire.test.mjs`, which fails on any difference in a field's name, whether it
+is required, or its type. The install flow is an explicit state machine over
 discriminated unions (`record → spec → code → bindings → call-surface → sign → verify`), so
 illegal transitions fail the type-checker rather than QA. TanStack Query owns server-state
 caching (matching pollywallet's existing stack); no domain logic lives client-side — the

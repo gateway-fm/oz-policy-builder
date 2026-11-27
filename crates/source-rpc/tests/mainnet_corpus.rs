@@ -150,7 +150,17 @@ fn recorded(case: &str) -> RecordingBundle {
         bundle.recording_hash().unwrap(),
         "{case}: the recording must rebuild from its own raw evidence"
     );
-    // The envelope's authorization entries, each in its place, are what the recording carries.
+    // The envelope's authorization entries, each in its place, are what the recording carries:
+    // every address credential in this corpus has its nonce consumed in the operation's meta,
+    // so the network checked every entry and none is set aside as unchecked.
+    assert!(
+        !bundle
+            .evidence_notes
+            .iter()
+            .any(|note| note.starts_with("authorization entry ")),
+        "{case}: {:?}",
+        bundle.evidence_notes
+    );
     let envelope = envelope(case);
     let entries = invocation(&envelope).auth.to_vec();
     assert_eq!(bundle.authorizations.len(), entries.len(), "{case}");
@@ -230,7 +240,17 @@ fn authorizer_of(
     envelope: &TransactionEnvelope,
 ) -> String {
     match &entry.credentials {
-        SorobanCredentials::SourceAccount => muxed_strkey(&inner(envelope).source_account),
+        SorobanCredentials::SourceAccount => {
+            let [operation] = inner(envelope).operations.as_slice() else {
+                panic!("a Soroban transaction carries exactly one operation");
+            };
+            muxed_strkey(
+                operation
+                    .source_account
+                    .as_ref()
+                    .unwrap_or(&inner(envelope).source_account),
+            )
+        }
         SorobanCredentials::Address(c) | SorobanCredentials::AddressV2(c) => {
             address_strkey(&c.address)
         }

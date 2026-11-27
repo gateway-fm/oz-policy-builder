@@ -210,9 +210,40 @@ where
         tool_limits,
         build_config: ozpb_toolkit::BuildConfig {
             slots: Some(ozpb_toolkit::BuildSlots::new(max_concurrency)?),
+            shared_server: true,
             ..build_config
         },
     })
+}
+
+/// The operator's acceptance that a hosted server compiles in its own trust domain.
+pub(crate) const UNISOLATED_BUILDS: &str = "OZPB_HTTP_UNISOLATED_BUILDS";
+
+/// A hosted server compiles every client's spec. Without a disposable-worker launcher it would
+/// do so beside the API, with its credentials, network and other clients' work, which the
+/// Compose package does for one operator with trusted clients and says so. Anything else
+/// configured that way is a missing launcher, so it starts only with the operator's explicit
+/// `OZPB_HTTP_UNISOLATED_BUILDS=accept`; any other value of it is refused, as a typo would be.
+pub(crate) fn require_build_isolation<F>(
+    get: F,
+    build_config: &ozpb_toolkit::BuildConfig,
+) -> anyhow::Result<()>
+where
+    F: Fn(&str) -> anyhow::Result<Option<String>>,
+{
+    match (
+        get(UNISOLATED_BUILDS)?.as_deref(),
+        &build_config.worker_launcher,
+    ) {
+        (Some("accept"), _) | (None, Some(_)) => Ok(()),
+        (Some(_), _) => anyhow::bail!("{UNISOLATED_BUILDS} must be unset or exactly `accept`"),
+        (None, None) => anyhow::bail!(
+            "an HTTP server compiles its clients' specs, and without OZPB_BUILD_WORKER_LAUNCHER \
+             it would compile them in its own trust domain. Configure the disposable-worker \
+             launcher (docs/ISOLATED-BUILDS.md), or set {UNISOLATED_BUILDS}=accept for one \
+             operator with trusted clients, as the Compose package does (docs/SELF-HOSTING.md)"
+        ),
+    }
 }
 
 /// Serve the MCP handler over streamable HTTP. Refuses to start without a bearer token, an RPC
@@ -242,6 +273,7 @@ pub(crate) async fn serve(
         .map(|count| count.get())
         .unwrap_or(1);
     let limits = hosted_limits(env_var, build_config, available_cpus)?;
+    require_build_isolation(env_var, &limits.build_config)?;
     let security = HttpSecurity::new(
         &bearer,
         RequestQuota::per_minute(limits.requests_per_minute),
@@ -495,11 +527,40 @@ mod tests {
         let limits = hosted_limits(env(&[]), one_job(), 4).expect("defaults fit");
         assert_eq!(limits.requests_per_minute, 60);
         assert_eq!(limits.max_body_bytes, 1_048_576);
+        // Its clients share it: a failed build's compiler output stays on the host, and each
+        // build leaves the shared cache as it found it.
+        assert!(limits.build_config.shared_server);
         let slots = limits
             .build_config
             .slots
             .expect("a hosted server bounds its builds");
         assert_eq!(slots.available(), 1);
+    }
+
+    /// Without a disposable-worker launcher a hosted server would compile every client's spec
+    /// in its own trust domain, so it starts that way only when the operator says so.
+    #[test]
+    fn a_hosted_server_compiles_in_process_only_when_the_operator_accepts_it() {
+        let launcher = ozpb_toolkit::BuildConfig {
+            worker_launcher: Some("/usr/local/libexec/ozpb-worker-launcher".into()),
+            ..one_job()
+        };
+        let refused = require_build_isolation(env(&[]), &one_job()).unwrap_err();
+        assert!(
+            refused.to_string().contains("OZPB_BUILD_WORKER_LAUNCHER")
+                && refused.to_string().contains(UNISOLATED_BUILDS),
+            "{refused}"
+        );
+        assert!(require_build_isolation(env(&[]), &launcher).is_ok());
+        assert!(require_build_isolation(env(&[(UNISOLATED_BUILDS, "accept")]), &one_job()).is_ok());
+        for value in ["", "1", "true", "ACCEPT"] {
+            for config in [&one_job(), &launcher] {
+                assert!(
+                    require_build_isolation(env(&[(UNISOLATED_BUILDS, value)]), config).is_err(),
+                    "{value:?}"
+                );
+            }
+        }
     }
 
     #[test]

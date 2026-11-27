@@ -27,3 +27,26 @@ test('pairing checks the backend delegate and staging does not invoke import, bu
   await actions['disconnect-agent']({});
   assert.equal((await actions['agent-inbox']({})).connection, null);
 });
+
+// The agent's `connect_wallet` accepts a testnet connection only, so a session on any other network
+// does not offer the direct hand-off: the agent's proposal comes in through manual import there.
+test('the direct hand-off is offered on testnet only: a mainnet session neither offers nor pairs it', async () => {
+  const f = proposalFixture(); const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'a'.repeat(64) };
+  const { MAINNET_FEE_DEFAULTS } = await import('../server/config.mjs');
+  const actionsOn = (profile, fees) => {
+    const calls = []; const handoff = new AgentHandoff({ network: profile });
+    const actions = createWalletActions({ handoff, session: {}, native: {}, delegates: { available: true, check: () => calls.push('delegate') },
+      network: { profile, fees, spentStroops: '0', payerAddress: 'G'.repeat(56) },
+      toolchain: new Proxy({}, { get: () => () => { throw new Error('unexpected build'); } }) });
+    return { actions, calls, handoff };
+  };
+  const testnet = actionsOn(WALLET_NETWORKS.testnet, TESTNET_FEES);
+  assert.equal((await testnet.actions.status({})).capabilities.agentHandoff, true);
+  assert.match((await testnet.actions['pair-agent']({ wallet: f.wallet, delegate })).pairingCode, /^ozpb-pair-[0-9a-f]{64}$/);
+  const mainnet = actionsOn(WALLET_NETWORKS.mainnet, MAINNET_FEE_DEFAULTS);
+  assert.equal((await mainnet.actions.status({})).capabilities.agentHandoff, false);
+  assert.equal((await mainnet.actions.status({})).capabilities.importProposal, true, 'manual import stays');
+  await assert.rejects(() => mainnet.actions['pair-agent']({ wallet: f.wallet, delegate }), /refused/);
+  assert.deepEqual(mainnet.calls, [], 'refused before the delegate is checked');
+  assert.equal(mainnet.handoff.view().pairingPending, false, 'no pairing code exists for the agent to use');
+});

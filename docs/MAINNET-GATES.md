@@ -53,13 +53,13 @@ deviation is recorded in [TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md),
 | G5 | Workflow claims are state-enforced or described as independent permissions | **closed** | [G5](#g5-workflow-claims) | — |
 | G6 | Reports separate offline conformance, committed-state integration and live preflight, with acquisition-derived labels; serialized input is downgraded | **narrowed** | [G6](#g6-reports-and-evidence-labels) | All four layers exist only for the native-SAC transfer; other shapes report their missing layers |
 | G7 | Stateful limits satisfy the executable invariants (missing state, install-only initialization, archival and restoration, max TTL, reinstall, inactivity, expiration changes, failed transactions) | **narrowed** | [G7](#g7-stateful-limits) | One generated fixture through one account code hash, with SDK test TTLs; a reviewed policy is not executed in composition |
-| G8 | Installed code is recognized by a reviewed registry entry or a verified generated-artifact attestation; external verifiers recognized; unknown is unverified; custom source labeled | **closed** | [G8](#g8-recognition) | Custom source is refused rather than labeled: no path accepts it. The code at each address is recognized from G2's `rpc_reported` observation |
+| G8 | Installed code is recognized by a reviewed registry entry or a verified generated-artifact attestation; external verifiers recognized; unknown is unverified; custom source labeled | **narrowed** | [G8](#g8-recognition) | Custom source is refused rather than labeled: no path accepts it. The code at each address is recognized from G2's `rpc_reported` observation |
 | G9 | The artifact chain is acyclic; each build carries a complete, immutable BuildManifest with a pinned registry snapshot | **open** | [G9](#g9-artifact-chain-and-buildmanifest) | Open: the default builder, which the shipped path uses, compiles without a container, so its manifests name no image, and every field is the producer's unattested statement. By design, `generate` and `verify` do not check the registry root they record |
 | G10 | Registry governance resists rollback, freeze and equivocation; revocation triggers alerts and the emergency-removal path | **open** | [G10](#g10-registry-governance) | Open: a revoked account build or owner verifier has documented owner procedures but no tooled or exercised path. Also: the mainnet log is an unsigned draft until its key ceremony; the operator schedules the monitor |
 | G11 | Reconfiguration is fail-closed; stateful grants never overlap; no unbacked atomicity claims | **narrowed** | [G11](#g11-reconfiguration) | Revoke-first replacement has no live run; the through-account test makes the management calls itself. No overlap is seen through G2's `rpc_reported` observation |
-| G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **open** | [G12](#g12-hosted-processing) | Open for the release's endpoint, the self-hosted HTTP server: a static check holds the package's log settings, but no test drives the endpoint and reads what it retains. Also: builds are isolated from the API only in worker mode, accepted on the operator's host |
+| G12 | Hosted processing passes privacy, SSRF, resource-isolation and log-redaction tests | **narrowed** | [G12](#g12-hosted-processing) | Builds are isolated from the API only in worker mode, accepted on the operator's host; the Compose package compiles beside the API, with the operator's acceptance. What a running endpoint retains is read for the package's two containers and the requests its test sends; a failed startup's error and a panic's message are not provoked, and an ingress that keeps container output retains them |
 | G13 | The public/private split exists and the publication allowlist's negative test passes in CI | **closed** | [G13](#g13-publication-split) | — |
-| G14 | Security review covers the full authorization-to-install path | **review** | [G14](#g14-security-review) | No audit report is in this tree |
+| G14 | Security review covers the full authorization-to-install path | **review** | [G14](#g14-security-review) | No audit report is in this tree. The one mainnet installation precedes it, a deviation for the owner's acceptance ([deviation 6](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)) |
 
 ## How the evidence blocks are read
 
@@ -226,8 +226,23 @@ Every observed argument becomes an exact constraint. A bound enters only through
 decision on an amount argument, with canonical numerals and a declared blast radius, or through
 a reviewed adapter bound to the observed code hash and whole argument shape. The adapter takes
 direction from the argument's meaning: a maximum input admits an upper bound, and a minimum
-output gets no invented floor. A widening that matches nothing, or that contradicts
-observed-exact provenance, is refused, and an unverified registry never widens.
+output gets no invented floor. A user decision cannot loosen what an adapter's role requires:
+a bound below a recorded minimum output, one leaving a maximum input with no finite cap, or any
+widening of an argument the adapter keeps exact is refused. A widening that matches nothing, or
+that contradicts observed-exact provenance, is refused, and an unverified registry never widens.
+The adapter is selected by the recording's observed hash, which the caller supplies; the install
+intent reads the target's code in the same capture as the authority check and refuses other code.
+
+A bound must admit the recorded value, and an argument takes one widening. A cap on a signed
+amount sets no floor, so synthesis asks for one: the answer is a range, `min <= x <= max`, which
+the generated policy checks at both ends (development registry version 7 declares the kind;
+earlier versions refuse it), or an explicit acknowledgement of the open floor; a range from
+`i128::MIN` is a cap and asks the same. No floor is ever inferred from the type. The declared
+blast radius has a floor of its own: a bound with no finite top must be rated high unless an
+adapter declares the argument a minimum output, and validation holds a bound spanning the whole
+`i128` range to high, as it does `any_value`. The ranged-transfer fixture's generated crate is committed exactly as
+codegen emits it, and every case the harness derives from it is decided the same way by the
+compiled policy and the reference evaluator.
 
 ```gate-evidence G3
 ci  crates/synthesizer/src/lib.rs  tests::happy_path_synthesizes_a_validating_exact_spec
@@ -239,6 +254,23 @@ ci  crates/synthesizer/src/adapters.rs  adapters::tests::max_input_permits_upper
 ci  crates/policy-spec/src/lib.rs  tests::widening_with_observed_exact_provenance_fails
 ci  crates/policy-spec/src/lib.rs  tests::any_value_demands_high_blast_radius_or_a_bound_adapter
 ci  crates/toolkit/src/target_adapter_tests.rs  target_adapter_tests::absent_or_different_binding_stays_exact_and_unverified_registry_never_widens
+ci  crates/toolkit/src/install_intent.rs  install_intent::tests::install_intent_refuses_adapter_required_target_with_other_code
+ci  crates/synthesizer/src/lib.rs  tests::a_second_widening_of_the_same_argument_is_refused
+ci  crates/synthesizer/src/lib.rs  tests::a_numeric_bound_must_admit_the_recorded_value
+ci  crates/synthesizer/src/lib.rs  tests::a_cap_on_a_signed_amount_needs_its_open_floor_acknowledged
+ci  crates/synthesizer/src/lib.rs  tests::a_range_on_a_signed_amount_asks_no_floor_question
+ci  crates/policy-spec/src/lib.rs  tests::a_range_is_inclusive_and_an_empty_one_is_refused
+ci  crates/evaluator/src/lib.rs  tests::range_i128_permits_both_ends_and_denies_either_side
+ci  crates/toolkit/src/lib.rs  tests::a_range_synthesizes_under_a_registry_that_declares_it_and_is_refused_under_one_that_does_not
+ci  crates/codegen/src/lib.rs  tests::range_crate_matches_committed_output
+ci  crates/codegen/src/lib.rs  tests::a_bound_at_the_i128_limit_emits_no_vacuous_comparison
+ci  contracts/differential/tests/range_generated_suite.rs  range_cases_agree_through_the_compiled_policy
+ci  crates/synthesizer/src/lib.rs  tests::a_user_bound_against_an_adapter_role_is_refused
+ci  crates/synthesizer/src/lib.rs  tests::a_user_widening_of_an_argument_an_adapter_keeps_exact_is_refused
+ci  crates/toolkit/src/target_adapter_tests.rs  target_adapter_tests::explicit_user_widening_keeps_its_distinct_intent_and_provenance
+ci  crates/synthesizer/src/lib.rs  tests::an_open_above_bound_requires_high_blast_radius
+ci  crates/policy-spec/src/lib.rs  tests::a_bound_spanning_the_i128_domain_requires_high_blast_radius
+ci  crates/synthesizer/src/lib.rs  tests::a_range_from_i128_min_asks_the_floor_question_a_cap_asks
 ```
 
 ## G4. Tuple correlation
@@ -246,7 +278,9 @@ ci  crates/toolkit/src/target_adapter_tests.rs  target_adapter_tests::absent_or_
 An allowed call is one whole `(contract, function, arguments)` tuple. Validation refuses an
 incomplete tuple and one without evidence and justification, and evidence references must name
 a recording in range. Identical tuples merge and distinct ones stay distinct, never combined into
-a product, and each recording of a distinct call becomes its own tuple. Changing any one position
+a product, and each recording of a distinct call becomes its own tuple. A widening names an
+argument rather than a call, so one that would loosen several distinct tuples of a function is
+refused: it cannot carry one recorded call's bound into another's. Changing any one position
 of the recorded call is denied by both the reference evaluator and the compiled policy.
 
 Cross products are checked through a compiled policy. The two-payment fixture's rule accepts
@@ -256,11 +290,12 @@ contain both mixes of the two, and each is refused with `NoTupleMatched` by the 
 (run through the `stellar-accounts` 0.8 account library with mocked authorization, not the pinned
 account Wasm — tuple matching is the policy's alone) and by the reference evaluator, while both
 recorded payments permit. The evaluator's handling of a mix that another tuple does accept is
-covered separately. The emitter's output for several tuples of one function fails
-`clippy::nonminimal_bool` (semantics unaffected); the crate is fmt-checked but not yet linted.
+covered separately. The compiled condition reads each function's guard once, with that
+function's tuples under it, so the crate is linted like every other generated crate.
 
 ```gate-evidence G4
 ci  crates/synthesizer/src/lib.rs  tests::tuple_dedup_merges_identical_and_keeps_distinct
+ci  crates/synthesizer/src/lib.rs  tests::a_widening_on_a_multi_tuple_function_is_refused_unless_scoped
 ci  crates/policy-spec/src/lib.rs  tests::incomplete_tuples_fail
 ci  crates/policy-spec/src/lib.rs  tests::missing_evidence_and_justification_fail
 ci  crates/policy-spec/src/lib.rs  tests::evidence_references_are_structural_and_in_range
@@ -269,6 +304,7 @@ ci  crates/harness/src/lib.rs  tests::a_mutation_accepted_by_another_tuple_is_la
 ci  crates/harness/src/lib.rs  tests::a_mixed_tuple_accepted_by_a_range_is_labeled_permit
 ci  crates/synthesizer/src/walkthroughs.rs  walkthroughs::tests::two_payments_are_one_rule_with_two_exact_tuples_differing_in_two_positions
 ci  crates/codegen/src/lib.rs  tests::two_payment_crate_matches_committed_output
+ci  crates/codegen/src/lib.rs  tests::tuples_of_one_function_are_checked_under_one_function_guard
 ci  contracts/differential/tests/two_payment_generated_suite.rs  cross_products_of_two_accepted_tuples_are_refused_by_the_compiled_policy_and_the_evaluator
 ci  contracts/differential/tests/differential.rs  amount_mutations_deny_in_both
 ci  contracts/differential/tests/differential.rs  recipient_and_sender_mutations_deny_in_both
@@ -391,7 +427,7 @@ ci  crates/registry/src/lib.rs  tests::the_committed_example_recognizes_the_fixe
 ci  crates/registry/src/lib.rs  tests::revoked_capabilities_fail_resolution_with_the_recorded_reason
 ci  crates/registry/src/lib.rs  tests::a_revoked_signature_verifier_is_refused
 ci  crates/registry/src/account_methods.rs  account_methods::tests::the_vulnerable_build_has_no_reviewed_methods
-ci  crates/registry/tests/mainnet_draft.rs  the_draft_loads_for_mainnet_once_signed_and_recognizes_the_reviewed_code
+ci  crates/registry/tests/mainnet_draft.rs  mainnet_admission_requires_a_resolved_review_even_with_a_quorum_signature
 ci  crates/call-surface-core/src/tests.rs  tests::unrecognized_account_fails_closed
 ci  crates/call-surface-core/src/tests.rs  tests::external_owners_need_recognized_observed_verifiers_and_well_formed_keys
 ci  crates/call-surface-core/src/tests.rs  tests::upgraded_bound_policy_fails_even_when_its_address_is_recognized
@@ -445,6 +481,9 @@ ci  crates/toolkit/src/verification.rs  verification::tests::verification_reprod
 ci  crates/toolkit/src/lib.rs  tests::generated_artifact_includes_wasm_and_a_binding_manifest
 ci  crates/toolkit/src/publication.rs  publication::tests::a_published_build_reproduces_through_verify
 ci  crates/toolkit/src/publication.rs  publication::tests::a_changed_source_byte_is_refused_by_the_index_and_then_by_the_manifest
+ci  crates/toolkit/src/publication.rs  publication::tests::a_swapped_wasm_with_a_rewritten_manifest_passes_the_checks_and_fails_verify
+ci-step  .github/workflows/self-hosted.yml  python3 -B scripts/test-check-hosted-build.py
+ci-step  .github/workflows/self-hosted.yml  bash scripts/test-hosted-container.sh
 ```
 
 ## G10. Registry governance
@@ -541,12 +580,15 @@ and an agent can use a local stdio server.
 
 For that server, the tests below establish that it reads only allowlisted HTTPS RPC sources and
 refuses SSRF vectors, and refuses to start with a configured source the allowlist does not
-cover; redacts endpoint-controlled error text before it reaches a response; refuses an envelope
-carrying signatures before any request; keeps one session's artifacts from another;
+cover; reports a failed RPC read from any tool by its category only, withholding the endpoint's
+text, the URL a transport error quotes included; refuses an envelope carrying signatures before
+any request, in `preflight_transaction` and `record_simulation`; keeps one session's artifacts from another;
 authenticates before spending quota, bounds request bodies and refuses requests over the quota;
-and frees a build slot when a request is cancelled. The self-hosted workflow checks the hosted
-transport's bounds and the build-worker launcher, and runs the Compose package and rootless
-worker containment.
+refuses a spec whose reference suite would exceed its case or case-data limit before deriving it; returns a
+failed build's exit status without the compiler's output and removes each built crate from the
+shared cache; and frees a build slot when a request is cancelled. The self-hosted workflow checks the hosted
+transport's bounds and the build-worker launcher, and runs the Compose package, reading what it
+retains, and rootless worker containment.
 
 The package keeps confidential input out of logs by retaining none
 ([data handling](SELF-HOSTING.md#data-handling-and-handover)), and `scripts/check-log-redaction.py`
@@ -558,33 +600,52 @@ the bearer token or the trust inputs; and the workspace must link no log subscri
 crate, so the log events of the server's dependencies go nowhere. Its self-test changes each
 setting in turn and requires the refusal.
 
-Open: log redaction is checked as configuration, not observed. What the server's own code writes
-is read, not tested: on stderr, one line at startup naming the listen address, the error that
-stops a failed startup, and the message of any panic. The shipped package drops all of it; a
-deployment [behind an ingress](SELF-HOSTING.md#behind-your-own-ingress-instead-of-the-proxy)
-whose orchestrator keeps container output retains it. Closing it needs a test that drives the packaged endpoint with
-confidential input and finds none of it in any log or retained output.
+The container test also reads what a running endpoint retains. It keeps both Compose services'
+output (the `json-file` log driver in place of `none`), and `scripts/check-hosted-retention.py`
+sends through the TLS proxy a canary bearer token, which is refused; then, authenticated, it
+builds a spec whose name is a canary through the compiler, and sends an envelope with a canary
+signature to `preflight_transaction` and `record_simulation`, which refuse it as signed
+material. It reads every file in both containers' tmpfs mounts and `/dev/shm`, stops them, and
+reads their stdout and stderr and each file `docker diff` lists outside their mounts. It fails if
+the bearer token or any canary is in any of them, or if the output is anything but the server's
+startup line: the API must print that line alone and the proxy nothing, so neither a line about
+a request nor a log that kept nothing can pass.
 
-Also: builds are isolated from the API and from each other only in disposable-worker mode,
+Deviation: builds are isolated from the API and from each other only in disposable-worker mode,
 whose containment is accepted on the operator's chosen host
 ([isolated builds](ISOLATED-BUILDS.md#acceptance-on-the-chosen-host)); the Compose package
 compiles in the API's own trust domain, bounded but not isolated
-([self-hosting](SELF-HOSTING.md)). The self-hosted workflow runs on changes to its paths, not on
-every pull request.
+([self-hosting](SELF-HOSTING.md)); the server refuses to start that way unless the operator sets
+`OZPB_HTTP_UNISOLATED_BUILDS=accept`, as that package does. Retention is read for the package's
+two containers and the requests the test sends. Of what the server's own code writes on stderr,
+the test sees the startup line naming the listen address; the error that stops a failed startup
+and the message of any panic are read in the code, not provoked, and a deployment
+[behind an ingress](SELF-HOSTING.md#behind-your-own-ingress-instead-of-the-proxy) whose
+orchestrator keeps container output retains them. The operator's own ingress and host are
+outside the test. Closing it needs the shipped package to compile in disposable workers, and a
+test that provokes a failed startup and a panic and reads what they print. The self-hosted
+workflow runs on changes to its paths, not on every pull request.
 
 ```gate-evidence G12
 ci  crates/mcp-server/src/main.rs  tests::rpc_allowlist_blocks_ssrf_vectors
 ci  crates/mcp-server/src/main.rs  tests::every_configured_rpc_source_must_be_allowlisted_on_a_hosted_server
 ci  crates/mcp-server/src/main.rs  tests::hosted_sessions_do_not_share_generated_artifacts
 ci  crates/mcp-server/src/authority.rs  authority::tests::endpoint_controlled_errors_are_redacted_before_mcp_serialization
+ci  crates/mcp-server/src/main.rs  tests::hosted_rpc_errors_withhold_endpoint_controlled_text_from_every_read
 ci  crates/mcp-server/src/preflight.rs  preflight::tests::hosted_preflight_refuses_signed_material_before_any_request
+ci  crates/mcp-server/src/main.rs  tests::hosted_record_simulation_refuses_signed_material_before_any_request
 ci  crates/mcp-server/src/http.rs  http::tests::unauthenticated_requests_are_refused_without_spending_the_quota
+ci  crates/toolkit/src/verification.rs  verification::tests::a_spec_whose_reference_suite_is_too_large_is_refused_before_any_work
 ci  crates/mcp-server/src/cancel.rs  cancel::tests::cancelled_generate_code_kills_worker_group_and_frees_build_slot
+ci  crates/mcp-server/src/http.rs  http::tests::a_hosted_server_compiles_in_process_only_when_the_operator_accepts_it
+ci  crates/mcp-server/tests/mcp_http.rs  hosted_mode_refuses_to_compile_in_process_unless_the_operator_accepts_it
+ci  crates/build-runner/src/lib.rs  tests::a_shared_server_withholds_compiler_output_and_evicts_the_crate_it_built
 ci  crates/mcp-server/tests/mcp_http.rs  the_served_endpoint_authenticates_bounds_bodies_and_refuses_requests_over_the_quota
 ci  crates/mcp-server/tests/mcp_stdio_capture.rs  an_endpoint_echoing_the_envelope_never_reaches_the_response
 ci-step  .github/workflows/ci.yml  python3 scripts/check-log-redaction.py
 ci-step  .github/workflows/ci.yml  python3 scripts/test-check-log-redaction.py
 ci-step  .github/workflows/self-hosted.yml  python3 scripts/test-hosted-mcp.py
+ci-step  .github/workflows/self-hosted.yml  python3 -B scripts/test-check-hosted-retention.py
 ci-step  .github/workflows/self-hosted.yml  python3 scripts/test-worker-launcher.py
 ci-step  .github/workflows/self-hosted.yml  bash scripts/test-hosted-container.sh
 ci-step  .github/workflows/self-hosted.yml  python3 scripts/test-worker-containment.py --image "$worker_image"
@@ -610,4 +671,8 @@ authorization-to-install path: components, trust boundaries, threat model, invar
 limits. What closes the gate is the audit report for a frozen revision, with every finding's
 remediation or accepted risk, and OpenZeppelin's review of the generated code
 ([review package](OZ-REVIEW-PACKAGE.md)). No audit report is in this tree; the tests above are
-evidence for an auditor, not a substitute.
+evidence for the auditor, not a substitute. OpenZeppelin's sign-off comes before the milestone's
+one mainnet installation, the audit's report and remediation before 1.0.0, so the installation
+is made before this gate closes, a deviation stated for the owner's acceptance
+([deviation 6](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance),
+[the order for 1.0.0](VERSIONING.md#the-order-for-100)).

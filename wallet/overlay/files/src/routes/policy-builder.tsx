@@ -67,20 +67,22 @@ const REFUSED: Record<string, string> = {
   busy: "the wallet backend is still finishing an earlier step. Wait a few seconds, then try again.",
   rpc_too_slow: "the RPC answered too slowly for this step to be done safely (its reads must fit within about a minute), so the backend stopped before submitting anything. Try again; if it keeps happening, the operator needs a faster RPC endpoint.",
   evidence_stale: "the checks are more than 30 minutes old. Run them again: section 4, then the live check, then install.",
+  deployment_quote_stale: "the policy code is no longer available. Preview the deployment again to review the upload and its fee. Nothing was signed or sent.",
   signatures_still_valid: "signatures this wallet released earlier, by the live check or an installation entry, are still valid. Wait until their ledger has passed, then try again.",
+  replay_journal_unavailable: "the local wallet could not verify an earlier authorization journal. Inspect or restore it before signing again.",
   account_changed: "your account changed while signatures this wallet released were valid. Do not install; find out what changed first.",
   grant_already_used: "the policy says this grant was already used, but not from this page: someone holding the automation key's signatures used it. Nothing was sent. Revoke the grant.",
   review_expired: "this review is no longer available: it expired or was already used, and it was not submitted. Prepare it again.",
   network_mismatch: "the operator's RPC endpoint serves another network than this session's. Nothing was signed or sent; the operator must fix the backend configuration.",
-  protocol_unsupported: "the operator's RPC endpoint reports a protocol other than 30, the only one this wallet supports (mainnet before its upgrade to 30, for one). Nothing was signed or sent.",
+  protocol_unsupported: "the operator's RPC endpoint reports a protocol other than 30, the only one this wallet supports. Nothing was signed or sent.",
   fee_cap: "this transaction could cost more than the fee cap the operator set for it. Nothing was signed or sent.",
   spend_cap: "this transaction could take the session past the spend cap the operator set, counting what earlier sessions in this work root spent. Nothing was signed or sent.",
-  payer_unfunded: "the fee payer's account does not exist or cannot pay a transaction's fee. Fund it from your own wallet (see Mainnet readiness), then try again.",
+  payer_unfunded: "the fee payer's account does not exist or cannot pay this transaction's fee. If it is the operator's own key (always on mainnet), fund it from your own wallet (see the readiness panel); otherwise Friendbot has not funded the wallet's testnet key yet. Then try again.",
   delegate_unfunded: "the automation key has no account on this network, and the wallet creates none. Fund it with the minimum shown under section 2, then try again.",
-  pinned_code_missing: "code this wallet needs is not on this network, and the wallet never uploads it by itself. Upload it with the command under Mainnet readiness, then try again.",
+  pinned_code_missing: "code this wallet needs is not on this network, and the wallet never uploads it by itself. Upload it with the command the readiness panel shows, then try again.",
   account_unfunded: "your account's XLM balance does not cover the 0.1 XLM sample payment. Send it at least that from your own wallet, then prepare the sample again.",
   no_diagnostic_events: "the operator's RPC endpoint returned no diagnostic events, which this step reads (stellar-rpc 30.0.1 returns them only with --preflight-enable-debug). Nothing was sent; the operator needs an endpoint that returns them.",
-  delegate_key_unavailable: "on mainnet the wallet holds no delegate key: the grant's delegate is the agent's own key from its proposal. The checks that need the delegate's signatures, and the one use of the grant, run only when the operator configures a delegate key file.",
+  delegate_key_unavailable: "with the operator's own fee payer (always on mainnet) the wallet holds no delegate key: the grant's delegate is the agent's own key from its proposal. The checks that need the delegate's signatures, and the one use of the grant, run only when the operator configures a delegate key file.",
   registry_root_refused: "the toolkit refused the registry's root policy (on mainnet, the development root is never trusted). Nothing was generated or signed; the operator must configure the production registry trust files.",
 };
 /** A cap refusal's operator setting and figures (client.mjs checked their shape): what it would take to proceed. */
@@ -93,8 +95,9 @@ const capRefusal = (limit: unknown) => {
 };
 const explorer = (hash: string) => `${NETWORK.explorer}/tx/${hash}`;
 /**
- * Mainnet only: what the owner funds or uploads before anything can run, as the backend read it, and
- * the caps that bound what the fee payer spends. Read only; the backend decides every step again.
+ * Operator-funded sessions (mainnet, and its testnet rehearsal): what the owner funds or uploads before
+ * anything can run, as the backend read it, and the caps that bound what the fee payer spends. Read
+ * only; the backend decides every step again.
  */
 function MainnetReadiness({ readiness, status, busy, check }: { readiness: Record<string, unknown> | null;
   status: Record<string, unknown> | null; busy: boolean; check: () => void }) {
@@ -102,17 +105,17 @@ function MainnetReadiness({ readiness, status, busy, check }: { readiness: Recor
   const payer = object(readiness?.feePayer);
   const helper = object(readiness?.helper);
   return <section className={panel} aria-labelledby="readiness-heading">
-    <h2 id="readiness-heading" className="text-xl font-semibold">Mainnet readiness</h2>
-    <p className="text-sm">The wallet funds and uploads nothing on mainnet. Fee payer {label(object(status?.feePayer).address)}: your own
+    <h2 id="readiness-heading" className="text-xl font-semibold">{NETWORK.name === "mainnet" ? "Mainnet" : "Testnet"} readiness</h2>
+    <p className="text-sm">{NETWORK.name === "mainnet" ? "The wallet funds nothing" : "The wallet funds no account from the fee payer"} and uploads no pinned code on {NETWORK.name}. Fee payer {label(object(status?.feePayer).address)}: your own
       account, which pays every fee, at most {xlm(fees.maxFeeStroops)} a transaction ({xlm(fees.maxUploadFeeStroops)} for the policy
       code upload) and {xlm(fees.sessionSpendCapStroops)} for this session; spent so far {xlm(fees.spentStroops)}.</p>
-    <button className={button} disabled={busy} onClick={check}>Check mainnet readiness</button>
+    <button className={button} disabled={busy} onClick={check}>Check {NETWORK.name} readiness</button>
     {readiness && <ul className="list-disc space-y-1 pl-5 text-sm">
       <li>Fee payer account: {payer.exists === true ? <>balance {xlm(payer.balanceStroops)}, of which {xlm(payer.spendableStroops)} spendable</>
         : <>missing. Send it at least {xlm(payer.minimumStroops)} plus the session cap from your own wallet.</>}</li>
       {items(readiness.pinned).map((value) => {
         const pin = object(value), upload = object(pin.upload);
-        return <li key={label(pin.hash)}>Pinned {label(pin.name)} code {label(pin.hash)}: {pin.present === true ? "on mainnet."
+        return <li key={label(pin.hash)}>Pinned {label(pin.name)} code {label(pin.hash)}: {pin.present === true ? `on ${NETWORK.name}.`
           : <>missing. Upload it yourself: <code className="break-all">{label(upload.command)}</code>{" "}
             {upload.simulatedFeeStroops ? <>(simulated cost {xlm(upload.simulatedFeeStroops)})</> : <>(the cost is simulated once the
               reproduced Wasm is at {label(upload.wasmPath)})</>}</>}</li>;
@@ -373,6 +376,8 @@ function PolicyBuilder() {
     }
   }, []);
   const agentActive = Boolean(state?.agent);
+  // The session's funding model, as the backend reports it: operator-funded on mainnet, and on testnet when configured.
+  const ownerFunded = object(state?.status?.feePayer).ownerFunded === true;
   // A connection made before this page was opened is followed too, until it ends.
   const agentWatched = agentActive || Boolean(state?.agentStale);
   useEffect(() => {
@@ -401,6 +406,8 @@ function PolicyBuilder() {
   const busy = creating || state?.busy || !state?.status;
   // A prepared review is open until its window ends; the page re-reads the clock while any review is shown.
   const windows = state?.windows ?? {};
+  const deploymentSummary = object(state?.deployPreview?.summary);
+  const creationOnly = deploymentSummary.codeStored === true;
   const reviewing = Boolean(state?.accountPreview || state?.samplePreview || state?.deployPreview || state?.livePreview
     || state?.installPreview || state?.revokePreview || state?.replacementPreview || state?.earlierRevokePreview);
   const [now, setNow] = useState(() => performance.now());
@@ -486,8 +493,8 @@ function PolicyBuilder() {
         {launched === "mainnet" && <p role="alert" className="rounded-lg border border-red-500 bg-red-950/60 p-3 text-sm font-semibold text-red-100">
           Mainnet. Every transaction here moves or spends real XLM, and every signature is valid on the public network. Keep the
           amounts minimal: the account&apos;s passkey works only from this browser at localhost.</p>}
-        {launched === "mainnet" && <MainnetReadiness readiness={state?.readiness ?? null} status={state?.status ?? null} busy={Boolean(busy)}
-          check={() => void run((value) => value.readiness(), "Reading the fee payer, the caps and the pinned code on mainnet…", "Mainnet readiness read.")} />}
+        {(launched === "mainnet" || ownerFunded) && <MainnetReadiness readiness={state?.readiness ?? null} status={state?.status ?? null} busy={Boolean(busy)}
+          check={() => void run((value) => value.readiness(), `Reading the fee payer, the caps and the pinned code on ${NETWORK.name}…`, "Readiness read.")} />}
         <h1 className="mt-2 text-3xl font-semibold">Policy Builder</h1>
         <p className="mt-3 text-slate-300">Give an automation key one narrow permission on your account, check that the permission
           does exactly that, and take it back. Your passkey approves each step; it never leaves your device.</p>
@@ -511,8 +518,8 @@ function PolicyBuilder() {
           <ReviewWindow until={windows.account} now={now} expired="Preview the account again; it reuses the passkey you created." />
           <div className="flex flex-wrap gap-3">
             <button className={button} disabled={busy || agentActive || !open("account", state.accountPreview)}
-              onClick={() => void run((value) => value.confirmAccount(), `Deploying your account on ${NETWORK.name}: its passkey verifier and the account${NETWORK.friendbot ? " and its funding" : ""} (about 20–40 s)…`,
-                "Account deployed. Next: Prepare 0.1 XLM sample transfer.", ["Deploy the passkey verifier", "Deploy your smart account", ...(NETWORK.friendbot ? [`Fund the account with 1 ${NETWORK.unit}`] : [])])}>Confirm {NETWORK.name} account deployment</button>
+              onClick={() => void run((value) => value.confirmAccount(), `Deploying your account on ${NETWORK.name}: its passkey verifier and the account${launched === "mainnet" || ownerFunded ? "" : " and its funding"} (about 20–40 s)…`,
+                "Account deployed. Next: Prepare 0.1 XLM sample transfer.", ["Deploy the passkey verifier", "Deploy your smart account", ...(launched === "mainnet" || ownerFunded ? [] : [`Fund the account with 1 ${NETWORK.unit}`])])}>Confirm {NETWORK.name} account deployment</button>
             {!open("account", state.accountPreview) && credential && <button className={button} disabled={busy || agentActive}
               onClick={() => void run((value) => value.prepareAccount(credential), "Preparing the account preview again…", `Next: Confirm ${NETWORK.name} account deployment.`)}>Preview the account again</button>}
           </div>
@@ -567,6 +574,10 @@ function PolicyBuilder() {
 
       <section className={panel} aria-labelledby="agent-heading">
         <h2 id="agent-heading" className="text-xl font-semibold">Connect Claude</h2>
+        {state?.status?.capabilities.agentHandoff === false ? <p role="status" className="text-sm text-slate-300">
+          Claude connects directly to a testnet session only. On {NETWORK.name}, after you confirm the grant in Claude, start
+          its policy-builder-install skill: it prints the grant proposal as JSON. Paste it, or save it as a file, under Import a
+          grant proposal in section 2; the wallet checks it exactly as it would a proposal sent directly.</p> : <>
         <Intro>Pair Claude, running on this computer, so it can send you a grant to review. Claude cannot sign, deploy or install
           anything.</Intro>
         <button className={button} disabled={busy || !state?.wallet || !state?.status?.capabilities.agentHandoff
@@ -604,11 +615,13 @@ function PolicyBuilder() {
           <p>The connection ends 30 minutes after pairing; reopening this page needs a new connection, and Claude then builds the grant
             again. Disconnect before changing the account or automation key. Closing this page does not guarantee disconnection.</p>
         </Details>
+        </>}
       </section>
 
       <section className={panel} aria-labelledby="record-heading">
         <h2 id="record-heading" className="text-xl font-semibold">2. The grant</h2>
-        <Intro>The permission the automation key would get. With Claude there is nothing to do here: Review proposal from Claude fills it in.</Intro>
+        <Intro>The permission the automation key would get. {state?.status?.capabilities.agentHandoff === false
+          ? "Import Claude's proposal below." : "With Claude there is nothing to do here: Review proposal from Claude fills it in."}</Intro>
         {state?.proposalReview && <div className="space-y-2 rounded-lg border-2 border-green-600 p-4 text-sm">
           <p>The regenerated permissions match the proposal. Review the grant below.</p>
           <Details title="Why the two specification hashes can differ">
@@ -683,13 +696,18 @@ function PolicyBuilder() {
           onClick={() => void run((value) => value.prepareDeploy(), "Preparing the deployment…", "Next: Confirm exact policy deployment.")}>Preview deployment</button>
         {state?.deployPreview && <>
           <ReviewWindow until={windows.deploy} now={now} />
+          <p className="text-sm">At most {xlm(deploymentSummary.maxTotalFeeStroops)} for {creationOnly
+            ? "creating the policy contract from code already on-chain"
+            : "uploading the policy code and creating the policy contract"}.</p>
           {object(state.deployPreview.summary).uploadSimulatedFeeStroops !== null && object(state.deployPreview.summary).uploadSimulatedFeeStroops !== undefined
             && <p className="text-sm">Uploading the policy code costs about {xlm(object(state.deployPreview.summary).uploadSimulatedFeeStroops)} (simulated),
               at most {xlm(object(state.deployPreview.summary).maxUploadFeeStroops)}; this session has spent {xlm(object(state.deployPreview.summary).spentStroops)} of
               {" "}{xlm(object(state.deployPreview.summary).sessionSpendCapStroops)}.</p>}
           <button className={button} disabled={busy || !open("deploy", state.deployPreview)}
-            onClick={() => void run((value) => value.confirmDeploy(), "Deploying the policy: uploading its code and creating it (about 15 s)…",
-              "Policy deployed. Next: section 4, Refresh authority and review exact grant.", ["Upload the policy code", "Deploy the policy contract"])}>Confirm exact policy deployment</button>
+            onClick={() => void run((value) => value.confirmDeploy(), creationOnly ? "Creating the policy contract…"
+              : "Deploying the policy: uploading its code and creating it (about 15 s)…",
+              "Policy deployed. Next: section 4, Refresh authority and review exact grant.",
+              creationOnly ? ["Deploy the policy contract"] : ["Upload the policy code", "Deploy the policy contract"])}>Confirm exact policy deployment</button>
           <Details title="Exact deployment"><Evidence title="Deployment consent" value={state.deployPreview} /></Details>
         </>}
         {state?.deployment && <p className="text-sm"><Badge tone="pass">Deployed</Badge> <span className="break-all">{label(state.deployment.policyAddress)}</span></p>}
@@ -833,8 +851,8 @@ function PolicyBuilder() {
         <h2 id="use-heading" className="text-xl font-semibold">8. Use the grant</h2>
         <Intro>The automation key makes the granted payment by itself: no passkey. Then it tries the same payment again, and the
           policy has to refuse it, because the grant allowed one use.</Intro>
-        {launched === "mainnet" && state?.status?.capabilities.delegateKey === false && <p role="status" className="text-sm text-amber-200">
-          Skipped on this mainnet session: the grant&apos;s delegate is the agent&apos;s own key, and the wallet holds no delegate key
+        {ownerFunded && state?.status?.capabilities.delegateKey === false && <p role="status" className="text-sm text-amber-200">
+          Skipped on this {NETWORK.name} session: the grant&apos;s delegate is the agent&apos;s own key, and the wallet holds no delegate key
           (the operator&apos;s optional delegate key file is not configured). The agent uses the grant with its own key.</p>}
         <div className="flex flex-wrap gap-3">
           <button className={button} disabled={busy || !state?.installation || !!state?.removal || !!state?.grantUse
