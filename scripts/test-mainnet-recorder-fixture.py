@@ -60,6 +60,24 @@ class CaseEligibility(unittest.TestCase):
         self.assertNotIn("sac-transfer-source-account", found)
         self.assertNotIn("fee-bump-invocation", found)
 
+    def test_muxed_fee_source_and_classic_inner_source_are_the_same_account(self):
+        # SEP-23 canonical and muxed encodings of the same public key.
+        classic = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
+        muxed = "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ"
+        for inner, payer in [(classic, muxed), (muxed, classic)]:
+            record = transfer("tx_fee_bump", fee_source=payer)
+            fixture.inner(record["envelopeJson"])[1]["source_account"] = inner
+            found = fixture.cases_of(record)
+            self.assertNotIn("sac-transfer-source-account", found)
+            self.assertNotIn("fee-bump-invocation", found)
+
+    def test_a_fee_payer_that_is_the_operation_source_authorizes_the_call(self):
+        record = transfer("tx_fee_bump")
+        fixture.inner(record["envelopeJson"])[1]["operations"][0]["source_account"] = PAYER
+        found = fixture.cases_of(record)
+        self.assertNotIn("fee-bump-invocation", found)
+        self.assertNotIn("sac-transfer-source-account", found)
+
     def test_a_fee_payer_that_authorizes_the_call_is_no_fee_bump_case(self):
         # fee-bump-invocation's test requires that the fee payer authorizes nothing.
         paid = transfer("tx_fee_bump", credentials={"address": {"address": PAYER}})
