@@ -494,9 +494,14 @@ pub fn serve_one(mut input: impl Read, mut output: impl Write) -> Result<(), Bui
         target_dir: Some(std::env::temp_dir().join("target")),
         ..BuildConfig::default()
     };
+    // The job's temporary directory is the launcher's private per-job tmpfs: a fresh mount in a
+    // container whose only principal is this job, so no other user can add a `.cargo` to it.
+    // Podman 4.9 cannot give that mount an owner (docs/ISOLATED-BUILDS.md), so it is the
+    // root-owned sticky `1777` that `workspace_parent` would refuse anywhere a second user could
+    // write. The isolation it relies on is the launcher's, and Linux acceptance checks it.
     let result = WorkerResult {
         schema: RESULT_SCHEMA.into(),
-        artifact: build_local(&request, &config)
+        artifact: build_local_in(&request, &config, &std::env::temp_dir())
             .ok()
             .map(|artifact| WorkerArtifact {
                 wasm_hash: sha256(&artifact.wasm),

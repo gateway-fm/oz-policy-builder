@@ -92,7 +92,7 @@ stands. Security scope, threat model and known limits are in [AUDIT-SCOPE.md](AU
 
 | Component | Versions | Where pinned |
 | --- | --- | --- |
-| Generated policies | `soroban-sdk =28.0.0`, `stellar-accounts =0.8.0`, rustc 1.91.1 | `Cargo.toml` of `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy` and `contracts/two-payment-policy`; `Pins::default` in `crates/codegen/src/lib.rs` |
+| Generated policies | `soroban-sdk =28.0.0`, `stellar-accounts =0.8.0`, rustc 1.91.1 | `Cargo.toml` of `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy` and `contracts/two-payment-policy`; `Pins::default` in `crates/codegen/src/lib.rs` |
 | Recognized account | Your `examples/multisig-smart-account/account` at v0.7.3 (`stellar-accounts` 0.7.3, `soroban-sdk` 26.1.0), built here from source | Exact hash in `ozpb_domain::pinned_upstream` |
 | ed25519 and WebAuthn verifiers, reviewed spending-limit policy | Your `examples/multisig-smart-account` at v0.7.2 (`stellar-accounts` 0.7.2, `soroban-sdk` 26.1.0), built here from source | Exact hashes in `ozpb_domain::pinned_upstream` |
 
@@ -128,45 +128,50 @@ exists for each.
 | --- | --- | --- |
 | PolicySpec and constraint vocabulary, with the signer-predicate and tuple model | `crates/policy-spec`: constraints `EqAddress`, `EqScval`, `EqI128`, `LeI128`, `GeI128`, `RangeI128` (both bounds, inclusive; declared from development registry version 7), `AnyValue`; predicates `AnyOf`, `AllOf`, `Threshold`, `AnyOfCurrentRuleSigners`; `CallCountPerInstallation`; a validation typestate; reference semantics in `crates/evaluator`; [CANONICAL-HASHING.md](CANONICAL-HASHING.md); the tuple model's cross products refused through a compiled policy (`two_payment_generated_suite.rs`) | In use since Tranche 1; exact synthesis ([G3](MAINNET-GATES.md#g3-exact-synthesis)) and tuple correlation ([G4](MAINNET-GATES.md#g4-tuple-correlation)) are closed in the gate map; policy-spec and the evaluator are mutation-gated |
 | Capability-registry entries for your prebuilt contracts and verifier hashes | Entries in `registry::dev` for your 0.7.2 spending-limit policy and both verifiers and your 0.7.3 account, each keyed by exact hash with a source-review reference, and the revoked 0.7.2 account entry; the account's method inventory in `crates/registry/src/account_methods.rs`; `scripts/verify-pinned-upstream.sh`; governance tooling, `ozpb registry` ([REGISTRY-GOVERNANCE.md](REGISTRY-GOVERNANCE.md)) | Development registry, signed with a public development key that every network but testnet refuses; the entries describe our builds of your source, not artifacts you publish. The mainnet log (`registry/mainnet/`) is an unsigned draft until its key ceremony |
-| Template snippet library | `crates/codegen` (`emit_lib`, `render.rs`), one template family, `policy-templates/scope@1`; mutation-gated | Covers signer predicate with strict set, target, function and tuple checks, exact and bounded `i128`, address and exact `ScVal`, call count and expiry. Embedding addresses as encoded bytes is deferred to template-pack v2 ([SCOPE.md item 4](SCOPE.md#implementation-boundaries)). Output for several tuples of one function is not yet lint-clean (below) |
-| Generated-code final form | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy`, `contracts/two-payment-policy`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15; provenance in contract meta and in BuildManifest v2 (§2; [architecture §6.3](architecture.md#63-reproducibility-and-artifact-provenance)) | Self-assessed against your checklist. The first three pass `cargo clippy -D warnings` in CI; the two-payment one is formatted but not linted. Provenance is self-asserted; `ozpb verify` reproduces the artifact |
+| Template snippet library | `crates/codegen` (`emit_lib`, `render.rs`), one template family, `policy-templates/scope@1`; mutation-gated | Covers signer predicate with strict set, target, function and tuple checks, exact and bounded `i128`, address and exact `ScVal`, call count and expiry. Embedding addresses as encoded bytes is deferred to template-pack v2 ([SCOPE.md item 4](SCOPE.md#implementation-boundaries)) |
+| Generated-code final form | `contracts/golden-transfer-policy`, `contracts/soroswap-swap-policy`, `contracts/range-transfer-policy`, `contracts/two-payment-policy`; [ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15; provenance in contract meta and in BuildManifest v2 (§2; [architecture §6.3](architecture.md#63-reproducibility-and-artifact-provenance)) | Self-assessed against your checklist. All four pass `cargo clippy -D warnings` in CI. Provenance is self-asserted; `ozpb verify` reproduces the artifact |
 | Adapter design | [TARGET-ADAPTERS.md](TARGET-ADAPTERS.md), `crates/synthesizer/src/adapters.rs`, `crates/domain/src/target_adapters.rs` | One adapter, `soroswap-router@2`; its router binding is a development-registry assertion whose Wasm was not reproduced from source; no Blend adapter |
 
 ## Upstream items
 
-- **Unbounded enforce events.** Your three policies embed the whole `Context` in their enforce
-  event, so a permitted call with a large enough argument fails on the network's event-size limit
-  ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15, divergence 9 and "Three upstream
-  defects"). Reported as
-  [OpenZeppelin/stellar-contracts#852](https://github.com/OpenZeppelin/stellar-contracts/issues/852),
-  where the direction discussed is a bounded projection of the context (`EnforcedContext`) rather
-  than a digest. `stellar-accounts` 0.8.0 still embeds the `Context`, so generated policies keep
-  `context_hash`; they may move to a released projection type, which would change every
-  generated Wasm and the asserted event size.
+- **Unbounded enforce events.** In `stellar-accounts` 0.8.0 your three policies embed the whole
+  `Context` in their enforce event, so a permitted call with a large enough argument fails on the
+  network's event-size limit ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §15,
+  divergence 9 and "Three upstream defects"). Reported as
+  [OpenZeppelin/stellar-contracts#852](https://github.com/OpenZeppelin/stellar-contracts/issues/852)
+  and fixed by
+  [OpenZeppelin/stellar-contracts#896](https://github.com/OpenZeppelin/stellar-contracts/pull/896),
+  merged on 20 November 2026, which replaces the `Context` with a bounded `EnforcedContext`
+  projection. No release carries it yet; v0.8.0 is the latest. Generated policies keep
+  `context_hash`: a generated policy cannot name a type its pinned `stellar-accounts` lacks. Moving to it would change every generated Wasm
+  and the asserted event size.
 - **Your checklist's `cargo build --target wasm32v1-none --release`** cannot succeed inside your
   own workspace, whose root enables soroban-sdk's `experimental_spec_shaking_v2`; `stellar
   contract build` sets what that feature's build script requires (§15, "Three upstream defects").
 
 ## What will still change before the audited revision
 
-- **Tuples of one function, grouped.** For several accepted tuples of one function the emitter
-  writes `(fn_0_ok && check_call_0(..)) || (fn_0_ok && check_call_1(..))`, which
-  `clippy::nonminimal_bool` refuses; the verdicts are unaffected
-  ([G4](MAINNET-GATES.md#g4-tuple-correlation)). Until the emitter groups tuples by function,
-  `contracts/two-payment-policy` is formatted but not linted in CI, and the fix changes the
-  generated source and Wasm of every such rule.
-
-The audited revision is the freeze commit [AUDIT-SCOPE.md](AUDIT-SCOPE.md) names when the audit
-starts.
+No change to generated code is planned for this milestone beyond the upstream items above.
+Encoded-literal rendering, which would embed addresses as encoded bytes and change every
+generated source and Wasm hash, stays deferred to template-pack v2
+([SCOPE.md item 4](SCOPE.md#implementation-boundaries)). The audited revision is the freeze commit
+[AUDIT-SCOPE.md](AUDIT-SCOPE.md) names; this review and the external audit both start on it. A
+change to generated code this review asks for before its sign-off goes to the auditor too, and
+is within the scope of the audit's remediation.
 
 Already in this tree: the `contractmeta!` provenance above, which changed every generated source
 and Wasm hash ([ECOSYSTEM-CONFORMANCE.md](ECOSYSTEM-CONFORMANCE.md) §2, action 1); BuildManifest
 schema `build-manifest/v2`, which adds the canonicalization version, the build target and a
 `producer` record, and so rehashed every manifest
-([SCOPE.md item 2](SCOPE.md#implementation-boundaries)); and the recognized account's move from
+([SCOPE.md item 2](SCOPE.md#implementation-boundaries)); the recognized account's move from
 the 0.7.2 example to the 0.7.3 build for GHSA-jpg9-m7w4-c7wc, with development registry version 6
 revoking the 0.7.2 entry
-([SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)).
+([SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md#account-073-ghsa-jpg9-m7w4-c7wc)); and several
+accepted tuples of one function checked under that function's guard once,
+`fn_0_ok && (check_call_0(..) || check_call_1(..))`, where the emitter used to repeat the guard
+per tuple, which `clippy::nonminimal_bool` refuses. The verdicts are the same; the source and Wasm
+of such a rule changed, and of the committed crates only the two-payment fixture has one
+([G4](MAINNET-GATES.md#g4-tuple-correlation)).
 
 Recognizing your 0.8.0 account may follow; it needs the versioned signing, registry, storage and
 wallet support described in [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md).
@@ -175,7 +180,10 @@ wallet support described in [SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md).
 
 Records OpenZeppelin's documented sign-off on generated-code quality when it is given, one row
 per review, with a link to where the review itself can be read. An empty table means no review
-has been recorded.
+has been recorded. The sign-off row comes before the mainnet installation: the mainnet registry's
+template pack cites it as its review reference, and the release candidate the installation is
+made from carries it, without waiting for the audit's report
+([the order for 1.0.0](VERSIONING.md#the-order-for-100)).
 
 | Date | Reviewer | Scope | Outcome | Link |
 | --- | --- | --- | --- | --- |

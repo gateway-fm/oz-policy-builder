@@ -306,7 +306,8 @@ $ ./target/release/ozpb-mcp-server --http 127.0.0.1:8080
 Error: OZPB_HTTP_BEARER_TOKEN is required for HTTP mode
 ```
 
-That refusal is the feature. HTTP mode also requires `OZPB_RPC_ALLOWLIST`, binds localhost
+That refusal is the feature. HTTP mode also requires `OZPB_RPC_ALLOWLIST` and a build worker
+launcher (or `OZPB_HTTP_UNISOLATED_BUILDS=accept` to compile in its own trust domain), binds localhost
 unless `OZPB_HTTP_ALLOWED_HOSTS` names an ingress's public hosts, and applies bearer auth, a request quota, a request-size bound and a limit on concurrent
 builds. `docs/DEVELOPERS.md` has the full set, and what is still owed before anything
 resembling multi-tenant hosting.

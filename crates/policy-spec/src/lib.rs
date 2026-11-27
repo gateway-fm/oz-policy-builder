@@ -414,6 +414,22 @@ impl Constraint {
                 | Constraint::AnyValue
         )
     }
+
+    /// Whether a numeric bound refuses no `i128` at all: each end it states is the type's own
+    /// limit, where the generated check leaves the comparison out and keeps only the type check.
+    /// On an `i128` argument that is the grant `AnyValue` makes.
+    pub fn spans_the_i128_domain(&self) -> bool {
+        let is = |value: &str, limit: i128| value.parse::<i128>() == Ok(limit);
+        match self {
+            Constraint::LeI128 { max } => is(max, i128::MAX),
+            Constraint::GeI128 { min } => is(min, i128::MIN),
+            Constraint::RangeI128 { min, max } => is(min, i128::MIN) && is(max, i128::MAX),
+            Constraint::EqAddress { .. }
+            | Constraint::EqI128 { .. }
+            | Constraint::EqScval { .. }
+            | Constraint::AnyValue => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -672,8 +688,8 @@ pub enum SpecError {
     },
     #[error(
         "E_SPEC_ANY_VALUE_BLAST_RADIUS: rule {0}, call '{1}', arg {2}: an unconstrained \
-         argument requires an explicit high-blast-radius user decision or a target-bound \
-         adapter derivation"
+         argument (any_value, or a bound spanning the whole i128 range) requires an explicit \
+         high-blast-radius user decision or a target-bound adapter derivation"
     )]
     AnyValueBlastRadius(usize, String, u32),
     #[error("E_SPEC_NO_EVIDENCE: spec carries no recording references")]
@@ -1095,9 +1111,15 @@ impl PolicySpec {
                     // AnyValue is the maximal widening; its schema contract says it exists
                     // only behind an explicit high-blast-radius acknowledgement. A user
                     // decision labelled low/medium is a contradiction the artifact must not
-                    // carry. (ObservedExact is rejected above; an adapter derivation is
-                    // target-bound by the adapter-binding checks below.)
-                    if matches!(arg.constraint, Constraint::AnyValue) {
+                    // carry. A numeric bound at both of the type's limits is the same grant on
+                    // an i128 — codegen renders only the type check — so it is held to the same
+                    // demand. (ObservedExact is rejected above; an adapter derivation is
+                    // target-bound by the adapter-binding checks below.) An open top alone is
+                    // not held here: whether it is any amount depends on what the argument
+                    // means, which the spec does not record; synthesis holds it where it can.
+                    if matches!(arg.constraint, Constraint::AnyValue)
+                        || arg.constraint.spans_the_i128_domain()
+                    {
                         if let Provenance::UserWidened { blast_radius, .. } = &arg.provenance {
                             if *blast_radius != ozpb_domain::BlastRadius::High {
                                 errors.push(SpecError::AnyValueBlastRadius(
@@ -1857,11 +1879,20 @@ mod tests {
         for (min, max) in [
             ("0".to_string(), "500000000".to_string()),
             ("7".to_string(), "7".to_string()),
-            (i128::MIN.to_string(), i128::MAX.to_string()),
+            ("-5".to_string(), i128::MAX.to_string()),
         ] {
             let spec = with_amount_range(&min, &max);
             assert!(spec.validate().is_ok(), "{min}..={max} must validate");
         }
+        // The whole type is no range at all; its blast radius is held as any_value's is
+        // (`a_bound_spanning_the_i128_domain_requires_high_blast_radius`).
+        let mut whole = with_amount_range(&i128::MIN.to_string(), &i128::MAX.to_string());
+        assert!(whole.clone().validate().is_err());
+        whole.rules[0].allowed_calls[0].args[2].provenance = Provenance::UserWidened {
+            intent: "any amount".to_string(),
+            blast_radius: ozpb_domain::BlastRadius::High,
+        };
+        assert!(whole.validate().is_ok());
         let errors = with_amount_range("2", "1").validate().unwrap_err();
         assert_eq!(
             errors,
@@ -2220,12 +2251,89 @@ mod tests {
         assert!(adapter.validate().is_ok());
     }
 
+    /// A numeric bound at both of the type's limits renders only the `i128` type check: it
+    /// accepts every value, exactly as `any_value` does on an amount. So it carries the same
+    /// high-blast-radius demand, whichever spelling the decision used. The demand is the
+    /// constraint's own and needs no argument semantics, which is why validation holds it: an
+    /// open top alone is a high blast radius only where the argument is an amount, a question
+    /// synthesis answers (`an_open_above_bound_requires_high_blast_radius`) and this spec cannot.
+    #[test]
+    fn a_bound_spanning_the_i128_domain_requires_high_blast_radius() {
+        let (min, max) = (i128::MIN.to_string(), i128::MAX.to_string());
+        let with = |constraint: Constraint, blast_radius| {
+            let mut spec = subscription_spec();
+            spec.rules[0].allowed_calls[0].args[2].constraint = constraint;
+            spec.rules[0].allowed_calls[0].args[2].provenance = Provenance::UserWidened {
+                intent: "any amount".to_string(),
+                blast_radius,
+            };
+            spec
+        };
+        for constraint in [
+            Constraint::LeI128 { max: max.clone() },
+            Constraint::GeI128 { min: min.clone() },
+            Constraint::RangeI128 {
+                min: min.clone(),
+                max: max.clone(),
+            },
+        ] {
+            for blast_radius in [
+                ozpb_domain::BlastRadius::Low,
+                ozpb_domain::BlastRadius::Medium,
+            ] {
+                let errors = with(constraint.clone(), blast_radius)
+                    .validate()
+                    .unwrap_err();
+                assert_eq!(
+                    errors,
+                    vec![SpecError::AnyValueBlastRadius(0, "transfer".to_string(), 2)],
+                    "{constraint:?} rated {blast_radius:?}"
+                );
+            }
+            assert!(
+                with(constraint.clone(), ozpb_domain::BlastRadius::High)
+                    .validate()
+                    .is_ok(),
+                "{constraint:?} rated high"
+            );
+        }
+        // One finite end is a bound, and its rating stays the decision's.
+        for constraint in [
+            Constraint::LeI128 {
+                max: "500000000".to_string(),
+            },
+            Constraint::GeI128 {
+                min: "0".to_string(),
+            },
+            Constraint::RangeI128 {
+                min: min.clone(),
+                max: "500000000".to_string(),
+            },
+            Constraint::RangeI128 {
+                min: "0".to_string(),
+                max: max.clone(),
+            },
+        ] {
+            assert!(
+                with(constraint.clone(), ozpb_domain::BlastRadius::Low)
+                    .validate()
+                    .is_ok(),
+                "{constraint:?} rated low"
+            );
+        }
+        // An adapter derivation carries no rating; a cap at the observed i128::MAX is still its
+        // target-bound claim, as an adapter's any_value is.
+        let mut adapter = adapter_derived_spec();
+        adapter.rules[0].allowed_calls[0].args[2].constraint = Constraint::LeI128 { max };
+        assert!(adapter.validate().is_ok());
+    }
+
     #[test]
     fn bounded_widenings_accept_every_declared_blast_radius() {
-        // The high-blast-radius demand is AnyValue's alone. A bounded widening still
-        // constrains the argument, and its blast radius is the user's honest assessment —
-        // Low included; tightening this to "at least Medium" would be a schema change in
-        // validator's clothing.
+        // The high-blast-radius demand is AnyValue's, and that of a bound spanning the whole
+        // type (above). A bounded widening still constrains the argument, and its blast radius
+        // is the user's honest assessment — Low included; tightening this to "at least Medium"
+        // would be a schema change in validator's clothing.
         for blast_radius in [
             ozpb_domain::BlastRadius::Low,
             ozpb_domain::BlastRadius::Medium,

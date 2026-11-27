@@ -1,7 +1,7 @@
 // The fee payer: the classic account that is the source of, and pays the fee for, every transaction
-// the backend submits. On testnet it is a disposable key generated in memory and funded through
-// Friendbot. On mainnet it is the operator's own key, read from a file the operator funds; nothing
-// else funds or creates it. Either way the secret never leaves this object: it is not printed,
+// the backend submits. By default on testnet it is a disposable key generated in memory and funded
+// through Friendbot. On mainnet, and on testnet when the operator configures one, it is the operator's
+// own key, read from a file the operator funds; nothing else funds or creates it. Either way the secret never leaves this object: it is not printed,
 // logged, serialized, returned or journaled, and it signs only a transaction envelope handed to
 // `signTransaction` by WalletNetwork, after that envelope's checks.
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
@@ -13,7 +13,7 @@ const refused = (detail) => Object.assign(new Error('fee payer key refused'), { 
 
 export class FeePayer {
   #key;
-  /** `operator` says whether the key is the operator's own (mainnet) or a disposable one (testnet). */
+  /** `operator` says whether the key is the operator's own (operator-funded, as mainnet always is) or a disposable one (testnet). */
   constructor(key, operator) {
     if (!(key instanceof Keypair) || !key.canSign()) throw refused('The fee payer key is not an Ed25519 secret key.');
     this.#key = key;
@@ -46,13 +46,13 @@ export class OperatorKey {
   [inspect.custom]() { return `OperatorKey(${this.address})`; }
 }
 
-/** The operator's mainnet delegate key file (`delegateKeyPath`), under the same file checks as the fee payer's. */
+/** The operator's delegate key file (`delegateKeyPath`), under the same file checks as the fee payer's. */
 export function loadDelegateKey(path) {
   return new OperatorKey(readKeyFile(path, 'delegate'));
 }
 
 /**
- * The operator's mainnet fee payer key, from `path`: an absolute, canonical regular file that is no
+ * The operator's own fee payer key, from `path`: an absolute, canonical regular file that is no
  * symlink, owned by this user and readable by no one else (mode 0600 or stricter), holding one
  * Stellar secret seed (`S…`) and an optional trailing newline. Anything else refuses with a reason
  * the operator can act on; the reason never contains the file's content.

@@ -51,9 +51,10 @@ first; `soroswap-router@2` is the worked example.
    signature matching in the synthesizer; and, for a walkthrough-grade adapter, a harness run with
    live derived denials ([W3](WALKTHROUGH-PROTOCOLS.md#w3-soroswap)).
 
-Adapter-derived constraints record the adapter and target hash, and the rule refuses drift; the
-generated policy does not check target code on-chain, so a wallet or live checker must compare the
-current code before relying on them.
+Adapter-derived constraints record the adapter and target hash, and the rule refuses drift: the
+install intent refuses other code at the target (`E_TARGET_CODE_CHANGED`). The generated policy
+does not check target code on-chain, so after installation a wallet or live checker must compare
+the current code before relying on them.
 
 ## A new wallet integration
 
@@ -68,6 +69,12 @@ an MCP tool and a CLI command (`ozpb check-policy-call-surface` and so on), exce
 | `assemble_install_transaction` | An unsigned install (or restoration) transaction with current sequence and fees, valid for at most 120 ledgers ([INSTALL-ASSEMBLY.md](INSTALL-ASSEMBLY.md)) |
 | `check_against_policy` | A permit, deny or `unsupported` prediction for one call against an installed rule ([LIVE-POLICY-CHECK.md](LIVE-POLICY-CHECK.md)) |
 | `ozpb check-installed-grant` (CLI only) | A monitoring observation of one installed grant against its installation commitment |
+
+Every tool's request and response schema is in [`wire-contract.json`](wire-contract.json), which
+CI holds to the built server ([versioning](VERSIONING.md#keeping-the-snapshot-current)). For the
+two install operations, [`wallet/shared/install-wire.d.mts`](../wallet/shared/install-wire.d.mts)
+is a typed client's declarations, held to those schemas by `wallet/tests/install-wire.test.mjs`
+([another wallet](POLLYWALLET-INTEGRATION.md#another-wallet-the-typed-install-surface)).
 
 What the wallet must do itself, every time: decode and validate every field of the unsigned
 transaction against its own RPC; recompute the authority check and match each listed identity to

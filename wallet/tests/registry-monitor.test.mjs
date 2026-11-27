@@ -97,6 +97,12 @@ test('an unverifiable log, or a report that contradicts its exit status, is an i
   assert.equal((await contradicting.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
   const malformed = stub(t, { status: 'current', exit: 0, report: { schema: 'something else' } });
   assert.equal((await malformed.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
+  // `revoked` is the status exactly when the report lists a revocation, as the CLI derives it.
+  const revokedNothing = stub(t, { status: 'revoked', exit: 6, report: { revoked: [] } });
+  assert.equal((await revokedNothing.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
+  const currentButRevoked = stub(t, { status: 'current', exit: 0, report: { revoked: [{ watched: { code: ACCOUNT_WASM },
+    capability: `account/${ACCOUNT_WASM}`, reason: 'advisory', effective_version: '7' }] } });
+  assert.equal((await currentButRevoked.toolchain.registryMonitor({ wasmHashes: [ACCOUNT_WASM] })).status, 'log_unverifiable');
 });
 
 test('a monitor that could not run to a verdict is monitor_unavailable, not an incident', async (t) => {

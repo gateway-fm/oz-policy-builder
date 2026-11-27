@@ -66,19 +66,27 @@ export function isOwnerRule(wallet, ruleId, raw) {
  * Whether stored rule `ruleId` is shaped as a grant: one contract's calls (a `CallContract` context)
  * limited by at least one policy, as every grant this wallet installs is. A `Default`-context rule,
  * or one with no policy, may be the owner's recovery or admin access, so an earlier session's
- * removal never takes it.
+ * removal never takes it; nor a rule on the account's own calls (`account`, a guardian or recovery
+ * rule) or on a policy contract, its own or one bound in another of the account's rules
+ * (`boundPolicies`): a grant this wallet installs never targets either.
  */
-export function isGrantRule(raw, ruleId) {
+export function isGrantRule(raw, ruleId, { account = null, boundPolicies = [] } = {}) {
   try {
     const rule = decodeRule(raw, ruleId);
-    return Array.isArray(rule.context) && rule.context[0] === 'CallContract' && StrKey.isValidContract(rule.context[1])
-      && rule.policies.length >= 1;
+    const target = Array.isArray(rule.context) && rule.context[0] === 'CallContract' ? rule.context[1] : null;
+    return StrKey.isValidContract(target) && rule.policies.length >= 1 && target !== account
+      && !rule.policies.includes(target) && !boundPolicies.includes(target);
   } catch { return false; }
 }
 
 /** A stored rule as the page shows it (`decodeRule`), or null when its bytes are not rule `ruleId`. */
 export function ruleSummary(raw, ruleId) {
   try { return freezeCopy(decodeRule(raw, ruleId)); } catch { return null; }
+}
+
+/** Every policy contract the account's listed rules (`{ id, xdr }` each) bind, for `isGrantRule`. */
+export function boundPolicies(rules) {
+  return rules.flatMap(({ id, xdr: raw }) => ruleSummary(raw, id)?.policies ?? []);
 }
 
 /** A current changed rule is shown explicitly and committed alongside the removal identity. */
@@ -104,9 +112,13 @@ export function removalConfigurationChange(change, ruleId) {
  * recorded one (account, rule ID, installation transaction), or one installed by an earlier session,
  * which this backend holds no record of (account, rule ID and the rule's exact current bytes, read
  * from the account, with no transaction). Such a rule must be shaped as a grant (`isGrantRule`), and
- * must not be the owner rule nor name the owner's passkey. Its commitment is what the signature checks compare.
+ * must not be the owner rule nor name the owner's passkey. Whether it targets a policy another rule
+ * binds is derived here from `listedRules`, the account's rules as listed (`{ id, xdr }` each, this
+ * one among them with the same bytes), which the approval carries so every later review derives it
+ * again; a listing is not part of the commitment. Its commitment is what the signature checks compare.
  */
-export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation, configurationChange = null, networkId }) {
+export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation, configurationChange = null, listedRules = null,
+  networkId }) {
   try {
     const network = networkById(networkId);
     if (!StrKey.isValidContract(wallet.contractId) || !StrKey.isValidContract(wallet.verifier)
@@ -114,13 +126,18 @@ export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation,
       || !integer(ownerRuleId, 0) || installation.account !== wallet.contractId || !integer(installation.ruleId)
       || installation.ruleId === ownerRuleId) refuse();
     const earlier = installation.transactionHash === null;
-    if (earlier ? typeof installation.ruleXdr !== 'string' || configurationChange !== null
-      : !/^[0-9a-f]{64}$/.test(installation.transactionHash) || installation.ruleXdr !== undefined) refuse();
+    if (earlier ? typeof installation.ruleXdr !== 'string' || configurationChange !== null || !Array.isArray(listedRules)
+      : !/^[0-9a-f]{64}$/.test(installation.transactionHash) || installation.ruleXdr !== undefined || listedRules !== null) refuse();
     ownerRuleMatches(wallet, ownerRuleId, ownerRuleXdr);
+    const listed = earlier ? listedRules.map(({ id, xdr: raw }) => ({ id, xdr: raw })) : null;
     if (earlier) {
       decodeRule(installation.ruleXdr, installation.ruleId);
-      if (installation.ruleXdr === ownerRuleXdr || namesOwner(wallet, installation.ruleXdr)
-        || !isGrantRule(installation.ruleXdr, installation.ruleId)) refuse();
+      // A listed rule that does not decode could bind the target unseen: the listing is refused.
+      if (listed.some(({ id, xdr: raw }) => !integer(id, 0) || ruleSummary(raw, id) === null)
+        || new Set(listed.map(({ id }) => id)).size !== listed.length
+        || listed.find(({ id }) => id === installation.ruleId)?.xdr !== installation.ruleXdr
+        || installation.ruleXdr === ownerRuleXdr || namesOwner(wallet, installation.ruleXdr)
+        || !isGrantRule(installation.ruleXdr, installation.ruleId, { account: wallet.contractId, boundPolicies: boundPolicies(listed) })) refuse();
     }
     const changed = configurationChange === null ? null : removalConfigurationChange(configurationChange, installation.ruleId);
     const preimage = ['wallet-revoke/v1', network.networkId, wallet.contractId, wallet.verifier,
@@ -129,7 +146,7 @@ export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation,
     if (changed) preimage.push('configuration_drift', changed.recordedRuleHash, changed.observedRuleHash);
     const commitment = Buffer.from(hash(Buffer.from(JSON.stringify(preimage)))).toString('hex');
     return freezeCopy({ networkId: network.networkId, wallet, ownerRuleId, ownerRuleXdr, commitment,
-      ...(changed ? { configurationChange } : {}),
+      ...(changed ? { configurationChange } : {}), ...(earlier ? { listedRules: listed } : {}),
       installation: { account: installation.account, ruleId: installation.ruleId, transactionHash: installation.transactionHash,
         ...(earlier ? { ruleXdr: installation.ruleXdr } : {}) } });
   } catch { return refuse(); }
@@ -139,7 +156,8 @@ export function reviewRemoval({ wallet, ownerRuleId, ownerRuleXdr, installation,
 export function validateRemovalAssembly({ approval, assembly, ownerRuleXdr, limits }) {
   try {
     const fresh = reviewRemoval({ wallet: approval.wallet, ownerRuleId: approval.ownerRuleId, ownerRuleXdr,
-      installation: approval.installation, configurationChange: approval.configurationChange ?? null, networkId: approval.networkId });
+      installation: approval.installation, configurationChange: approval.configurationChange ?? null,
+      listedRules: approval.listedRules ?? null, networkId: approval.networkId });
     if (fresh.commitment !== approval.commitment || !integer(limits.maxFeeStroops, 100, REMOVAL_MAX_FEE_STROOPS) || !sequence(limits.sourceSequence)
       || !integer(limits.validityLedgers, 2, 120) || !integer(limits.currentLedger) || !integer(limits.ownerReadLedger)
       || limits.currentLedger < limits.ownerReadLedger || limits.currentLedger - limits.ownerReadLedger > 12
