@@ -323,8 +323,8 @@
       "target CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC is the built-in Stellar Asset contract; it has no Wasm code hash",
       "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: user-widened (Permit the bounded native transfer to the exact pair as an independent capability), blast radius Medium",
       "swap_exact_tokens_for_tokens arg 4: preserve the recorded deadline exactly",
-      "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: NO FLOOR — the user acknowledged that the cap at 1000000 admits every smaller value, negative amounts included; the generated scope policy refuses no negative amount, so only the target contract can refuse one",
-      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 0: NO FLOOR — adapter 'soroswap-router@2' caps this argument at 1000000 from its reviewed maximum-input role and sets no floor, so every smaller value passes, negative amounts included; the generated scope policy refuses no negative amount, so only the target contract can refuse one"
+      "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC/transfer arg 2: NO FLOOR — the user acknowledged that the cap at 1000000 admits every smaller value, negative amounts included; the generated scope policy has no non-negativity check, so only the target contract can refuse a negative amount the cap admits",
+      "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD/swap_exact_tokens_for_tokens arg 0: NO FLOOR — adapter 'soroswap-router@2' caps this argument at 1000000 from its reviewed maximum-input role and sets no floor, so every smaller value passes, negative amounts included; the generated scope policy has no non-negativity check, so only the target contract can refuse a negative amount the cap admits"
     ]
   }
 }

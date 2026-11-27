@@ -9,14 +9,19 @@ import { MAX_FEE_STROOPS, MAX_UPLOAD_FEE_STROOPS } from './network.mjs';
 const REQUIRED = ['executable', 'workRoot', 'rpcUrl', 'registrySnapshotPath', 'registryRootsPath', 'registryMinimumVersion'];
 const OPTIONAL = ['network', 'registryPublishedPath', 'feePayerKeyPath', 'delegateKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir', 'stellarBinary', 'cargoHome', 'rustupHome', 'buildCacheDir', 'buildJobs', 'buildTimeoutSecs', 'nativeExecutable', 'liveHelper'];
 const refused = () => { throw new Error('invalid wallet operator configuration'); };
-/** Fields only a mainnet configuration takes: its funding model, its caps and its pinned-code directory. */
-const MAINNET_ONLY = ['feePayerKeyPath', 'delegateKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir'];
 /**
- * Mainnet's fee caps: per transaction (a policy Wasm upload has its own, since mainnet's state-size
- * rent makes a policy upload cost tens of XLM) and for the whole session. The defaults are
- * conservative; the upload and session caps are the operator's settings, set from the simulated
- * costs the wallet shows (docs/MAINNET-INSTALL.md), up to the ceilings below. The upload cap never
- * exceeds the session cap.
+ * The operator-funded model's fields: the operator's own fee payer key, the delegate key file, the
+ * caps and the pinned-code directory. Mainnet always runs this model. A testnet session runs it when
+ * the operator names `feePayerKeyPath`: the operator-funded testnet profile, which rehearses the
+ * mainnet install through the same code at no cost. Without that key the other fields are refused.
+ */
+const OPERATOR_FUNDED = ['feePayerKeyPath', 'delegateKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir'];
+/**
+ * The operator-funded model's fee caps, mainnet's and its testnet rehearsal's alike: per transaction (a
+ * policy Wasm upload has its own, since mainnet's state-size rent makes a policy upload cost tens of
+ * XLM) and for the whole session. The defaults are conservative; the upload and session caps are the
+ * operator's settings, set from the simulated costs the wallet shows (docs/MAINNET-INSTALL.md), up to
+ * the ceilings below. The upload cap never exceeds the session cap.
  */
 export const MAINNET_FEE_DEFAULTS = Object.freeze({ maxFeeStroops: 10_000_000, maxUploadFeeStroops: 120_000_000,
   sessionSpendCapStroops: 150_000_000 });
@@ -116,18 +121,18 @@ export function loadWalletConfig(path) {
     // The session's network, chosen once here: `testnet` (the default) or `mainnet`, nothing else.
     const network = walletNetwork(Object.hasOwn(value, 'network') ? value.network : 'testnet');
     const mainnet = network.name === 'mainnet';
-    if (!mainnet && MAINNET_ONLY.some((name) => Object.hasOwn(value, name))) refused();
-    // The registry floor is the operator's own registry's version (at least 1): the mainnet registry is
-    // its own chain from version 1, not the development registry's (whose floor is 6).
-    if (mainnet && !Object.hasOwn(value, 'feePayerKeyPath')) refused();
-    const fees = mainnet ? Object.fromEntries(Object.entries(MAINNET_FEE_DEFAULTS).map(([name, fallback]) => {
+    // The funding model, chosen by the operator's own fee payer key: mainnet requires it, testnet takes it.
+    const operatorFunded = Object.hasOwn(value, 'feePayerKeyPath');
+    if (mainnet && !operatorFunded) refused();
+    if (!operatorFunded && OPERATOR_FUNDED.some((name) => Object.hasOwn(value, name))) refused();
+    const fees = operatorFunded ? Object.fromEntries(Object.entries(MAINNET_FEE_DEFAULTS).map(([name, fallback]) => {
       const chosen = Object.hasOwn(value, name) ? value[name] : fallback;
       if (!Number.isSafeInteger(chosen) || chosen < 100 || chosen > MAINNET_FEE_CEILINGS[name]) refused();
       return [name, chosen];
     })) : { maxFeeStroops: MAX_FEE_STROOPS, maxUploadFeeStroops: MAX_UPLOAD_FEE_STROOPS, sessionSpendCapStroops: null };
-    if (mainnet && (fees.maxFeeStroops > fees.sessionSpendCapStroops || fees.maxUploadFeeStroops > fees.sessionSpendCapStroops)) refused();
-    // Mainnet: the operator's own key, which it funds; testnet: a disposable key Friendbot funds.
-    const feePayer = mainnet ? loadFeePayerKey(value.feePayerKeyPath) : FeePayer.disposable();
+    if (operatorFunded && (fees.maxFeeStroops > fees.sessionSpendCapStroops || fees.maxUploadFeeStroops > fees.sessionSpendCapStroops)) refused();
+    // Operator-funded: the operator's own key, which it funds; otherwise (testnet only) a disposable key Friendbot funds.
+    const feePayer = operatorFunded ? loadFeePayerKey(value.feePayerKeyPath) : FeePayer.disposable();
     const pinnedWasmDir = Object.hasOwn(value, 'pinnedWasmDir') ? directory(value.pinnedWasmDir) : null;
     // The operator's published registry log (a directory of signed versions, or its head file), for `registry monitor`.
     let registryPublishedPath = null;
@@ -136,8 +141,8 @@ export function loadWalletConfig(path) {
       if (!stat.isDirectory() && !stat.isFile()) refused();
       registryPublishedPath = value.registryPublishedPath;
     }
-    // Mainnet: the grant's delegate is the agent's key. Only this optional file gives the wallet a key it may
-    // sign with as a delegate (for the checks that need its signatures and the one use of the grant).
+    // Operator-funded: the grant's delegate is the agent's key. Only this optional file gives the wallet a key it
+    // may sign with as a delegate (for the checks that need its signatures and the one use of the grant).
     const delegateKey = Object.hasOwn(value, 'delegateKeyPath') ? loadDelegateKey(value.delegateKeyPath) : null;
     if (delegateKey && delegateKey.address === feePayer.address) {
       throw Object.assign(new Error('delegate key refused'), { startup: 'The delegate key must not be the fee payer\'s key: the fee '
@@ -149,6 +154,9 @@ export function loadWalletConfig(path) {
     const registrySnapshot = file(value.registrySnapshotPath, 2 * 1024 * 1024);
     const registryRoots = file(value.registryRootsPath, 256 * 1024);
     new RawJson(registrySnapshot); new RawJson(registryRoots);
+    // Registry trust is the network's: the registry floor is the operator's own registry's version (at least
+    // 1), since the mainnet registry is its own chain from version 1, not the development registry's (whose
+    // floor is 6); testnet keeps the development registry, operator-funded or not.
     if (mainnet) mainnetRegistryTrust(registryRoots, value.registryMinimumVersion);
     const buildEnvironment = { CARGO_NET_OFFLINE: 'true' };
     if (Object.hasOwn(value, 'stellarBinary')) buildEnvironment.OZPB_STELLAR_BINARY = executable(value.stellarBinary);

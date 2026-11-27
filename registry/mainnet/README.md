@@ -16,9 +16,14 @@ per version. The procedure that produces and checks it is
   no target-adapter binding: the development registry's Soroswap binding is a testnet-only
   assertion about the testnet router's code. The review references are carried over from the
   development registry except the template pack's, which is pending text beginning
-  `PENDING, replace before signing:` — no review of the template pack is referenced yet. The
-  custodians replace it with the completed security review's reference, and confirm every other
-  reference, before anyone signs.
+  `PENDING, replace before signing:` — no review of the template pack is referenced yet. The text
+  names OpenZeppelin's documented review of the generated code, which is the review of what the
+  template pack produces: the custodians replace it with the reference of that review's sign-off
+  row in the [review record](../../docs/OZ-REVIEW-PACKAGE.md#review-record), and confirm every
+  other reference, before anyone signs. The external audit's report is not needed for version 1.
+  After the audit, and before or with 1.0.0, the custodians sign a successor whose template-pack
+  reference adds the audit report, whether or not the remediation changed the template pack
+  ([the order for 1.0.0](../../docs/VERSIONING.md#the-order-for-100)).
 - The validity interval — `valid_from_unix` 2027-01-01T00:00:00Z, `expires_at_unix`
   2027-07-01T00:00:00Z — is a **placeholder**. How long the custodians vouch for version 1 is
   their decision at signing; they set both values in the draft before anyone signs, since the
@@ -32,6 +37,7 @@ per version. The procedure that produces and checks it is
 At the ceremony the custodians generate their keys and the coordinator writes their public keys
 into `roots.json`; they set the interval in the draft, sign it, and the coordinator combines the
 signatures into `v0001.signed.json` here, replays the log, and publishes the head with the
-release ([Making and signing a version](../../docs/REGISTRY-GOVERNANCE.md#making-and-signing-a-version)).
+`1.0.0-rc.N` release candidate the mainnet installation is made from
+([Making and signing a version](../../docs/REGISTRY-GOVERNANCE.md#making-and-signing-a-version)).
 The draft is then superseded by the signed version and removed. The development root is refused
 for mainnet by every consumer, so this log is the only way the toolkit trusts anything there.

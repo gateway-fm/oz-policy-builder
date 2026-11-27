@@ -349,6 +349,34 @@ def assemble(label, dist, targets, out_dir):
     return sums
 
 
+def check_release_files(label, commit, directory, targets):
+    """Check the complete downloaded asset set before image publication."""
+    check_label(label)
+    if not re.fullmatch(r"[0-9a-f]{40}", commit) or not targets:
+        raise ReleaseError("a source commit and release targets are required")
+    directory = Path(directory)
+    contract = wire_contract_name(label)
+    expected = {contract}
+    for target in targets:
+        check_target(target)
+        expected.update(archive_name(binary, label, target) for binary in BINARIES)
+    if {path.name for path in directory.iterdir()} != expected | {"SHA256SUMS"}:
+        raise ReleaseError("the published release does not contain the complete expected binary asset set")
+    for name in expected | {"SHA256SUMS"}:
+        path = directory / name
+        if path.is_symlink() or not path.is_file():
+            raise ReleaseError(f"{name} is not a regular file")
+    manifest = "".join(f"{sha256(directory / name)}  {name}\n" for name in sorted(expected))
+    if (directory / "SHA256SUMS").read_bytes() != manifest.encode("utf-8"):
+        raise ReleaseError("the published checksums do not bind every expected artifact")
+    try:
+        wire = json.loads((directory / contract).read_bytes())
+    except (UnicodeError, ValueError) as error:
+        raise ReleaseError("the published wire contract is not JSON") from error
+    if not isinstance(wire, dict) or wire.get("commit") != commit or wire.get("release") != label:
+        raise ReleaseError("the published wire contract names another source commit or release")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -381,6 +409,12 @@ def main(argv=None):
     assembly.add_argument("--out", required=True)
     assembly.add_argument("targets", nargs="+")
 
+    published = commands.add_parser("check-release-files", help="verify downloaded release assets and source identity")
+    published.add_argument("--label", required=True)
+    published.add_argument("--commit", required=True)
+    published.add_argument("--directory", required=True)
+    published.add_argument("targets", nargs="+")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "archive":
@@ -392,6 +426,8 @@ def main(argv=None):
             path = check_wire_contract(args.server, args.snapshot, timeout=args.timeout,
                                        update=args.update)
             print(f"{'updated' if args.update else 'unchanged'}: {path}")
+        elif args.command == "check-release-files":
+            check_release_files(args.label, args.commit, args.directory, args.targets)
         else:
             print(assemble(args.label, args.dist, args.targets, args.out).read_text(), end="")
     except (ReleaseError, OSError) as error:

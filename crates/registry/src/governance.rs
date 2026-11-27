@@ -462,6 +462,10 @@ pub fn monitor(
         Registry::with_pinned_roots_for_network_at_checkpoint(roots, network, checkpoint.clone())?;
     let mut head_checkpoint = checkpoint.clone();
     for signed in &relevant {
+        // A checkpoint can predate the admission rule and does not run Registry::admit again.
+        if network == NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE) {
+            require_no_pending_review(&signed.snapshot)?;
+        }
         if signed.snapshot.version == checkpoint_version {
             require_matches_checkpoint(&signed.snapshot, &checkpoint, network)?;
         } else {
