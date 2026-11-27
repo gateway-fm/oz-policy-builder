@@ -320,6 +320,10 @@ pub fn synthesize_policy(
             } else {
                 parse_hash(h)?
             };
+            // Code revoked under any role is refused by its hash, as recognition refuses it.
+            registry
+                .ensure_code_not_revoked(&hash)
+                .map_err(map_registry_err)?;
             let capability = registry.resolve_policy(&hash).map_err(map_registry_err)?;
             if capability.kind != "oz:spending_limit" {
                 return Err(ToolError::new(
@@ -461,15 +465,8 @@ pub fn registry_trust_from_roots_json(
         keys,
     };
     Registry::with_pinned_roots(root_policy.clone()).map_err(map_registry_err)?;
-    if config
-        .checkpoint
-        .as_ref()
-        .is_some_and(|checkpoint| checkpoint.version < minimum_version)
-    {
-        return Err(ToolError::new(
-            EC::ERegistryRollback,
-            "registry checkpoint is older than the configured minimum version",
-        ));
+    if let Some(checkpoint) = &config.checkpoint {
+        call_surface::refuse_checkpoint_below_floor(checkpoint, minimum_version)?;
     }
     Ok(RegistryTrust {
         root_policy,
@@ -1259,6 +1256,47 @@ mod tests {
         );
     }
 
+    /// The spending limit synthesis composes is recognized by its code hash, and code revoked
+    /// under any role is refused by that hash, as recognition and the monitor treat it.
+    #[test]
+    fn synthesis_refuses_a_spending_limit_whose_code_is_revoked_under_any_role() {
+        let pinned = ozpb_domain::pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM;
+        let input_under = |revoked: Option<&str>| {
+            let network = ozpb_domain::NetworkId::from_passphrase(ozpb_domain::TESTNET_PASSPHRASE);
+            let mut snapshot = ozpb_registry::dev::account_advisory_successor(network).unwrap();
+            if let Some(kind) = revoked {
+                snapshot.revocations.insert(
+                    format!("{kind}/{}", pinned.to_hex()),
+                    ozpb_registry::Revocation {
+                        reason: "spending limit build withdrawn".to_string(),
+                        effective_version: snapshot.version,
+                    },
+                );
+            }
+            let signed =
+                ozpb_registry::sign_snapshot(&ozpb_registry::dev::dev_signing_key(), snapshot)
+                    .unwrap();
+            SynthesizeInput {
+                bundles: vec![serde_json::to_value(fx::golden_bundle()).unwrap()],
+                selected_authorizer: Some(fx::golden_account_strkey()),
+                account: Some(serde_json::to_value(&fx::golden_input().account).unwrap()),
+                signed_registry_snapshot: Some(serde_json::to_value(signed).unwrap()),
+                decisions: serde_json::to_value(fx::golden_decisions()).unwrap(),
+                spending_limit_capability: Some(ozpb_api_types::PINNED_SPENDING_LIMIT.to_string()),
+                template_family: "policy-templates/scope@1".to_string(),
+            }
+        };
+        synthesize_policy(&input_under(None), &registry_trust()).unwrap();
+        for kind in ["policy", "account", "verifier", "target_adapter"] {
+            let err = synthesize_policy(&input_under(Some(kind)), &registry_trust()).unwrap_err();
+            assert_eq!(err.code, EC::ERegistryRevoked, "{kind}: {err}");
+            assert!(
+                err.message.contains("spending limit build withdrawn"),
+                "{err}"
+            );
+        }
+    }
+
     /// A tool caller that writes a cap the way it was written before the acknowledgement
     /// existed gets a question about the floor, never a grant that admits negative amounts
     /// unannounced: absent reads as not acknowledged.
@@ -1683,6 +1721,50 @@ mod tests {
             bundle.contract_executables.clear();
             let err = derive_account_record(&[bundle], &named).unwrap_err();
             assert_eq!(err.code, EC::EIncompatibleAccount);
+        }
+
+        /// Anyone can attach an authorization entry for someone else's account to their own
+        /// successful transaction: the network never checks an entry no `require_auth` reaches.
+        /// Such an entry, naming the fixture account and a payment out of it, must leave the
+        /// account neither derivable nor selectable — otherwise a stranger's transaction would
+        /// be read as the account having authorized that payment.
+        #[test]
+        fn an_entry_the_network_never_checked_selects_no_account() {
+            use ozpb_recorder_core::fixtures as rec;
+            use stellar_xdr::{Limits, SorobanCredentials, WriteXdr};
+            let stranger = EvidenceSnapshot::from_rpc_transaction(
+                ozpb_domain::TESTNET_PASSPHRASE,
+                rec::envelope_with(vec![
+                    rec::auth_entry(SorobanCredentials::SourceAccount),
+                    rec::auth_entry(rec::address_credentials(99)),
+                ])
+                .to_xdr_base64(Limits::none())
+                .unwrap(),
+                Some(
+                    rec::meta_v3_consuming(&[])
+                        .to_xdr_base64(Limits::none())
+                        .unwrap(),
+                ),
+                4_200_100,
+                1_780_000_000,
+                true,
+            )
+            .with_rpc_result(rec::transaction_result_base64(true))
+            .with_contract_executables(rec::observed_executables());
+            let rec = record_snapshot(&stranger, RecordOptions::default()).unwrap();
+            let bundle: RecordingBundle = serde_json::from_value(rec.bundle.clone()).unwrap();
+            assert!(bundle
+                .authorizations
+                .iter()
+                .all(|a| a.authorizer != fx::golden_account_strkey()));
+
+            let err = derive_selected_authorizer(&[bundle]).unwrap_err();
+            assert_eq!(err.code, EC::EAuthorizerNotFound);
+
+            let mut named = explicit();
+            named.bundles = vec![rec.bundle];
+            let err = synthesize_policy(&named, &registry_trust()).unwrap_err();
+            assert_eq!(err.code, EC::EAuthorizerNotFound, "{}", err.message);
         }
 
         /// A recording whose only authorizer is a classic account has no account to synthesize

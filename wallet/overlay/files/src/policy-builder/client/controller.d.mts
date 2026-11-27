@@ -33,7 +33,7 @@ export interface WalletState {
   readonly sampleAttempted: boolean;
   readonly delegate: { readonly capabilityId: string; readonly address: string;
     readonly account?: { readonly exists: boolean; readonly minimumStroops: string } } | null;
-  /** Mainnet: what the owner funds or uploads first (`readiness`), as the backend read it. */
+  /** Operator-funded: what the owner funds or uploads first (`readiness`), as the backend read it. */
   readonly readiness: Details | null;
   /** The attached account's rules as stored now (`listRules`), for removing an earlier session's grant. */
   readonly accountRules: (Details & { rules: readonly { id: number; xdr: string; owner: boolean; grant: boolean; summary: Details | null }[] }) | null;
@@ -71,7 +71,7 @@ export class WalletController {
       validateSampleAssembly(input: unknown): CheckedAssembly;
       validateSignedAuthorization(input: unknown): Promise<SignedAuthorization>;
       liveCases(input: unknown): readonly LiveCase[];
-      consentDisplay(cases: readonly LiveCase[], options: { currentLedger: number }): ConsentDisplay;
+      consentDisplay(cases: readonly LiveCase[], options: { currentLedger: number; operatorFunded?: boolean }): ConsentDisplay;
       statementHash(display: ConsentDisplay): string;
       checkLiveOwnerEntry(input: unknown): LiveOwnerChecked;
       validateLiveOwnerSignature(input: unknown): Promise<LiveOwnerSignature>;

@@ -51,9 +51,10 @@ first; `soroswap-router@2` is the worked example.
    signature matching in the synthesizer; and, for a walkthrough-grade adapter, a harness run with
    live derived denials ([W3](WALKTHROUGH-PROTOCOLS.md#w3-soroswap)).
 
-Adapter-derived constraints record the adapter and target hash, and the rule refuses drift; the
-generated policy does not check target code on-chain, so a wallet or live checker must compare the
-current code before relying on them.
+Adapter-derived constraints record the adapter and target hash, and the rule refuses drift: the
+install intent refuses other code at the target (`E_TARGET_CODE_CHANGED`). The generated policy
+does not check target code on-chain, so after installation a wallet or live checker must compare
+the current code before relying on them.
 
 ## A new wallet integration
 

@@ -53,6 +53,7 @@
     "E_DELEGATE_HAS_AUTHORITY",
     "E_DELEGATE_GRANT_OVERLAP",
     "E_SCAN_BUDGET_EXCEEDED",
+    "E_TARGET_CODE_CHANGED",
     "E_TARGET_REFUSED",
     "E_TARGET_ARCHIVED",
     "E_WALLET_UNAVAILABLE",
@@ -373,6 +374,11 @@
               {
                 "const": "E_DELEGATE_GRANT_OVERLAP",
                 "description": "A restricted key already has another usable rule on the new rule's target, so a\nstateful limit would not hold.",
+                "type": "string"
+              },
+              {
+                "const": "E_TARGET_CODE_CHANGED",
+                "description": "The rule requires the code its spec recorded at its target (an adapter-derived rule, or\na refuse-on-drift target identity), and the account read found other code there.",
                 "type": "string"
               },
               {
@@ -2653,6 +2659,11 @@
               {
                 "const": "E_DELEGATE_GRANT_OVERLAP",
                 "description": "A restricted key already has another usable rule on the new rule's target, so a\nstateful limit would not hold.",
+                "type": "string"
+              },
+              {
+                "const": "E_TARGET_CODE_CHANGED",
+                "description": "The rule requires the code its spec recorded at its target (an adapter-derived rule, or\na refuse-on-drift target identity), and the account read found other code there.",
                 "type": "string"
               },
               {
@@ -4976,7 +4987,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Runs check_policy_call_surface itself (same request, same operator-configured RPC source) and, only when it returns no refusal and nothing unresolved, returns the exact add_context_rule arguments derived from the grant its authority_commitment covers, with that answer attached. A refusal or an unresolved item is an error carrying every finding. Never says an account is safe, never assembles, signs or submits: the user's wallet recomputes the check, matches every listed owner to the user's own keys or trusted identities, and asks the user. May rebuild generated policies.",
+      "description": "Runs check_policy_call_surface itself (same request, same operator-configured RPC source) and, only when it returns no refusal and nothing unresolved, returns the exact add_context_rule arguments derived from the grant its authority_commitment covers, with that answer attached. A refusal or an unresolved item is an error carrying every finding. A rule that requires its target's code has it read too, and other code there is refused (E_TARGET_CODE_CHANGED). Never says an account is safe, never assembles, signs or submits: the user's wallet recomputes the check, matches every listed owner to the user's own keys or trusted identities, and asks the user. May rebuild generated policies.",
       "inputSchema": {
         "$defs": {
           "PolicyBinding": {
@@ -5239,6 +5250,11 @@
               {
                 "const": "E_DELEGATE_GRANT_OVERLAP",
                 "description": "A restricted key already has another usable rule on the new rule's target, so a\nstateful limit would not hold.",
+                "type": "string"
+              },
+              {
+                "const": "E_TARGET_CODE_CHANGED",
+                "description": "The rule requires the code its spec recorded at its target (an adapter-derived rule, or\na refuse-on-drift target identity), and the account read found other code there.",
                 "type": "string"
               },
               {
@@ -6448,7 +6464,7 @@
       }
     },
     {
-      "description": "Record an unsigned transaction envelope via simulateTransaction in record mode into a RecordingBundle. Network read through the server's configured RPC source when there is one; the envelope is confidential input.",
+      "description": "Record an unsigned transaction envelope via simulateTransaction in record mode into a RecordingBundle. Network read through the server's configured RPC source when there is one; the envelope is confidential input. A hosted server refuses an envelope carrying signatures or signed authorization entries.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,

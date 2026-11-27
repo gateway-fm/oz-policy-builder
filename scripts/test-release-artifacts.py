@@ -359,6 +359,22 @@ class Assemble(unittest.TestCase):
             self.assertEqual(digest,
                              hashlib.sha256((sums.parent / name).read_bytes()).hexdigest())
 
+    def test_image_release_checks_assets_checksums_and_source_commit(self):
+        for target in TARGETS:
+            contract = self.dist / target / release.wire_contract_name(LABEL)
+            contract.write_text(json.dumps({"release": LABEL, "commit": COMMIT}), encoding="utf-8")
+        sums = release.assemble(LABEL, self.dist, TARGETS, self.dir / "release")
+        release.check_release_files(LABEL, COMMIT, sums.parent, TARGETS)
+        with self.assertRaisesRegex(release.ReleaseError, "another source commit"):
+            release.check_release_files(LABEL, "a" * 40, sums.parent, TARGETS)
+        asset = sums.parent / release.archive_name("ozpb", LABEL, TARGETS[0])
+        asset.write_bytes(b"changed")
+        with self.assertRaisesRegex(release.ReleaseError, "checksums"):
+            release.check_release_files(LABEL, COMMIT, sums.parent, TARGETS)
+        asset.unlink()
+        with self.assertRaisesRegex(release.ReleaseError, "complete expected"):
+            release.check_release_files(LABEL, COMMIT, sums.parent, TARGETS)
+
     def test_the_sums_file_checks_with_the_standard_tool(self):
         sums = release.assemble(LABEL, self.dist, TARGETS, self.dir / "release")
         tool = (["sha256sum", "--check", "--strict"] if sys.platform.startswith("linux")

@@ -401,8 +401,8 @@ still a fair question. Two of the five entry points check the window, and
 `the_validity_window_is_checked_by_the_two_entry_points_that_extend` is what holds that sentence
 to the code.) A denied
 call extends nothing, `uninstall` extends nothing, and the extension is threshold-conditional
-rather than unconditional, so routine authorizations do not each buy rent. The policy does not
-separately extend the **wasm code** entry (see action 2 below).
+rather than unconditional, so routine authorizations do not each buy rent. The instance
+extension also extends the **wasm code** entry; it is not a separate call (see action 2 below).
 
 That the two agree is structural rather than asserted: the emitter has one extension block and
 both write paths use it, and `only_the_write_paths_extend_and_the_getters_say_why_they_do_not`
@@ -523,12 +523,18 @@ not on who paid for an extension.
    `VALID_UNTIL_LEDGER`, so the entries live no longer than the policy can permit and are
    archived naturally after it expires.
 2. Extend the TTL of the **contract instance and of the wasm code** — their own entries with
-   their own deadlines. **Done for the instance entry**, extended alongside the persistent
-   entries in `install` and in a permitting `enforce`. The **wasm code** entry is deliberately left
-   to the operator/installer: anyone may extend it, an archived entry is restored rather than
-   lost, and the code entry is shared with every other deployment of the same wasm, so its rent
-   is not obviously this policy's to pay. Two emitted comments claimed the code entry was kept
-   alive alongside the instance; they were wrong and now say what the block does. Keep both extensions proportionate: since extensions
+   their own deadlines. **Done for both**, in `install` and in a permitting `enforce`, alongside
+   the persistent entries: `e.storage().instance().extend_ttl` extends the instance and the code
+   entry together (soroban-sdk 28 `Instance::extend_ttl`, which calls the host's
+   `extend_current_contract_instance_and_code_ttl`). `contracts/differential/tests/ttl.rs` reads
+   the instance TTL only: it registers the policy natively, so its environment has no code entry
+   to read, and the code half of the claim rests on the SDK and host. The code entry is shared
+   with every other deployment of the same wasm, so a generated policy also pays some of that
+   shared rent. That is a cost, not a safety property: an archived code entry is restored rather
+   than lost. An instance-only extension (`Deployer::extend_ttl_for_contract_instance`) would
+   leave it out, but would change every generated policy's Wasm, so it is not made here. This
+   item once said the code entry was left to the operator; that was wrong, and the generated
+   comment that repeated it now says what the block does. Keep both extensions proportionate: since extensions
    may not be relied on for functionality or safety, they buy predictability, and any design
    that would need them to hold a guarantee is the wrong design.
 3. Do **not** reject, at generation time, a policy whose `valid_until` exceeds `max_ttl()`.
@@ -714,8 +720,10 @@ state, which is what the earlier "no on-chain trace" verdict was about.
   does not apply here.)
 - **The Soroban security checklist** from Veridise.
 - **The Soroban Security Audit Bank** — an SDF programme funding audits: SDF has conducted over
-  40 audits, deploying over $3 million. STRIDE appears there as the audit-readiness support SDF
-  offers to participating projects, not as preparation those projects are required to bring.
+  40 audits, deploying over $3 million. Its
+  [official rules](https://stellar.gitbook.io/scf-handbook/supporting-programs/audit-bank/official-rules)
+  require an applicant to bring a STRIDE threat model, and the results of one of its self-service
+  tooling options with a remediation plan for the critical, high and medium findings.
 
 **What we have.** Differential testing (an independent reference evaluator against the real
 compiled contract), mutation testing of the core, property tests, reproducibility gates. That is
@@ -762,7 +770,9 @@ current SDKs and fails when it analyses nothing would be worth measuring again.
    by line.
 3. **Apply to the Soroban Security Audit Bank.** An external audit is the control this section
    cannot substitute for, and the programme is a funded route to obtaining one.
-   [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) is the scope prepared for it.
+   [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) is the scope prepared for it, with the STRIDE threat
+   model; [`docs/SAST-TRIAGE.md`](SAST-TRIAGE.md) holds the Aikido results and what was done
+   with each.
 
 ---
 
@@ -1128,9 +1138,17 @@ are the control that tells a red run from a broken one. Proved red by putting
 with `contract events size bytes: 16508 > 16384` at the 16,000-byte size, and the non-vacuity test
 still passes.
 
+**Upstream's fix.** OpenZeppelin fixed their three policies in
+[OpenZeppelin/stellar-contracts#896](https://github.com/OpenZeppelin/stellar-contracts/pull/896),
+merged on 20 November 2026. On their main branch the enforce events carry a bounded projection,
+`EnforcedContext`: the target and function name of a call, or the executable and salt of a
+deployment, without arguments. No release carries it yet; v0.8.0, the latest, still embeds the
+`Context`. A generated policy cannot name a type its pinned `stellar-accounts` lacks, so generated
+policies keep `context_hash`.
+
 ### Three upstream defects found while doing this
 
-**Reportable, and the one worth reporting first: their own enforce events are unbounded.** This is
+**Reported, and fixed on their main branch: their own enforce events are unbounded.** This is
 divergence 9 above, read as a finding about `stellar-accounts` rather than as a decision about our
 emitter. `SpendingLimitEnforced`, `SimpleEnforced` and `WeightedEnforced` each embed a `Context`
 (`policies/spending_limit.rs:49`, `simple_threshold.rs:62`, `weighted_threshold.rs:78`), and a
@@ -1146,9 +1164,10 @@ composed by an account whose other policies may bound the call, and they publish
 independently-implemented model that a divergence would contradict. What remains is a transaction
 that fails on a resource limit rather than on a decision, at a size no reviewer of the policy would
 think to check. The reproduction above is on a generated policy because that is the crate this
-repository builds and tests; the field, the limit and the ordering are theirs unchanged, and the
-fix — a digest, or any bounded projection of the context — is available to them at the same
-cost.
+repository builds and tests; the field, the limit and the ordering are theirs unchanged. Reported
+as [OpenZeppelin/stellar-contracts#852](https://github.com/OpenZeppelin/stellar-contracts/issues/852)
+and fixed by #896 with a bounded projection of the context, which is not in a release yet
+(divergence 9, "Upstream's fix").
 
 
 **Reportable: their checklist's wasm build cannot succeed for any crate in their own workspace.**
@@ -1170,10 +1189,11 @@ which asked for `stellar contract build` **and/or** the cargo form. Searches of 
 `experimental_spec_shaking`, `custom build command` and `build fails` return nothing, so this
 appears unreported. The fix is one word in two documents.
 
-**Not reportable, already fixed in flight:** their `CONTRIBUTING.md:99` links
+**Not reportable, already fixed upstream:** their `CONTRIBUTING.md:99` links
 `.claude/skills/code-quality.md` while the file is at `.claude/commands/code-quality.md` (there is
-no `.claude/skills/` directory in the tree at all). Their open PR #836 already changes that exact
-line, so it is recorded here only so a reader who follows the broken link knows it is known.
+no `.claude/skills/` directory in the tree at all). Their PR #836, merged on 5 November 2026,
+changes that exact line; v0.8.0 still carries the broken link. It is recorded here only so a
+reader who follows that link knows it is known.
 
 **Verdict.** Conforms on every rule their checklist states for a contract of this kind, with nine
 divergences that are decisions rather than gaps — six forced by properties this project sells (a

@@ -798,6 +798,47 @@ mod tests {
         );
     }
 
+    /// The test above stops where the manifest still names the original Wasm. A forger goes on:
+    /// rewrites the manifest's `wasm_hash` (and `wasm_size`) to describe the new module and
+    /// publishes under both new hashes, which every publication check accepts. The rebuild
+    /// compiles the regenerated source, not the published module, so only `verify` can refuse it,
+    /// and must.
+    #[test]
+    fn a_swapped_wasm_with_a_rewritten_manifest_passes_the_checks_and_fails_verify() {
+        let generated = generated();
+        let other = b"\0asm-another-module".to_vec();
+        let mut manifest = generated.output.build_manifest.clone();
+        manifest["wasm_hash"] = serde_json::json!(sha256_hex(&other));
+        manifest["wasm_size"] = serde_json::json!(other.len());
+        let manifest = serde_json::to_vec_pretty(&manifest).unwrap();
+        let published = publish_artifact(&PublishInput {
+            spec: &generated.spec,
+            generated_files: &generated.output.files,
+            wasm: &other,
+            manifest: &manifest,
+        })
+        .unwrap();
+        assert_eq!(published.wasm_hash, sha256_hex(&other));
+        assert_ne!(
+            published.manifest_hash,
+            generated.output.build_manifest_hash
+        );
+
+        let input = check(&published, &published.files).unwrap();
+        let output = verify_with_build_config(&input, &build_config()).unwrap();
+        assert!(!output.matches, "{output:?}");
+        assert_eq!(
+            output.source_reproduction,
+            "reproduced: generated non-lock files are byte-identical"
+        );
+        // Both comparisons refuse it (the manifest's Wasm fields are reproduced too); the report
+        // names the Wasm, so this line fails if the Wasm comparison is lost.
+        assert_eq!(
+            output.wasm_reproduction,
+            "MISMATCH: claimed Wasm differs from reproduction"
+        );
+    }
+
     #[test]
     fn a_build_directory_named_for_another_manifest_is_refused() {
         let published = generated().published();

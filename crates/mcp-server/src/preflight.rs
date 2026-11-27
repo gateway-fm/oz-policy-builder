@@ -7,16 +7,16 @@ use rmcp::{tool, tool_router};
 use ozpb_api_types::{ErrorCode, PreflightTransactionInput, PreflightTransactionOutput, ToolError};
 use tokio_util::sync::CancellationToken;
 
-use crate::{cancel, internal_tool_err, rpc_tool_err, tool_err, PolicyBuilderServer};
+use crate::{cancel, internal_tool_err, rpc_tool_err, tool_err, PolicyBuilderServer, RpcErrorText};
 
 /// Why a hosted server takes no signed material. The server never holds anything that can
 /// authorize on a user's account (architecture §6.2), and confidential simulation belongs on
 /// local or self-hosted processing (§6.5). A signed entry is stronger than confidential: whoever
 /// receives it can use it until it expires.
-const HOSTED_SIGNED_REFUSAL: &str = "this hosted server refuses envelopes that carry \
-    transaction signatures or signed authorization entries: they are live authorizations, \
-    which anyone holding them can submit until they expire. Run preflight through the CLI or \
-    a local stdio server against an RPC endpoint you trust";
+pub(crate) const HOSTED_SIGNED_REFUSAL: &str = "this hosted server refuses envelopes that \
+    carry transaction signatures or signed authorization entries: they are live authorizations, \
+    which anyone holding them can submit until they expire. Run it through the CLI or a local \
+    stdio server against an RPC endpoint you trust";
 
 #[tool_router(router = preflight_tool_router, vis = "pub(crate)")]
 impl PolicyBuilderServer {
@@ -50,9 +50,10 @@ impl PolicyBuilderServer {
         let rpc_url = self.authorized_rpc_url(&input.rpc_url).map_err(tool_err)?;
         // Only a hosted server has an endpoint policy; a stdio server runs in the caller's own
         // trust domain, like the CLI.
-        if self.rpc_policy.is_some()
+        let text = self.rpc_error_text();
+        if text == RpcErrorText::Withheld
             && ozpb_source_rpc::envelope_carries_signatures(&input.envelope_xdr_base64)
-                .map_err(|error| tool_err(rpc_tool_err(error)))?
+                .map_err(|error| tool_err(rpc_tool_err(error, text)))?
         {
             return Err(tool_err(ToolError::new(
                 ErrorCode::EUnsupportedEnvelope,
@@ -67,7 +68,7 @@ impl PolicyBuilderServer {
                 &input.network_passphrase,
                 &input.envelope_xdr_base64,
             )
-            .map_err(rpc_tool_err)
+            .map_err(|error| rpc_tool_err(error, text))
         })
         .await
         .map_err(internal_tool_err)?;
@@ -117,36 +118,6 @@ mod tests {
         );
     }
 
-    /// The example invocation with one transaction signature added.
-    fn signed_envelope() -> String {
-        use stellar_xdr::{
-            DecoratedSignature, Limits, ReadXdr, Signature, SignatureHint, TransactionEnvelope,
-            WriteXdr,
-        };
-        let bundle: serde_json::Value =
-            serde_json::from_str(include_str!("../../../docs/examples/import-bundle.json"))
-                .expect("example bundle JSON");
-        let mut envelope = TransactionEnvelope::from_xdr_base64(
-            bundle["envelope_xdr_base64"]
-                .as_str()
-                .expect("example envelope"),
-            Limits::none(),
-        )
-        .expect("example envelope XDR");
-        let TransactionEnvelope::Tx(v1) = &mut envelope else {
-            panic!("the example envelope is a v1 transaction");
-        };
-        v1.signatures = vec![DecoratedSignature {
-            hint: SignatureHint([1; 4]),
-            signature: Signature(vec![7; 64].try_into().expect("signature bytes")),
-        }]
-        .try_into()
-        .expect("one signature");
-        envelope
-            .to_xdr_base64(Limits::none())
-            .expect("signed envelope XDR")
-    }
-
     #[tokio::test]
     async fn hosted_preflight_refuses_signed_material_before_any_request() {
         let policy = RpcEndpointPolicy::from_csv("https://rpc.allowed.example")
@@ -162,7 +133,7 @@ mod tests {
                 Parameters(PreflightTransactionInput {
                     rpc_url: "https://rpc.allowed.example".to_string(),
                     network_passphrase: "Test SDF Network ; September 2015".to_string(),
-                    envelope_xdr_base64: signed_envelope(),
+                    envelope_xdr_base64: crate::tests::signed_envelope(),
                 }),
                 Default::default(),
             )

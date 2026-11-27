@@ -8,13 +8,43 @@ use ozpb_api_types::{
 };
 use ozpb_build_runner::ManifestMatch;
 use ozpb_harness::EvidenceReport;
-use ozpb_policy_spec::PolicySpec;
+use ozpb_policy_spec::{PolicySpec, ValidatedSpec};
 use std::collections::BTreeMap;
+
+/// A caller's spec, validated, whose reference suite is within [`ozpb_harness::MAX_SUITE_CASES`]
+/// cases and [`ozpb_harness::MAX_SUITE_BYTES`] held. Every entry point that derives the suite
+/// from a request starts here, before deriving or building anything: validation bounds the parts
+/// of a spec, not the suite they compose into.
+pub(crate) fn suite_spec(spec: &serde_json::Value) -> Result<ValidatedSpec, ToolError> {
+    let spec: PolicySpec = from_value(spec)?;
+    let validated = spec.validate().map_err(|errors| spec_error(&errors))?;
+    if let Some(bound) = suite_over_limits(&validated) {
+        return Err(ToolError::new(
+            EC::ESpecInvalid,
+            "PolicySpec is too large for its reference suite",
+        )
+        .with_details(vec![format!(
+            "E_SPEC_LIMITS: the reference suite would derive up to {} cases holding about {} \
+             bytes; the limits are {} cases and {} bytes",
+            bound.cases,
+            bound.bytes,
+            ozpb_harness::MAX_SUITE_CASES,
+            ozpb_harness::MAX_SUITE_BYTES
+        )]));
+    }
+    Ok(validated)
+}
+
+/// The size of `spec`'s reference suite when it is over either limit; `None` when it may be built.
+pub(crate) fn suite_over_limits(spec: &ValidatedSpec) -> Option<ozpb_harness::SuiteBound> {
+    let bound = ozpb_harness::suite_bound(spec);
+    (bound.cases > ozpb_harness::MAX_SUITE_CASES || bound.bytes > ozpb_harness::MAX_SUITE_BYTES)
+        .then_some(bound)
+}
 
 /// Run the layer-1 reference suite over a validated policy specification.
 pub fn reference_suite(input: &ReferenceSuiteInput) -> Result<ReferenceSuiteOutput, ToolError> {
-    let spec: PolicySpec = from_value(&input.spec)?;
-    let validated = spec.validate().map_err(|errors| spec_error(&errors))?;
+    let validated = suite_spec(&input.spec)?;
     let report = ozpb_harness::run_layer1(&validated);
 
     Ok(ReferenceSuiteOutput {
@@ -51,8 +81,7 @@ pub fn reference_suite(input: &ReferenceSuiteInput) -> Result<ReferenceSuiteOutp
 pub fn reference_suite_cases(
     input: &ReferenceSuiteInput,
 ) -> Result<ozpb_harness::SuiteCases, ToolError> {
-    let spec: PolicySpec = from_value(&input.spec)?;
-    let validated = spec.validate().map_err(|errors| spec_error(&errors))?;
+    let validated = suite_spec(&input.spec)?;
     ozpb_harness::emit_cases(&validated).map_err(|e| ToolError::new(EC::EInternal, e.to_string()))
 }
 
@@ -109,8 +138,7 @@ pub fn verify_with_build_config(
     build_config: &super::BuildConfig,
 ) -> Result<VerifyOutput, ToolError> {
     refuse_artifact_reference(input)?;
-    let spec: PolicySpec = from_value(&input.spec)?;
-    let validated = spec.validate().map_err(|errors| spec_error(&errors))?;
+    let validated = suite_spec(&input.spec)?;
     let generated = generate_code_with_build_config(
         &GenerateCodeInput {
             spec: input.spec.clone(),
@@ -252,6 +280,45 @@ mod tests {
         assert!(!output.coverage.is_empty());
         assert_eq!(output.missing_classes.len(), report.missing_classes().len());
         assert!(!output.unmodeled_reviewed_policies.is_empty());
+    }
+
+    /// A spec whose suite would exceed the limit is refused with the count, by every entry point
+    /// that derives the suite, before anything is derived or built: `verify` would otherwise
+    /// compile first (its builder here does not exist, so reaching it is a different refusal).
+    #[test]
+    fn a_spec_whose_reference_suite_is_too_large_is_refused_before_any_work() {
+        let spec = crate::test_support::oversized_suite_spec();
+        let missing_builder = crate::BuildConfig {
+            stellar_binary: "/nonexistent/ozpb-not-a-builder".into(),
+            ..crate::BuildConfig::default()
+        };
+        let input = ReferenceSuiteInput { spec: spec.clone() };
+        for error in [
+            reference_suite(&input).unwrap_err(),
+            reference_suite_cases(&input).unwrap_err(),
+            verify_with_build_config(
+                &VerifyInput {
+                    spec,
+                    rule_index: 0,
+                    claimed_generated_files: BTreeMap::new(),
+                    claimed_wasm_base64: None,
+                    claimed_build_manifest: None,
+                    generated_artifact: None,
+                },
+                &missing_builder,
+            )
+            .unwrap_err(),
+        ] {
+            assert_eq!(error.code, EC::ESpecInvalid, "{error}");
+            let [detail] = error.details.as_slice() else {
+                panic!("one limit finding: {error:?}");
+            };
+            assert!(
+                detail.starts_with("E_SPEC_LIMITS: ")
+                    && detail.contains(&ozpb_harness::MAX_SUITE_CASES.to_string()),
+                "{detail}"
+            );
+        }
     }
 
     #[test]

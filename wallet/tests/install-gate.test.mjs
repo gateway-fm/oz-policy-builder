@@ -224,6 +224,14 @@ test('on mainnet the installation consent names the agent as the delegate key\'s
   assert.match(display.warning, /the agent's own key, held by the agent and by this backend from the operator's file/);
   assert.match(display.warning, /the agent can use the grant itself, without this wallet/);
   assert.match(display.warning, /anyone who obtains it before then, the agent included, could submit it/);
+  // An operator-funded testnet session says the same: its delegate is the agent's key from the operator's file.
+  const rehearsal = installConsent({ ...consentBase(), operatorFunded: true });
+  assert.equal(rehearsal.network, 'testnet');
+  assert.match(rehearsal.warning, /the agent's own key, held by the agent and by this backend from the operator's file/);
+  assert.match(rehearsal.warning, /anyone who obtains it before then, the agent included, could submit it/);
+  assert.doesNotMatch(JSON.stringify(rehearsal), /whose key this wallet backend holds as its automation delegate/);
+  // Mainnet is always operator-funded, whatever a caller passes.
+  assert.deepEqual(installConsent({ ...base, operatorFunded: false }), display);
 });
 test('the installation consent is derived only for the reviewed grant, rule and fee bound', () => {
   const display = installConsent(consentBase());

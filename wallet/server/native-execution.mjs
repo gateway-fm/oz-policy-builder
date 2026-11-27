@@ -57,8 +57,9 @@ export class DelegateCapabilities {
   #fixed = null;
   /**
    * `network` is the session's network profile; without it no live or use capability is minted.
-   * `random` lets `create` generate disposable keys (testnet). `key`, the operator's delegate key
-   * (mainnet, optional), is then the one key `create` returns; with neither, no delegate key exists.
+   * `random` lets `create` generate disposable keys (testnet, with the disposable fee payer). `key`, the
+   * operator's delegate key (operator-funded sessions, optional), is then the one key `create` returns;
+   * with neither, no delegate key exists.
    */
   constructor(network = null, { random = true, key = null } = {}) {
     this.#network = network;

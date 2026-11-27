@@ -81,8 +81,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 ( cd contracts/golden-transfer-policy && cargo clippy --locked --all-targets -- -D warnings )
 ( cd contracts/soroswap-swap-policy && cargo clippy --locked --all-targets -- -D warnings )
 ( cd contracts/range-transfer-policy && cargo clippy --locked --all-targets -- -D warnings )
-# contracts/two-payment-policy is formatted but not linted: the emitter's two-tuples-of-one-function
-# output trips clippy::nonminimal_bool (see the contracts job in .github/workflows/ci.yml).
+( cd contracts/two-payment-policy && cargo clippy --locked --all-targets -- -D warnings )
 
 echo "== 3. host workspace test suite (TDD) =="
 cargo test --locked --workspace
@@ -162,14 +161,19 @@ if [ "$MODE" = release ]; then
     # comes from the differential suite building the crate as a dev-dependency. It compared one
     # untouched file with itself and passed unconditionally. The two copies do not even have the
     # same hash, because they are built in different contexts.
+    #
+    # Both builds and the clean name the crate's own target directory: a caller's CARGO_TARGET_DIR,
+    # CARGO_BUILD_TARGET_DIR or `build.target-dir` would otherwise put the Wasm somewhere other
+    # than $W, and `cargo clean` would empty that shared target.
     G=contracts/golden-transfer-policy
+    GT="$PWD/$G/target"
     W="$G/target/wasm32v1-none/release/generated_sub_transfer_r0.wasm"
-    ( cd "$G" && stellar contract build --locked >/dev/null 2>&1 )
+    ( cd "$G" && CARGO_TARGET_DIR="$GT" stellar contract build --locked >/dev/null 2>&1 )
     H1=$(shasum -a 256 "$W" | cut -d' ' -f1)
-    ( cd "$G" && cargo clean >/dev/null 2>&1 )
+    ( cd "$G" && CARGO_TARGET_DIR="$GT" cargo clean >/dev/null 2>&1 )
     # Non-vacuity: if the artifact survives the clean, the rebuild below proves nothing.
     [ -f "$W" ] && { echo "  cargo clean did not remove the wasm — this gate would be vacuous"; exit 1; }
-    ( cd "$G" && stellar contract build --locked >/dev/null 2>&1 )
+    ( cd "$G" && CARGO_TARGET_DIR="$GT" stellar contract build --locked >/dev/null 2>&1 )
     H2=$(shasum -a 256 "$W" | cut -d' ' -f1)
     [ "$H1" = "$H2" ] && echo "  wasm byte-identical across a full clean rebuild: $H1" \
         || { echo "  WASM DIFFERS: $H1 vs $H2"; exit 1; }

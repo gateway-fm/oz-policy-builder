@@ -10,6 +10,24 @@ import { denialSimulation, permitChanges, permitSimulation, withProbe } from './
 const layerOf = (result) => result.verification.layers.find((layer) => layer.layer === 'live_enforcement');
 const base64Entries = (text) => /AAAA[A-Za-z0-9+/]{200,}/.test(text);
 
+test('a restarted wallet waits past prior expiry on both the clock and live snapshot before releasing an entry', async () => {
+  const f = await liveReviewed({ priorAuthorizationExpiry: () => START_LEDGER });
+  const input = { reviewId: f.review.reviewId, capabilityId: f.delegate.capabilityId };
+  await assert.rejects(() => f.actions['prepare-live'](input), { reason: 'signatures_still_valid' });
+
+  f.state.ledger++;
+  f.state.readLedger = START_LEDGER;
+  const consent = ({ action, statementSha256 }) => f.actions['consent-live']({ id: action.id, statementSha256 });
+  const stale = await f.actions['prepare-live'](input);
+  await assert.rejects(() => consent(stale.live), { reason: 'signatures_still_valid' });
+  assert.equal(f.records.length, 0);
+
+  f.state.readLedger = f.state.ledger;
+  const fresh = await f.actions['prepare-live'](input);
+  assert.ok((await consent(fresh.live)).ownerEntryXdr);
+  assert.equal(f.records.length, 1);
+});
+
 test('without a configured helper, the live layer is not offered', async () => {
   const { actions } = setup();
   assert.equal((await actions.status({})).capabilities.liveCheck, false);
@@ -226,6 +244,29 @@ test('the browser and backend derive the same statement; it binds the expiry, th
     assert.notEqual(other, prepared.live.statementSha256);
   }
   assert.equal(HELPER, inputs.helper);
+});
+
+test('an operator-funded testnet session\'s live statement and evidence name the agent\'s key from the operator\'s file', async () => {
+  const { MAINNET_FEE_DEFAULTS } = await import('../server/config.mjs');
+  const f = await liveReviewed({ network: { operatorFunded: true, fees: MAINNET_FEE_DEFAULTS,
+    uploadCost: async () => ({ resourceFeeStroops: '5000', feeStroops: '5100', ledger: START_LEDGER }) } });
+  const { prepared, input } = await consented(f);
+  const display = prepared.live.display;
+  assert.equal(display.network, 'testnet');
+  assert.equal(display.labels[3], 'delegate_is_agent_key_from_operator_file');
+  assert.match(display.warning, /the agent's own key/);
+  // The browser derives the same statement from the session's funding model, which the status reports.
+  assert.equal((await f.actions.status({})).feePayer.ownerFunded, true);
+  const review = await f.actions.review({ deploymentId: f.deployed.deploymentId, wallet: f.f.wallet });
+  const { reviewIntent } = await import('../shared/approval.mjs');
+  const inputs = prepared.live.inputs;
+  const cases = liveCases({ approval: reviewIntent(review), spec: f.artifact.spec, helper: inputs.helper, policyCodeHash: inputs.policyCodeHash,
+    expectedRuleId: inputs.expectedRuleId, signatureExpirationLedger: inputs.signatureExpirationLedger });
+  assert.equal(statementHash(consentDisplay(cases, { currentLedger: inputs.currentLedger, operatorFunded: true })), prepared.live.statementSha256);
+  const live = layerOf(await f.actions['run-live'](input));
+  assert.equal(live.status, 'passed', JSON.stringify(live));
+  assert.equal(live.evidence.delegate, 'agent_key_from_operator_file');
+  assert.equal(live.evidence.labels[3], 'delegate_is_agent_key_from_operator_file');
 });
 
 test('the wallet pins the helper hash the real-Wasm host tests assert', async () => {

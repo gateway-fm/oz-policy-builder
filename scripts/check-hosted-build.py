@@ -20,12 +20,28 @@ PROTOCOL = "2025-11-25"
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
+def toolkit_source_problem(manifest, expected_commit):
+    """Why the manifest's producer record is not the clean commit the image was built from, or None.
+
+    The image's build gets that commit as its `OZPB_TOOLKIT_SOURCE` build argument; an image built
+    without it records nothing, and this is the only check that it was passed through.
+    """
+    recorded = (manifest.get("producer") or {}).get("toolkit_source")
+    if recorded is None:
+        return "the manifest records no toolkit commit"
+    if recorded != {"commit": expected_commit, "dirty": False}:
+        return "the manifest records another toolkit commit or a dirty checkout"
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url")
     parser.add_argument("--token-file", required=True, type=Path)
     parser.add_argument("--ca-file", type=Path)
     parser.add_argument("--spec", required=True, type=Path)
+    parser.add_argument("--expect-toolkit-commit", required=True,
+                        help="the commit the image's build context was cut from")
     args = parser.parse_args()
     url = urlsplit(args.url)
     if url.scheme != "https" or url.path != "/v1/mcp" or url.username or url.password or url.query or url.fragment:
@@ -90,7 +106,10 @@ def main():
         raise SystemExit("generated Wasm identity mismatch")
     if generated["build_manifest"]["toolchain"]["builder"] != "local-unattested":
         raise SystemExit("fixture did not use the real compiler")
-    print("TLS MCP generation: real Wasm with matching digest")
+    problem = toolkit_source_problem(generated["build_manifest"], args.expect_toolkit_commit)
+    if problem is not None:
+        raise SystemExit(problem)
+    print("TLS MCP generation: real Wasm with matching digest and toolkit commit")
     verified = tool("verify", {
         "spec": spec, "rule_index": 0,
         "claimed_generated_files": {key: value for key, value in generated["files"].items() if key != "Cargo.lock"},

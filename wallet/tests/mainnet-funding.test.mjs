@@ -1,9 +1,11 @@
-// Mainnet's funding model: the fee payer is the operator's own key from a 0600 file, never printed,
-// returned or journaled, and never a signer on an account; every transaction is held to a
-// per-transaction fee cap and a session spend cap before it is signed; the wallet funds and creates
-// nothing (no Friendbot, no sample funding, no delegate account), and pinned code missing on the
-// network is refused with its upload command instead of being uploaded. Every key here is a throwaway
-// generated at run time.
+// The operator-funded model mainnet runs: the fee payer is the operator's own key from a 0600 file,
+// never printed, returned or journaled, and never a signer on an account; every transaction is held to a
+// per-transaction fee cap and a session spend cap before it is signed; the wallet funds nothing (no
+// Friendbot for the fee payer, no sample funding), and pinned code missing on the network is refused
+// with its upload command instead of being uploaded. A testnet session given the operator's own fee
+// payer key runs the same model, through the same code, as a rehearsal of the mainnet install: the
+// tests registered with `operatorTest` run once for each. Every key here is a throwaway generated at
+// run time.
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,11 +17,22 @@ import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../shared/approval.mjs';
 import { FeePayer, loadFeePayerKey } from '../server/fee-payer.mjs';
 import { MAINNET_FEE_DEFAULTS, loadWalletConfig } from '../server/config.mjs';
-import { WalletNetwork } from '../server/network.mjs';
+import { TESTNET_FEES, WalletNetwork } from '../server/network.mjs';
 import { readPinnedWasm, uploadInstruction } from '../server/pinned-code.mjs';
+import { HELPER_DEPLOY } from '../server/live-check.mjs';
 import { setup, deploymentFixture } from './actions-fixture.mjs';
+import { sampleTransfer } from './sample-fixture.mjs';
 
-const MAINNET = WALLET_NETWORKS.mainnet;
+const { mainnet: MAINNET, testnet: TESTNET } = WALLET_NETWORKS;
+/**
+ * The operator-funded profiles: mainnet, and testnet with the operator's own fee payer key (the
+ * rehearsal of the mainnet install). A test registered here runs once for each, with the same expectations.
+ */
+const operatorTest = (name, body) => {
+  for (const [label, network] of [['mainnet', MAINNET], ['operator-funded testnet', TESTNET]]) {
+    test(`${label}: ${name}`, (t) => body(t, network));
+  }
+};
 const scratch = (t, prefix = 'wallet-mainnet-funding-') => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -59,7 +72,8 @@ test('the fee payer key is read only from a 0600 file owned by this user, and ne
   assert.throws(() => loadFeePayerKey(join(root, 'missing.key')), (error) => /does not exist/.test(error.startup));
 });
 
-test('mainnet configuration: the operator key is required, caps default conservatively and stay under their ceilings', (t) => {
+/** An operator configuration's files, the operator's fee payer key among them; `save` writes the configuration. */
+function operatorConfig(t) {
   const root = scratch(t);
   const workRoot = join(root, 'work');
   mkdirSync(workRoot, { mode: 0o700 });
@@ -74,6 +88,11 @@ test('mainnet configuration: the operator key is required, caps default conserva
   const base = { executable, workRoot, rpcUrl: 'https://rpc.example/', registrySnapshotPath: join(root, 'registry.json'),
     registryRootsPath: join(root, 'roots.json'), registryMinimumVersion: 6 };
   const save = (value) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
+  return { root, path, keyPath, base, save };
+}
+
+test('mainnet configuration: the operator key is required, caps default conservatively and stay under their ceilings', (t) => {
+  const { path, keyPath, base, save } = operatorConfig(t);
   save({ ...base, network: 'mainnet', feePayerKeyPath: keyPath });
   const config = loadWalletConfig(path);
   assert.deepEqual({ ...config.fees }, MAINNET_FEE_DEFAULTS);
@@ -95,8 +114,7 @@ test('mainnet configuration: the operator key is required, caps default conserva
     ['a fractional cap', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, maxFeeStroops: 1.5 }],
     ['no registry floor (versions start at 1)', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, registryMinimumVersion: 0 }],
     ['a registry floor above the persisted checkpoint (a rollback)', { ...base, network: 'mainnet', feePayerKeyPath: keyPath, registryMinimumVersion: 7 }],
-    ['an operator key on testnet', { ...base, feePayerKeyPath: keyPath }],
-    ['caps on testnet', { ...base, maxFeeStroops: 1_000_000 }],
+    ['caps on testnet without the operator key', { ...base, maxFeeStroops: 1_000_000 }],
   ]) {
     save(value);
     assert.throws(() => loadWalletConfig(path), /configuration|refused/, name);
@@ -108,10 +126,61 @@ test('mainnet configuration: the operator key is required, caps default conserva
   assert.deepEqual({ ...testnet.fees }, { maxFeeStroops: 10_000_000, maxUploadFeeStroops: 150_000_000, sessionSpendCapStroops: null });
 });
 
+test('operator-funded testnet configuration: the operator key opts in, and the caps default and validate as on mainnet', (t) => {
+  const { root, path, keyPath, base, save } = operatorConfig(t);
+  save({ ...base, feePayerKeyPath: keyPath });
+  const config = loadWalletConfig(path);
+  assert.equal(config.network, TESTNET, 'still testnet: its passphrase, its Friendbot for other accounts, its registry');
+  assert.equal(config.feePayer.operator, true);
+  assert.equal(config.feePayer.address, Keypair.fromSecret(readFileSync(keyPath, 'utf8').trim()).publicKey());
+  assert.deepEqual({ ...config.fees }, MAINNET_FEE_DEFAULTS);
+  assert.equal(config.delegateKey, null);
+  assert.equal(config.pinnedWasmDir, null);
+  // Every field of the model, the caps the operator will use on mainnet among them.
+  const delegatePath = keyFile(root, Keypair.random().secret(), 0o600, 'delegate.key');
+  const pinned = join(root, 'pinned');
+  mkdirSync(pinned, { mode: 0o700 });
+  save({ ...base, feePayerKeyPath: keyPath, delegateKeyPath: delegatePath, maxFeeStroops: 2_000_000, maxUploadFeeStroops: 200_000_000,
+    sessionSpendCapStroops: 230_000_000, pinnedWasmDir: pinned });
+  const full = loadWalletConfig(path);
+  assert.deepEqual({ ...full.fees }, { maxFeeStroops: 2_000_000, maxUploadFeeStroops: 200_000_000, sessionSpendCapStroops: 230_000_000 });
+  assert.equal(full.delegateKey.address, Keypair.fromSecret(readFileSync(delegatePath, 'utf8').trim()).publicKey());
+  assert.equal(full.pinnedWasmDir, pinned);
+  // The development registry stays trusted on testnet: the mainnet registry checks do not apply.
+  writeFileSync(join(root, 'dev-roots.json'), '{}', { mode: 0o600 });
+  save({ ...base, feePayerKeyPath: keyPath, registryRootsPath: join(root, 'dev-roots.json') });
+  assert.equal(loadWalletConfig(path).feePayer.operator, true);
+  for (const [name, value] of [
+    // A partial model: any of its fields without the operator's own fee payer key.
+    ...['delegateKeyPath', 'maxFeeStroops', 'maxUploadFeeStroops', 'sessionSpendCapStroops', 'pinnedWasmDir'].map((field) => [
+      `${field} without the operator key`, { ...base, [field]: { delegateKeyPath: delegatePath, pinnedWasmDir: pinned }[field] ?? 1_000_000 }]),
+    // The caps' bounds are mainnet's.
+    ['a per-transaction cap above 1 XLM', { ...base, feePayerKeyPath: keyPath, maxFeeStroops: 10_000_001 }],
+    ['an upload cap above 50 XLM', { ...base, feePayerKeyPath: keyPath, maxUploadFeeStroops: 500_000_001, sessionSpendCapStroops: 500_000_000 }],
+    ['a session cap above 50 XLM', { ...base, feePayerKeyPath: keyPath, sessionSpendCapStroops: 500_000_001 }],
+    ['an upload cap above the session cap', { ...base, feePayerKeyPath: keyPath, maxUploadFeeStroops: 200_000_000 }],
+    ['a cap below 100 stroops', { ...base, feePayerKeyPath: keyPath, maxFeeStroops: 99 }],
+    ['a fractional cap', { ...base, feePayerKeyPath: keyPath, maxFeeStroops: 1.5 }],
+    ['a null key path', { ...base, feePayerKeyPath: null }],
+  ]) {
+    save(value);
+    assert.throws(() => loadWalletConfig(path), /configuration|refused/, name);
+  }
+  // The key file is checked as on mainnet, with the reason.
+  save({ ...base, feePayerKeyPath: keyFile(root, Keypair.random().secret(), 0o644, 'open.key') });
+  assert.throws(() => loadWalletConfig(path), (error) => /mode 0600/.test(error.startup));
+  save({ ...base, feePayerKeyPath: keyPath, delegateKeyPath: keyPath });
+  assert.throws(() => loadWalletConfig(path), (error) => /must not be the fee payer/.test(error.startup));
+});
+
 // --- the network layer -------------------------------------------------------------------------------------
 
-/** A mainnet WalletNetwork over a fake endpoint; `fee` is what enforce-mode assembly charges. */
-function mainnet(t, { payerFunded = true, fee = 2000, fees = MAINNET_FEE_DEFAULTS, change = () => {}, spent = '0', balance = 1_000_000_000n } = {}) {
+/**
+ * A WalletNetwork paid by the operator's own key over a fake endpoint for `network` (mainnet unless
+ * named); `fee` is what enforce-mode assembly charges.
+ */
+function operatorNetwork(t, { network = MAINNET, payerFunded = true, fee = 2000, fees = MAINNET_FEE_DEFAULTS, change = () => {}, spent = '0',
+  balance = 1_000_000_000n } = {}) {
   const root = scratch(t);
   const key = Keypair.random();
   const feePayer = new FeePayer(key, true);
@@ -127,7 +196,7 @@ function mainnet(t, { payerFunded = true, fee = 2000, fees = MAINNET_FEE_DEFAULT
       numSubEntries: 0, inflationDest: null, flags: 0, homeDomain: '', thresholds: Buffer.from([1, 0, 0, 0]), signers: [],
       ext: xdr.AccountEntryExt.v0() })), lastModifiedLedgerSeq: 90, liveUntilLedgerSeq: undefined });
   const server = {
-    getNetwork: async () => ({ passphrase: Networks.PUBLIC, protocolVersion: 30 }),
+    getNetwork: async () => ({ passphrase: network.passphrase, protocolVersion: 30 }),
     getLatestLedger: async () => ({ sequence: 100, id: Buffer.from(hash(header.toXDR())).toString('hex'), headerXdr: header, protocolVersion: 30 }),
     getLedgerEntries: async (key) => ({ latestLedger: 100,
       entries: payerFunded ? [accountEntry(feePayer.address, balance)].filter((e) => same(e.key, key)) : [] }),
@@ -151,11 +220,11 @@ function mainnet(t, { payerFunded = true, fee = 2000, fees = MAINNET_FEE_DEFAULT
     const envelope = xdr.TransactionEnvelope.fromXDR(tx.toEnvelope().toXDR());
     envelope.v1.tx.fee = fee;
     envelope.v1.tx.ext = xdr.TransactionExt.sorobanData(new SorobanDataBuilder().setResourceFee(fee - 1000 > 0 ? fee - 1000 : 0).build());
-    return TransactionBuilder.fromXDR(envelope.toXDR('base64'), Networks.PUBLIC);
+    return TransactionBuilder.fromXDR(envelope.toXDR('base64'), network.passphrase);
   } });
-  const network = new WalletNetwork({ network: MAINNET, rpcUrl: 'https://rpc.example/', journalRoot: root, server, feePayer, fees, spentStroops: spent,
+  const wallet = new WalletNetwork({ network, rpcUrl: 'https://rpc.example/', journalRoot: root, server, feePayer, fees, spentStroops: spent,
     fetchImpl: async (url) => { calls.push({ fetched: url }); return new Response('{}'); }, assemble, pause: async () => {} });
-  return { network, calls, root, key, feePayer };
+  return { network: wallet, calls, root, key, feePayer };
 }
 const same = (a, b) => Buffer.from(a.toXDR()).equals(Buffer.from(b.toXDR()));
 /** The account every contract call here is made on: `contractCall` is its `remove_context_rule(1)`, authorized by it. */
@@ -174,19 +243,41 @@ const contractCall = (payer, signature = xdr.ScVal.scvVoid(), { target = REMOVAL
     .setTimeout(60).build().toEnvelope().toXDR('base64');
 };
 
-test('mainnet: the wallet never funds its fee payer; an unfunded operator account refuses as payer_unfunded', async (t) => {
-  const unfunded = mainnet(t, { payerFunded: false });
+operatorTest('the wallet never funds its fee payer; an unfunded operator account refuses as payer_unfunded', async (t, network) => {
+  const unfunded = operatorNetwork(t, { network, payerFunded: false });
   await assert.rejects(() => unfunded.network.fundPayer(), (error) => error.reason === 'payer_unfunded');
-  assert.equal(unfunded.calls.some((call) => call.fetched), false, 'no Friendbot request');
+  await assert.rejects(() => unfunded.network.fundRemoval(), (error) => error.reason === 'payer_unfunded');
+  assert.equal(unfunded.calls.some((call) => call.fetched), false, 'no Friendbot request, though testnet has one');
   assert.equal(unfunded.network.canSubmit, false);
-  const funded = mainnet(t);
+  assert.equal(unfunded.network.operatorFunded, true);
+  const funded = operatorNetwork(t, { network });
   await funded.network.fundPayer();
   assert.equal(funded.network.canSubmit, true);
   const account = await funded.network.payerAccount();
   assert.deepEqual(account, { exists: true, balanceStroops: '1000000000', minimumStroops: '10000000', spendableStroops: '990000000', ledger: 100 });
 });
 
-test('mainnet: after a restart a removal needs only its own fee from the operator account, read through the real network', async (t) => {
+operatorTest('what the operator account can spend leaves out its selling liabilities and counts sponsorship in its reserve', async (t, network) => {
+  // Stellar's available balance: balance − (2 + subentries + sponsoring − sponsored) × base reserve − selling liabilities.
+  const f = operatorNetwork(t, { network, change: (server, feePayer) => {
+    const accountId = Keypair.fromPublicKey(feePayer.address).xdrAccountId();
+    const key = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId }));
+    const ext = xdr.AccountEntryExt.v1(new xdr.AccountEntryExtensionV1({
+      liabilities: new xdr.Liabilities({ buying: 7_000_000n, selling: 3_000_000n }),
+      ext: xdr.AccountEntryExtensionV1Ext.v2(new xdr.AccountEntryExtensionV2({ numSponsored: 2, numSponsoring: 3,
+        signerSponsoringIDs: [], ext: xdr.AccountEntryExtensionV2Ext.v0() })) }));
+    const val = xdr.LedgerEntryData.account(new xdr.AccountEntry({ accountId, balance: 100_000_000n, seqNum: 7n, numSubEntries: 1,
+      inflationDest: null, flags: 0, homeDomain: '', thresholds: Buffer.from([1, 0, 0, 0]), signers: [], ext }));
+    server.getLedgerEntries = async () => ({ latestLedger: 100, entries: [{ key, val, lastModifiedLedgerSeq: 90, liveUntilLedgerSeq: undefined }] });
+  } });
+  // (2 + 1 + 3 − 2) × 5,000,000 = 20,000,000 reserved; 100,000,000 − 20,000,000 − 3,000,000 selling = 77,000,000.
+  assert.deepEqual(await f.network.payerAccount(), { exists: true, balanceStroops: '100000000', minimumStroops: '20000000',
+    spendableStroops: '77000000', ledger: 100 });
+  await f.network.payerCovers(77_000_000);
+  await assert.rejects(() => f.network.payerCovers(77_000_001), (error) => error.reason === 'payer_unfunded');
+});
+
+operatorTest('after a restart a removal needs only its own fee from the operator account, read through the real network', async (t, network) => {
   const account = 'CAWGOGD3YYSPUR6CPT6PE33DCUIGFNBVZVA5WEDGK2YM34FRLIUQBT5A';
   // The record-mode draft of `remove_context_rule(1)`: the account's own authorization of exactly that call.
   const recordRemoval = (server) => {
@@ -203,7 +294,7 @@ test('mainnet: after a restart a removal needs only its own fee from the operato
   };
   const draft = (network) => network.prepareRemoval({ wallet: { contractId: account }, ruleId: 1, ownerReadLedger: 100 });
   // Spendable 200,000 stroops (two base reserves held back): below the 1 XLM per-transaction cap, above the removal's 2,000.
-  const f = mainnet(t, { balance: 10_200_000n, change: recordRemoval });
+  const f = operatorNetwork(t, { network, balance: 10_200_000n, change: recordRemoval });
   assert.equal(f.network.canSubmitRemoval, false, 'a restarted backend has checked nothing yet');
   await assert.rejects(() => f.network.fundPayer(), (error) => error.reason === 'payer_unfunded', 'too little for every other step');
   await f.network.fundRemoval();
@@ -215,7 +306,7 @@ test('mainnet: after a restart a removal needs only its own fee from the operato
   await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress), 'install-policy'), /refused/);
   assert.equal(f.calls.filter((call) => call.sent).length, 1);
   // An account that cannot pay even the removal's fee is refused with the reason, before drafting and before signing.
-  const poor = mainnet(t, { balance: 10_001_000n, change: recordRemoval });
+  const poor = operatorNetwork(t, { network, balance: 10_001_000n, change: recordRemoval });
   await poor.network.fundRemoval();
   await assert.rejects(() => draft(poor.network), (error) => error.reason === 'payer_unfunded');
   await assert.rejects(() => poor.network.submitEnvelope(contractCall(poor.network.payerAddress), 'revoke-policy', REMOVAL),
@@ -223,11 +314,11 @@ test('mainnet: after a restart a removal needs only its own fee from the operato
   assert.equal(poor.calls.some((call) => call.sent), false);
   assert.deepEqual(readdirSync(poor.root), ['0000.session.json'], 'nothing journaled: nothing was signed');
   // No account at all.
-  await assert.rejects(() => mainnet(t, { payerFunded: false }).network.fundRemoval(), (error) => error.reason === 'payer_unfunded');
+  await assert.rejects(() => operatorNetwork(t, { network, payerFunded: false }).network.fundRemoval(), (error) => error.reason === 'payer_unfunded');
 });
 
-test('mainnet: a transaction above the per-transaction cap or the session cap is refused before it is signed', async (t) => {
-  const over = mainnet(t, { fee: 10_000_001 });
+operatorTest('a transaction above the per-transaction cap or the session cap is refused before it is signed', async (t, network) => {
+  const over = operatorNetwork(t, { network, fee: 10_000_001 });
   await over.network.fundPayer();
   await assert.rejects(() => over.network.submitEnvelope(contractCall(over.network.payerAddress), 'revoke-policy', REMOVAL),
     (error) => error.reason === 'fee_cap');
@@ -235,7 +326,7 @@ test('mainnet: a transaction above the per-transaction cap or the session cap is
   assert.deepEqual(readdirSync(over.root), ['0000.session.json'], 'nothing journaled: nothing was signed');
   // An installation keeps room for one removal (4500) under the cap.
   const tight = { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 11_500 };
-  const session = mainnet(t, { fee: 4_000, fees: tight });
+  const session = operatorNetwork(t, { network, fee: 4_000, fees: tight });
   await session.network.fundPayer();
   const first = await session.network.submitEnvelope(contractCall(session.network.payerAddress), 'install-policy');
   // The receipt says 1500 was charged; the cap still counts the 4000 the transaction could be charged,
@@ -247,8 +338,8 @@ test('mainnet: a transaction above the per-transaction cap or the session cap is
   assert.equal(session.calls.filter((call) => call.sent).length, 1, 'the second was never sent');
 });
 
-test('mainnet: the fee payer is never a signer: an envelope naming it as a signer is refused before signing', async (t) => {
-  const f = mainnet(t);
+operatorTest('the fee payer is never a signer: an envelope naming it as a signer is refused before signing', async (t, network) => {
+  const f = operatorNetwork(t, { network });
   await f.network.fundPayer();
   const delegated = xdr.ScVal.scvMap([
     new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('context_rule_ids'), val: xdr.ScVal.scvVec([xdr.ScVal.scvU32(1)]) }),
@@ -257,8 +348,8 @@ test('mainnet: the fee payer is never a signer: an envelope naming it as a signe
       val: xdr.ScVal.scvBytes(Buffer.alloc(0)) })]) }),
   ]);
   await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress, delegated), 'revoke-policy', REMOVAL), /refused/);
-  // Its own transfer, authorized by the source account's signature, is refused on mainnet: the operator's key moves no XLM.
-  const asset = MAINNET.nativeAsset;
+  // Its own transfer, authorized by the source account's signature, is refused: the operator's key moves no XLM.
+  const asset = network.nativeAsset;
   const transfer = Operation.invokeContractFunction({ contract: asset, function: 'transfer', args: [new Address(f.network.payerAddress).toScVal(),
     new Address('CAWGOGD3YYSPUR6CPT6PE33DCUIGFNBVZVA5WEDGK2YM34FRLIUQBT5A').toScVal(), xdr.ScVal.scvI128(new xdr.Int128Parts({ hi: 0n, lo: 1n }))] });
   await assert.rejects(() => f.network.submitOperation(transfer, 'fund-account'), /refused/);
@@ -266,8 +357,8 @@ test('mainnet: the fee payer is never a signer: an envelope naming it as a signe
   assert.deepEqual(readdirSync(f.root), ['0000.session.json']);
 });
 
-test('mainnet: a confirmed submission journals no part of the operator key', async (t) => {
-  const f = mainnet(t);
+operatorTest('a confirmed submission journals no part of the operator key', async (t, network) => {
+  const f = operatorNetwork(t, { network });
   await f.network.fundPayer();
   await f.network.submitEnvelope(contractCall(f.network.payerAddress), 'revoke-policy', REMOVAL);
   const journal = readdirSync(f.root).map((name) => readFileSync(join(f.root, name), 'utf8')).join('\n');
@@ -278,20 +369,42 @@ test('mainnet: a confirmed submission journals no part of the operator key', asy
 });
 
 test('mainnet: a missing delegate account is never created; it refuses as delegate_unfunded', async (t) => {
-  const f = mainnet(t);
+  const f = operatorNetwork(t);
   const delegate = Keypair.random().publicKey();
   await assert.rejects(() => f.network.ensureDelegateAccount(delegate), (error) => error.reason === 'delegate_unfunded');
   assert.deepEqual(await f.network.classicAccount(delegate), { exists: false, minimumStroops: '10000000', ledger: 100 });
   assert.equal(f.calls.some((call) => call.fetched), false, 'no Friendbot request');
 });
 
+test('operator-funded testnet: Friendbot stays testnet\'s for every account but the fee payer\'s', async (t) => {
+  const f = operatorNetwork(t, { network: TESTNET });
+  const delegate = Keypair.random().publicKey();
+  // The fake endpoint never shows the account, so the read-back refuses; what matters is who was asked.
+  await assert.rejects(() => f.network.ensureDelegateAccount(delegate), /refused/);
+  assert.deepEqual(f.calls.filter((call) => call.fetched).map((call) => call.fetched), [`${TESTNET.friendbot}/?addr=${delegate}`]);
+  // The operator's account exists here: it is read, never funded.
+  await f.network.fundPayer();
+  assert.equal(f.calls.filter((call) => call.fetched).length, 1, 'the fee payer is never funded through Friendbot');
+});
+
+test('an operator fee payer pays only within a session cap, on testnet too; mainnet takes no other payer', (t) => {
+  const make = (network, feePayer, fees) => () => new WalletNetwork({ network, rpcUrl: 'https://rpc.example/', journalRoot: scratch(t),
+    server: {}, feePayer, fees });
+  assert.throws(make(TESTNET, new FeePayer(Keypair.random(), true), TESTNET_FEES), /refused/, 'no session cap');
+  assert.throws(make(MAINNET, FeePayer.disposable(), MAINNET_FEE_DEFAULTS), /refused/, 'a disposable key on mainnet');
+  assert.equal(make(TESTNET, new FeePayer(Keypair.random(), true), MAINNET_FEE_DEFAULTS)().operatorFunded, true);
+  assert.equal(make(TESTNET, FeePayer.disposable(), TESTNET_FEES)().operatorFunded, false);
+});
+
 // --- the actions ---------------------------------------------------------------------------------------------
 
-const mainnetActions = (overrides = {}, options = {}) => setup({ ...options, network: { profile: MAINNET,
-  fees: MAINNET_FEE_DEFAULTS, spentStroops: '0', ...overrides } });
+/** Actions over a stub network paid by the operator's own key on `network`, as WalletNetwork reports it. */
+const operatorActions = (network, overrides = {}, options = {}) => setup({ ...options, network: { profile: network,
+  fees: MAINNET_FEE_DEFAULTS, spentStroops: '0', operatorFunded: true, ...overrides } });
+const mainnetActions = (overrides, options) => operatorActions(MAINNET, overrides, options);
 
-test('mainnet account preview: the owner funds the account; the caps are shown before anything is signed', async () => {
-  const { actions, calls, f } = mainnetActions();
+operatorTest('account preview: the owner funds the account; the caps are shown before anything is signed', async (_t, network) => {
+  const { actions, calls, f } = operatorActions(network);
   const preview = await actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
   assert.deepEqual(calls, []);
   assert.equal(preview.summary.sampleFundingStroops, '0');
@@ -299,7 +412,7 @@ test('mainnet account preview: the owner funds the account; the caps are shown b
   assert.equal(preview.summary.maxFeeStroops, 10_000_000);
   assert.equal(preview.summary.sessionSpendCapStroops, 150_000_000);
   const status = await actions.status({});
-  assert.equal(status.network, 'mainnet');
+  assert.equal(status.network, network.name);
   assert.deepEqual(status.fees, { maxFeeStroops: 10_000_000, maxUploadFeeStroops: 120_000_000, sessionSpendCapStroops: 150_000_000, spentStroops: '0' });
   assert.equal(status.feePayer.ownerFunded, true);
   // Confirmation deploys the verifier and the account and moves no XLM from the fee payer.
@@ -310,34 +423,54 @@ test('mainnet account preview: the owner funds the account; the caps are shown b
   assert.deepEqual(calls.filter((call) => Array.isArray(call) && call[0] === 'code').map((call) => call[1]), [ACCOUNT_WASM, WEBAUTHN_WASM]);
 });
 
-test('mainnet: pinned account or verifier code missing on the network is refused, never uploaded', async () => {
+test('mainnet is owner-funded by its network alone: a network that does not say so is still treated as operator-funded', async () => {
+  // No `operatorFunded` reported (a mainnet WalletNetwork always is; this one does not say): mainnet has no Friendbot.
+  const { actions, calls, f } = setup({ network: { profile: MAINNET, fees: MAINNET_FEE_DEFAULTS, spentStroops: '0' } });
+  const preview = await actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
+  assert.equal(preview.summary.ownerFunds, true);
+  assert.equal(preview.summary.sampleFundingStroops, '0');
+  assert.equal((await actions.status({})).feePayer.ownerFunded, true);
+  await actions['confirm-account']({ id: preview.action.id });
+  assert.equal(calls.includes('fund-account'), false, 'the wallet moves no XLM of the fee payer\'s');
+});
+
+operatorTest('pinned account or verifier code missing on the network is refused, never uploaded', async (_t, network) => {
   for (const missing of [ACCOUNT_WASM, WEBAUTHN_WASM]) {
-    const { actions, calls, f } = mainnetActions({ codePresent: async (hash) => ({ present: hash !== missing, ledger: 100 }) });
+    const { actions, calls, f } = operatorActions(network, { codePresent: async (hash) => ({ present: hash !== missing, ledger: 100 }) });
     const preview = await actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
     await assert.rejects(() => actions['confirm-account']({ id: preview.action.id }), (error) => error.reason === 'pinned_code_missing');
     assert.equal(calls.some((call) => ['deploy-verifier', 'deploy-account', 'fund', 'upload-policy'].includes(call)), false);
   }
 });
 
-test('mainnet readiness names each missing pinned Wasm with its upload command and, given the Wasm, its simulated cost', async (t) => {
+operatorTest('readiness names each missing pinned Wasm with its upload command and, given the Wasm, its simulated cost', async (t, network) => {
   const dir = scratch(t);
   const uploads = [];
-  const { actions } = mainnetActions({
+  const { actions } = operatorActions(network, {
     codePresent: async (hash) => ({ present: hash === WEBAUTHN_WASM, ledger: 100 }),
     payerAccount: async () => ({ exists: true, balanceStroops: '200000000', minimumStroops: '10000000', spendableStroops: '190000000', ledger: 100 }),
     uploadCost: async (wasm) => { uploads.push(wasm); return { resourceFeeStroops: '5000', feeStroops: '5100', ledger: 100 }; },
     diagnosticEvents: async () => ({ returned: true, ledger: 100 }),
   }, { pinnedWasmDir: dir });
   const ready = await actions.readiness({});
-  assert.equal(ready.network, 'mainnet');
+  assert.equal(ready.network, network.name);
+  assert.equal(ready.ownerFunded, true);
   assert.deepEqual(ready.pinned.find((p) => p.name === 'verifier'), { name: 'verifier', hash: WEBAUTHN_WASM, present: true });
   const account = ready.pinned.find((p) => p.name === 'account');
   assert.equal(account.present, false);
-  assert.equal(account.upload.command, `stellar contract upload --wasm ${dir}/${ACCOUNT_WASM}.wasm --network mainnet --source <your funded mainnet key>`);
+  // stellar-cli has no built-in mainnet RPC (`--network mainnet` fails): the owner names an endpoint. A
+  // placeholder, never the operator's rpcUrl, which may embed a key and would reach the browser.
+  const MAINNET_ARGS = `--rpc-url <your mainnet RPC endpoint> --network-passphrase '${Networks.PUBLIC}'`;
+  const args = network === MAINNET ? MAINNET_ARGS : '--network testnet';
+  assert.equal(account.upload.command,
+    `stellar contract upload --wasm ${dir}/${ACCOUNT_WASM}.wasm ${args} --source <your funded ${network.name} key>`);
   assert.equal(account.upload.simulatedFeeStroops, null, 'no reproduced Wasm in the directory: no cost yet');
   assert.equal(uploads.length, 0);
   assert.equal(ready.helper.configured, false);
-  assert.match(ready.helper.instruction, /stellar contract deploy --wasm ozpb_atomic_live_helper\.wasm --network mainnet/);
+  assert.equal(ready.helper.instruction, HELPER_DEPLOY[network.name]);
+  assert.ok(HELPER_DEPLOY.mainnet.includes(`stellar contract deploy --wasm ozpb_atomic_live_helper.wasm ${MAINNET_ARGS} --source`),
+    HELPER_DEPLOY.mainnet);
+  assert.doesNotMatch(HELPER_DEPLOY.mainnet, /--network mainnet/);
   assert.equal(ready.helper.uploadSimulatedFeeStroops, null, 'no reproduced helper Wasm in the directory: no cost yet');
   assert.deepEqual(ready.fees, { ...MAINNET_FEE_DEFAULTS, spentStroops: '0' });
   // The reproduced Wasm is read only when its SHA-256 is the pinned hash.
@@ -350,7 +483,10 @@ test('mainnet readiness names each missing pinned Wasm with its upload command a
   symlinkSync(join(dir, `${wasmHash}.wasm`), join(dir, `${'b'.repeat(64)}.wasm`));
   assert.equal(readPinnedWasm(dir, 'b'.repeat(64)), null, 'a symlink');
   assert.deepEqual({ ...uploadInstruction(MAINNET, null, wasmHash) }, { wasmPath: `<pinnedWasmDir>/${wasmHash}.wasm`,
-    command: `stellar contract upload --wasm <pinnedWasmDir>/${wasmHash}.wasm --network mainnet --source <your funded mainnet key>` });
+    command: `stellar contract upload --wasm <pinnedWasmDir>/${wasmHash}.wasm ${MAINNET_ARGS} --source <your funded mainnet key>` });
+  // Testnet keeps stellar-cli's built-in network.
+  assert.equal(uploadInstruction(WALLET_NETWORKS.testnet, null, wasmHash).command,
+    `stellar contract upload --wasm <pinnedWasmDir>/${wasmHash}.wasm --network testnet --source <your funded testnet key>`);
 });
 
 test('mainnet: a delegate is a key in memory whose account the owner funds; the wallet creates none', async () => {
@@ -365,8 +501,8 @@ test('mainnet: a delegate is a key in memory whose account the owner funds; the 
   assert.deepEqual(reads, [created.address]);
 });
 
-test('mainnet: the sample transfer waits for the owner to fund the account', async () => {
-  const { actions, f } = mainnetActions({ transferReadiness: async () => ({ ledger: 100, recipientExists: true, covered: false }) });
+operatorTest('the sample transfer waits for the owner to fund the account', async (_t, network) => {
+  const { actions, f } = operatorActions(network, { transferReadiness: async () => ({ ledger: 100, recipientExists: true, covered: false }) });
   const preview = await actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
   const created = await actions['confirm-account']({ id: preview.action.id });
   await assert.rejects(() => actions['prepare-sample']({ wallet: created.wallet }), (error) => error.reason === 'account_unfunded');
@@ -387,9 +523,9 @@ test('the fee payer is never the grant\'s delegate nor a signer in the reviewed 
   await assert.rejects(() => f.actions.review({ deploymentId: deployed.deploymentId, wallet: f.f.wallet }), /refused/);
 });
 
-test('mainnet deployment shows the policy upload\'s simulated cost first and refuses one above either cap', async () => {
+operatorTest('deployment shows the policy upload\'s simulated cost first and refuses one above either cap', async (_t, network) => {
   for (const [cost, spent, reason] of [['5100', '0', null], ['120000001', '0', 'fee_cap'], ['100000000', '45000000', 'spend_cap']]) {
-    const f = deploymentFixture(() => {}, { network: { profile: MAINNET, fees: MAINNET_FEE_DEFAULTS, spentStroops: spent,
+    const f = deploymentFixture(() => {}, { network: { profile: network, operatorFunded: true, fees: MAINNET_FEE_DEFAULTS, spentStroops: spent,
       uploadCost: async () => ({ resourceFeeStroops: cost, feeStroops: cost, ledger: 100 }) } });
     const prepared = f.actions['prepare-deploy']({ artifactId: f.artifactId });
     if (reason) await assert.rejects(() => prepared, (error) => error.reason === reason, `${cost} after ${spent}`);
@@ -397,10 +533,10 @@ test('mainnet deployment shows the policy upload\'s simulated cost first and ref
   }
 });
 
-test('mainnet: an upload above the upload cap is refused naming the setting and the simulated cost; raised, it proceeds', async () => {
+operatorTest('an upload above the upload cap is refused naming the setting and the simulated cost; raised, it proceeds', async (_t, network) => {
   const cost = '190000000';
   const deploy = (fees) => {
-    const f = deploymentFixture(() => {}, { network: { profile: MAINNET, fees, spentStroops: '0',
+    const f = deploymentFixture(() => {}, { network: { profile: network, operatorFunded: true, fees, spentStroops: '0',
       uploadCost: async () => ({ resourceFeeStroops: '189000000', feeStroops: cost, ledger: 100 }) } });
     return f.actions['prepare-deploy']({ artifactId: f.artifactId });
   };
@@ -415,7 +551,7 @@ test('mainnet: an upload above the upload cap is refused naming the setting and 
 });
 
 test('mainnet: the fee payer named as an authorizing address is refused before signing', async (t) => {
-  const f = mainnet(t);
+  const f = operatorNetwork(t);
   await f.network.fundPayer();
   // An entry whose credentials name the payer itself: the payer's envelope signature would authorize it.
   const call = new xdr.InvokeContractArgs({ contractAddress: new Address(MAINNET.nativeAsset).toScAddress(), functionName: 'transfer',
@@ -434,25 +570,176 @@ test('mainnet: the fee payer named as an authorizing address is refused before s
   assert.deepEqual(readdirSync(f.root), ['0000.session.json']);
 });
 
-test('mainnet: a Wasm upload is held to its own cap, every other transaction to the per-transaction cap', async (t) => {
+operatorTest('a Wasm upload is held to its own cap, every other transaction to the per-transaction cap', async (t, network) => {
   const fees = { maxFeeStroops: 3_000, maxUploadFeeStroops: 50_000, sessionSpendCapStroops: 1_000_000 };
-  const upload = mainnet(t, { fee: 40_000, fees });
+  const upload = operatorNetwork(t, { network, fee: 40_000, fees });
   await upload.network.fundPayer();
   // The upload's receipt fails the stored-hash check, but only after the fee checks let it through to be sent.
   await assert.rejects(() => upload.network.upload(Buffer.from('0061736d01000000', 'hex'), Buffer.from(hash(Buffer.from('0061736d01000000', 'hex'))).toString('hex')));
   assert.equal(upload.calls.filter((c) => c.sent).length, 1, '40000 is within the upload cap');
-  const call = mainnet(t, { fee: 40_000, fees });
+  const call = operatorNetwork(t, { network, fee: 40_000, fees });
   await call.network.fundPayer();
   await assert.rejects(() => call.network.submitEnvelope(contractCall(call.network.payerAddress), 'revoke-policy', REMOVAL),
     (error) => error.reason === 'fee_cap', 'the same 40000 is above the per-transaction cap');
-  const over = mainnet(t, { fee: 50_001, fees });
+  const over = operatorNetwork(t, { network, fee: 50_001, fees });
   await over.network.fundPayer();
   await assert.rejects(() => over.network.upload(Buffer.from('0061736d01000000', 'hex'), Buffer.from(hash(Buffer.from('0061736d01000000', 'hex'))).toString('hex')),
     (error) => error.reason === 'fee_cap');
 });
 
+operatorTest('every write is signed only when the operator account can pay its own fee, not just the per-transaction cap', async (t, network) => {
+  // Spendable 20,000 (two base reserves held back): enough for the 3,000 per-transaction cap that
+  // fundPayer checks once, too little for a 40,000 upload within its own cap.
+  const fees = { maxFeeStroops: 3_000, maxUploadFeeStroops: 50_000, sessionSpendCapStroops: 1_000_000 };
+  const wasm = Buffer.from('0061736d01000000', 'hex');
+  const f = operatorNetwork(t, { network, fee: 40_000, fees, balance: 10_020_000n });
+  await f.network.fundPayer();
+  assert.equal(f.network.canSubmit, true);
+  await assert.rejects(() => f.network.upload(wasm, Buffer.from(hash(wasm)).toString('hex')), (error) => error.reason === 'payer_unfunded');
+  assert.equal(f.calls.some((call) => call.sent), false, 'nothing sent');
+  assert.deepEqual(readdirSync(f.root), ['0000.session.json'], 'nothing journaled: nothing was signed');
+  assert.equal(f.network.spentStroops, '0', 'no phantom spend');
+  assert.equal(f.network.canSubmit, true, 'the session is not blocked: the operator can fund the account and try again');
+  // Any other write is held to its own fee the same way.
+  const call = operatorNetwork(t, { network, fee: 2_500, fees: { ...fees, maxFeeStroops: 2_500 }, balance: 10_002_500n });
+  await call.network.fundPayer();
+  // The payer is drawn down between the funding check and the write (another session, a manual payment).
+  call.network.payerAccount = async () => ({ exists: true, balanceStroops: '10002000', minimumStroops: '10000000', spendableStroops: '2000', ledger: 100 });
+  await assert.rejects(() => call.network.submitEnvelope(contractCall(call.network.payerAddress), 'install-policy'),
+    (error) => error.reason === 'payer_unfunded');
+  assert.equal(call.calls.some((c) => c.sent), false);
+  assert.equal(call.network.spentStroops, '0');
+});
+
+operatorTest('payerCovers: the operator account must be able to spend the amount now; testnet\'s disposable payer is not read', async (t, network) => {
+  const f = operatorNetwork(t, { network, balance: 10_020_000n });
+  await f.network.payerCovers(20_000);
+  await assert.rejects(() => f.network.payerCovers(20_001), (error) => error.reason === 'payer_unfunded');
+  await assert.rejects(() => operatorNetwork(t, { network, payerFunded: false }).network.payerCovers(1), (error) => error.reason === 'payer_unfunded');
+  const testnet = new WalletNetwork({ network: WALLET_NETWORKS.testnet, rpcUrl: 'https://rpc.example/', journalRoot: scratch(t),
+    server: new Proxy({}, { get: () => () => assert.fail('nothing is read') }) });
+  await testnet.payerCovers(10n ** 18n);
+});
+
+operatorTest('deployment is refused before consent when the operator account cannot pay the upload and the policy\'s creation', async (_t, network) => {
+  const cost = '5100';
+  for (const [spendable, refused] of [[10_005_099n, true], [10_005_100n, false]]) {
+    const asked = [];
+    const f = deploymentFixture(() => {}, { network: { profile: network, operatorFunded: true, fees: MAINNET_FEE_DEFAULTS, spentStroops: '0',
+      uploadCost: async () => ({ resourceFeeStroops: cost, feeStroops: cost, ledger: 100 }),
+      payerCovers: async (stroops) => {
+        asked.push(BigInt(stroops));
+        if (BigInt(stroops) > spendable) throw Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' });
+      } } });
+    const prepared = f.actions['prepare-deploy']({ artifactId: f.artifactId });
+    if (refused) await assert.rejects(() => prepared, (error) => error.reason === 'payer_unfunded', String(spendable));
+    else assert.equal((await prepared).summary.uploadSimulatedFeeStroops, cost);
+    assert.deepEqual(asked, [10_005_100n], 'the simulated upload plus one transaction for the policy\'s creation');
+    assert.deepEqual(f.calls, [], 'nothing deployed');
+  }
+});
+
+const payerUnfunded = () => Object.assign(new Error('wallet network operation refused'), { reason: 'payer_unfunded' });
+
+operatorTest('a creation-only retry, once the code is stored, is previewed and checked with the creation\'s fee alone', async (_t, network) => {
+  const cost = '100000000';
+  const asked = [];
+  let simulated = 0;
+  // The upload returns and is counted; the creation is then refused before it is signed, so the artifact may be deployed again.
+  const f = deploymentFixture((value) => {
+    const upload = value.network.upload;
+    value.network.upload = async (...args) => { const result = await upload(...args); value.network.spentStroops = cost; return result; };
+    const create = value.network.create;
+    value.network.create = async () => { value.network.create = create; throw payerUnfunded(); };
+  }, { network: { profile: network, operatorFunded: true, fees: MAINNET_FEE_DEFAULTS, spentStroops: '0',
+    uploadCost: async () => { simulated++; return { resourceFeeStroops: cost, feeStroops: cost, ledger: 100 }; },
+    payerCovers: async (stroops) => { asked.push(BigInt(stroops)); } } });
+  const first = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+  assert.equal(first.summary.codeStored, false);
+  await assert.rejects(() => f.actions['confirm-deploy']({ id: first.action.id }), (error) => error.reason === 'payer_unfunded');
+  // Counting the upload again would need 10 XLM spent + 10 + 3 × 1, past the 15 XLM session cap.
+  const again = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+  assert.equal(simulated, 1, 'the stored code is not simulated again');
+  assert.deepEqual(asked, [110_000_000n, 10_000_000n], 'the retry asks the payer for the policy\'s creation only');
+  assert.equal(again.summary.codeStored, true);
+  assert.equal(again.summary.uploadSimulatedFeeStroops, null);
+  assert.equal(again.summary.maxTotalFeeStroops, MAINNET_FEE_DEFAULTS.maxFeeStroops);
+  const deployed = await f.actions['confirm-deploy']({ id: again.action.id });
+  assert.deepEqual(deployed.receipts[0], { status: 'already_stored', wasmHash: f.artifact.wasmHash });
+  assert.equal(f.calls.filter((call) => call === 'upload').length, 1);
+});
+
+operatorTest('a creation-only confirmation cannot upload code that disappeared after its preview', async (_t, network) => {
+  let stored = true;
+  const f = deploymentFixture(({ network: walletNetwork }) => {
+    walletNetwork.codePresent = async () => ({ present: stored, ledger: 123456 });
+  }, { network: { profile: network, operatorFunded: true, fees: MAINNET_FEE_DEFAULTS, spentStroops: '0',
+    uploadCost: async () => ({ resourceFeeStroops: '100000000', feeStroops: '100000000', ledger: 100 }) } });
+  const original = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+  assert.equal(original.summary.codeStored, true);
+  assert.equal(original.summary.maxTotalFeeStroops, MAINNET_FEE_DEFAULTS.maxFeeStroops);
+  stored = false;
+  await assert.rejects(() => f.actions['confirm-deploy']({ id: original.action.id }), { reason: 'deployment_quote_stale' });
+  assert.ok(!f.calls.includes('upload') && !f.calls.includes('deploy-policy'));
+  assert.equal(f.network.spentStroops, '0');
+  await assert.rejects(() => f.actions['confirm-deploy']({ id: original.action.id }), /refused|unavailable/);
+
+  const refreshed = await f.actions['prepare-deploy']({ artifactId: f.artifactId });
+  assert.equal(refreshed.summary.codeStored, false);
+  assert.equal(refreshed.summary.maxTotalFeeStroops,
+    MAINNET_FEE_DEFAULTS.maxFeeStroops + MAINNET_FEE_DEFAULTS.maxUploadFeeStroops);
+  await f.actions['confirm-deploy']({ id: refreshed.action.id });
+  assert.deepEqual(f.calls.filter((call) => ['upload', 'deploy-policy'].includes(call)), ['upload', 'deploy-policy']);
+});
+
+operatorTest('the account preview is refused before consent while the operator account cannot pay one transaction', async (_t, network) => {
+  for (const [spendable, refused] of [[9_999_999n, true], [10_000_000n, false]]) {
+    const asked = [];
+    const { actions, calls, f } = operatorActions(network, { payerCovers: async (stroops) => {
+      asked.push(BigInt(stroops));
+      if (BigInt(stroops) > spendable) throw payerUnfunded();
+    } });
+    const preview = actions['prepare-account']({ credentialId: f.wallet.credentialId, publicKey: f.wallet.publicKey });
+    if (refused) await assert.rejects(() => preview, (error) => error.reason === 'payer_unfunded', String(spendable));
+    else assert.equal((await preview).summary.ownerFunds, true);
+    assert.deepEqual(asked, [BigInt(MAINNET_FEE_DEFAULTS.maxFeeStroops)], 'the per-transaction cap, as the first write needs');
+    assert.deepEqual(calls, [], 'nothing deployed');
+  }
+});
+
+operatorTest('the sample transfer is drafted for the owner\'s signature only while the operator account can pay its fee', async (t, network) => {
+  const sample = sampleTransfer();
+  const f = operatorNetwork(t, { network, fee: 2_500, change: (server) => {
+    const simulate = server.simulateTransaction;
+    // The record-mode draft of the sample transfer: the account's own authorization of exactly that call.
+    server.simulateTransaction = async (tx, resources, mode) => {
+      if (mode !== 'record') return simulate(tx, resources, mode);
+      const call = tx.toEnvelope().v1.tx.operations[0].body.invokeHostFunctionOp.hostFunction.invokeContract;
+      const entry = new xdr.SorobanAuthorizationEntry({ credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(
+        new xdr.SorobanAddressCredentials({ address: new Address(sample.wallet.contractId).toScAddress(), nonce: 4n,
+          signatureExpirationLedger: 0, signature: xdr.ScVal.scvVoid() })), rootInvocation: new xdr.SorobanAuthorizedInvocation({
+        function: xdr.SorobanAuthorizedFunction.sorobanAuthorizedFunctionTypeContractFn(call), subInvocations: [] }) });
+      return { latestLedger: 100, result: { auth: [entry], retval: xdr.ScVal.scvVoid() } };
+    };
+  } });
+  sample.descriptor.recipient = f.network.payerAddress;
+  await f.network.fundPayer();
+  // Drawn down after the account's creation (another session, a manual payment): it can no longer pay the sample's fee.
+  const spendable = (stroops) => {
+    f.network.payerAccount = async () => ({ exists: true, balanceStroops: String(10_000_000n + stroops), minimumStroops: '10000000',
+      spendableStroops: String(stroops), ledger: 100 });
+  };
+  spendable(2_499n);
+  await assert.rejects(() => f.network.prepareSample({ ...sample, ownerReadLedger: 100 }), (error) => error.reason === 'payer_unfunded');
+  spendable(2_500n);
+  const prepared = await f.network.prepareSample({ ...sample, ownerReadLedger: 100 });
+  assert.equal(prepared.assembly.fee_stroops, 2_500);
+  assert.equal(f.calls.some((call) => call.sent), false);
+  assert.deepEqual(readdirSync(f.root), ['0000.session.json'], 'nothing signed or journaled');
+});
+
 test('mainnet: after an uncertain submission its whole fee stays counted and nothing else is sent', async (t) => {
-  const f = mainnet(t, { fee: 4_000, fees: { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 100_000 },
+  const f = operatorNetwork(t, { fee: 4_000, fees: { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 100_000 },
     change: (server) => { server.sendTransaction = async () => { throw new Error('lost response'); }; } });
   await f.network.fundPayer();
   await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress), 'revoke-policy', REMOVAL), /refused/);
@@ -484,12 +771,12 @@ test('the fee payer is found by its raw key too, as an External signer would car
     payer.publicKey()), false);
 });
 
-test('mainnet: the spend cap counts every fee sent from this work root, not only this session\'s', async (t) => {
+operatorTest('the spend cap counts every fee sent from this work root, not only this session\'s', async (t, network) => {
   const { journaledSpend } = await import('../server/network.mjs');
   const { mkdirSync } = await import('node:fs');
   const workRoot = scratch(t, 'wallet-work-spend-');
-  const intended = (dir, serial, fee, networkId = MAINNET.networkId) => {
-    const tx = new TransactionBuilder(new Account(Keypair.random().publicKey(), '7'), { fee: String(fee), networkPassphrase: Networks.PUBLIC })
+  const intended = (dir, serial, fee, networkId = network.networkId) => {
+    const tx = new TransactionBuilder(new Account(Keypair.random().publicKey(), '7'), { fee: String(fee), networkPassphrase: network.passphrase })
       .addOperation(Operation.bumpSequence({ bumpTo: '9' })).setTimeout(60).build();
     mkdirSync(join(workRoot, dir, 'journal'), { recursive: true, mode: 0o700 });
     writeFileSync(join(workRoot, dir, 'journal', `${serial}.intended.json`), JSON.stringify({ stage: 'revoke-policy', hash: 'a'.repeat(64),
@@ -499,19 +786,19 @@ test('mainnet: the spend cap counts every fee sent from this work root, not only
   intended('wallet-session-earlier', '0002', 3_400_000);
   intended('wallet-session-other', '0001', 500_000);
   writeFileSync(join(workRoot, 'wallet-session-earlier', 'journal', '0003.confirmed.json'), '{}', { mode: 0o600 });
-  assert.equal(journaledSpend(workRoot, MAINNET), '5100000');
+  assert.equal(journaledSpend(workRoot, network), '5100000');
   // A session started with it carries it against the cap.
-  const f = mainnet(t, { fee: 4_000, fees: { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 5_102_000 },
-    spent: journaledSpend(workRoot, MAINNET) });
+  const f = operatorNetwork(t, { network, fee: 4_000, fees: { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 5_102_000 },
+    spent: journaledSpend(workRoot, network) });
   assert.equal(f.network.spentStroops, '5100000');
   await f.network.fundPayer();
   await assert.rejects(() => f.network.submitEnvelope(contractCall(f.network.payerAddress), 'install-policy'), (error) => error.reason === 'spend_cap');
   // Past serial 9999 the names grow a digit; those entries count too.
   intended('wallet-session-other', '10000', 700_000);
-  assert.equal(journaledSpend(workRoot, MAINNET), '5800000');
+  assert.equal(journaledSpend(workRoot, network), '5800000');
   // An entry from another network, or one that does not decode, refuses: the work root cannot be accounted.
-  intended('wallet-session-wrong', '0001', 100, WALLET_NETWORKS.testnet.networkId);
-  assert.throws(() => journaledSpend(workRoot, MAINNET), (error) => /journal/.test(error.startup));
+  intended('wallet-session-wrong', '0001', 100, (network === MAINNET ? TESTNET : MAINNET).networkId);
+  assert.throws(() => journaledSpend(workRoot, network), (error) => /journal/.test(error.startup));
 });
 
 test('mainnet: a final journal entry a crash left truncated is counted at the largest cap, never as nothing', async (t) => {
@@ -561,15 +848,15 @@ test('a simulation answer without diagnostic events is its own reason, from the 
   assert.ok(NETWORK_REASONS.includes('no_diagnostic_events') && REFUSAL_REASONS.has('no_diagnostic_events'));
 });
 
-test('mainnet: once this session has installed a grant, using it keeps room only for its removal', async (t) => {
+operatorTest('once this session has installed a grant, using it keeps room only for its removal', async (t, network) => {
   const fees = { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 14_000 };
   // No installation yet: a step keeps room for one and for its removal (4000 + 4000 + 2 × 4500 > 14000).
-  const before = mainnet(t, { fee: 4_000, fees, spent: '4000' });
+  const before = operatorNetwork(t, { network, fee: 4_000, fees, spent: '4000' });
   await before.network.fundPayer();
   await assert.rejects(() => before.network.submitEnvelope(contractCall(before.network.payerAddress), 'use-grant'),
     (error) => error.reason === 'spend_cap');
   // Installed in this session: the use needs room only for the removal (4000 + 4000 + 4500 = 12500).
-  const after = mainnet(t, { fee: 4_000, fees });
+  const after = operatorNetwork(t, { network, fee: 4_000, fees });
   await after.network.fundPayer();
   await after.network.submitEnvelope(contractCall(after.network.payerAddress), 'install-policy');
   await after.network.submitEnvelope(contractCall(after.network.payerAddress), 'use-grant');
@@ -587,12 +874,12 @@ test('the removal stage\'s exemptions go only to a removal: remove_context_rule 
     ['another account named', (payer) => contractCall(payer), { account: other }],
   ]) {
     // Spent past the cap and funded for removals only: a real removal would still go, so only its shape can refuse it.
-    const f = mainnet(t, { fee: 4_000, fees, spent: '14000', balance: 10_200_000n });
+    const f = operatorNetwork(t, { fee: 4_000, fees, spent: '14000', balance: 10_200_000n });
     await f.network.fundRemoval();
     await assert.rejects(() => f.network.submitEnvelope(envelope(f.network.payerAddress), 'revoke-policy', options), /refused/, label);
     assert.equal(f.calls.some((call) => call.sent), false, label);
   }
-  const real = mainnet(t, { fee: 4_000, fees, spent: '14000', balance: 10_200_000n });
+  const real = operatorNetwork(t, { fee: 4_000, fees, spent: '14000', balance: 10_200_000n });
   await real.network.fundRemoval();
   await real.network.submitEnvelope(contractCall(real.network.payerAddress), 'revoke-policy', REMOVAL);
   assert.equal(real.calls.filter((call) => call.sent).length, 1);
@@ -601,7 +888,7 @@ test('the removal stage\'s exemptions go only to a removal: remove_context_rule 
 test('mainnet: removal is never blocked by the session cap, and every other step leaves room for an installation and a removal', async (t) => {
   const fees = { maxFeeStroops: 4_500, maxUploadFeeStroops: 4_500, sessionSpendCapStroops: 14_000 };
   // 0 spent: an ordinary step needs room for itself plus an installation and a removal (4000 + 2 × 4500 = 13000).
-  const ok = mainnet(t, { fee: 4_000, fees });
+  const ok = operatorNetwork(t, { fee: 4_000, fees });
   await ok.network.fundPayer();
   await ok.network.submitEnvelope(contractCall(ok.network.payerAddress), 'deploy-policy');
   assert.equal(ok.network.spentStroops, '4000');
@@ -614,12 +901,12 @@ test('mainnet: removal is never blocked by the session cap, and every other step
   // 8000 spent: an installation now would leave no room for its removal; a removal always goes.
   await assert.rejects(() => ok.network.submitEnvelope(contractCall(ok.network.payerAddress), 'install-policy'),
     (error) => error.reason === 'spend_cap');
-  const spentOut = mainnet(t, { fee: 4_000, fees, spent: '14000' });
+  const spentOut = operatorNetwork(t, { fee: 4_000, fees, spent: '14000' });
   await spentOut.network.fundPayer();
   await spentOut.network.submitEnvelope(contractCall(spentOut.network.payerAddress), 'revoke-policy', REMOVAL);
   assert.equal(spentOut.network.spentStroops, '18000', 'counted, past the cap: removal is exempt from it');
   // The per-transaction cap still holds for a removal.
-  const over = mainnet(t, { fee: 4_501, fees, spent: '14000' });
+  const over = operatorNetwork(t, { fee: 4_501, fees, spent: '14000' });
   await over.network.fundPayer();
   await assert.rejects(() => over.network.submitEnvelope(contractCall(over.network.payerAddress), 'revoke-policy', REMOVAL),
     (error) => error.reason === 'fee_cap');
