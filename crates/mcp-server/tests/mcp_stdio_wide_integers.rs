@@ -25,11 +25,19 @@ fn envelope_base64() -> String {
         .unwrap()
 }
 
+/// The fixture meta, consuming this envelope's nonce as the network does for an entry it
+/// checked.
+fn meta_base64() -> String {
+    rec::meta_v3_consuming(&[(rec::account_sc(), NONCE)])
+        .to_xdr_base64(Limits::none())
+        .unwrap()
+}
+
 fn recording() -> serde_json::Value {
     let snapshot = EvidenceSnapshot::from_rpc_transaction(
         ozpb_domain::TESTNET_PASSPHRASE,
         envelope_base64(),
-        Some(rec::meta_v3().to_xdr_base64(Limits::none()).unwrap()),
+        Some(meta_base64()),
         4_200_100,
         1_780_000_000,
         true,
@@ -127,7 +135,7 @@ fn a_recording_returns_no_number_a_javascript_client_would_round() {
                 "params": {"name": "import_recording", "arguments": {
                     "network_passphrase": ozpb_domain::TESTNET_PASSPHRASE,
                     "envelope_xdr_base64": envelope_base64(),
-                    "result_meta_xdr_base64": rec::meta_v3().to_xdr_base64(Limits::none()).unwrap(),
+                    "result_meta_xdr_base64": meta_base64(),
                     "result_xdr_base64": rec::transaction_result_base64(true),
                     "ledger": 4_200_100,
                     "successful": true,

@@ -10,8 +10,11 @@ import { WalletSession } from '../server/session.mjs';
 import { WalletController } from '../overlay/files/src/policy-builder/client/controller.mjs';
 import { createClient } from '../overlay/files/src/policy-builder/client/client.mjs';
 import { parseGrantProposal, checkProposalArtifact } from '../shared/proposal.mjs';
-import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { proposalFixture } from './proposal-fixture.mjs';
+import { TESTNET_FEES } from '../server/network.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const code = (response) => response.result?.structuredContent?.code;
 
@@ -36,15 +39,15 @@ async function mcp(t, origin) {
 
 test('actual stdio MCP delivers through real HTTP/client/controller; only wallet Review imports',
   { skip: !process.env.OZPB_MCP_BIN }, async t => {
-    const f = proposalFixture(); const handoff = new AgentHandoff(); const observedCapabilities = [];
+    const f = proposalFixture(); const handoff = new AgentHandoff({ network: WALLET_NETWORKS.testnet }); const observedCapabilities = [];
     const connect = handoff.connect.bind(handoff);
     handoff.connect = code => { const result = connect(code); observedCapabilities.push(result.capability); return result; };
     const sessionToken = 'd'.repeat(64), delegate = { address: f.proposal.decisions.delegate, capabilityId: 'e'.repeat(64) };
     let imports = 0, reads = 0;
     const session = new WalletSession({ origin: 'http://localhost:3000', host: 'localhost:3000', secret: sessionToken });
     const actions = createWalletActions({ handoff, session, native: {},
-      delegates: { create: () => delegate, check: (cap, addr) => { assert.equal(cap, delegate.capabilityId); assert.equal(addr, delegate.address); } },
-      network: { ensureDelegateAccount: async () => {}, assertTestnet: async () => { reads++; }, requireInstance: async () => { reads++; }, latestLedger: async () => 123 },
+      delegates: { available: true, create: () => delegate, check: (cap, addr) => { assert.equal(cap, delegate.capabilityId); assert.equal(addr, delegate.address); } },
+      network: { profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0', ensureDelegateAccount: async () => {}, assertNetwork: async () => { reads++; }, requireInstance: async () => { reads++; }, latestLedger: async () => 123 },
       toolchain: { record: async () => { imports++; return f.record; }, generate: async () => f.artifact } });
     const server = createWalletServer({ session, actions, handoff });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -59,7 +62,7 @@ test('actual stdio MCP delivers through real HTTP/client/controller; only wallet
         }); req.on('error', reject); req.end(options.body);
     }) });
     const controller = new WalletController({ request, validators: { parseGrantProposal, checkProposalArtifact },
-      pins: { networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM },
+      pins: { network: 'testnet', networkId: NETWORK_ID, accountWasm: ACCOUNT_WASM, verifierWasm: WEBAUTHN_WASM },
       origin: 'http://localhost:3000', sign: () => assert.fail('draft handoff must not sign') });
     await controller.connect(); controller.attachWallet(f.wallet); await controller.connectAgent();
     const first = await mcp(t, origin), other = await mcp(t, origin);
@@ -112,7 +115,7 @@ test('MCP wallet transport refuses redirects without leaking response bodies', {
 
 test('actual MCP tells a refused proposal, a waiting draft and an absent wallet apart',
   { skip: !process.env.OZPB_MCP_BIN }, async t => {
-    const f = proposalFixture(); const handoff = new AgentHandoff();
+    const f = proposalFixture(); const handoff = new AgentHandoff({ network: WALLET_NETWORKS.testnet });
     const delegate = { address: f.proposal.decisions.delegate, capabilityId: 'e'.repeat(64) };
     const session = new WalletSession({ origin: 'http://localhost:3000', host: 'localhost:3000', secret: 'd'.repeat(64) });
     const server = createWalletServer({ session, actions: {}, handoff });

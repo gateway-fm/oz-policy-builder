@@ -12,8 +12,8 @@ function fixture(kind = 'soroswap_swap') {
   const payer = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 1)), delegate = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 2));
   const account = C(3), policy = C(4);
   const plan = { kind, account, amount_in: '1000000', minimum_out: '100000', deadline: 2_000_000_000,
-    ...(kind === 'soroswap_swap' ? { operator_decisions: { schema: 'ozpb-soroswap-operator-decisions/v2',
-      output_floor: { min: '100000', intent: 'floor' }, transfer_cap: { max: '1000000', intent: 'cap' },
+    ...(kind === 'soroswap_swap' ? { operator_decisions: { schema: 'ozpb-soroswap-operator-decisions/v3',
+      output_floor: { min: '100000', intent: 'floor' }, transfer_cap: { max: '1000000', intent: 'cap', no_floor_acknowledged: true },
       adapter_deadline: 'keep_recorded_deadline', source_sha256: 'cd'.repeat(32) } } : {}) };
   const run = { network: NETWORK_PASSPHRASE, account, account_code_hash: PINNED_ACCOUNT_WASM,
     payer: payer.publicKey(), delegate: delegate.publicKey(), walkthrough: { ...plan, bundle: {
@@ -161,7 +161,7 @@ test('the floor and transfer-cap controls step just past the operator\'s decisio
   const f = fixture();
   Object.assign(f.run.walkthrough, { minimum_out: '150000' });
   Object.assign(f.run.walkthrough.operator_decisions, { output_floor: { min: '150000', intent: 'floor' },
-    transfer_cap: { max: '2000000', intent: 'cap' } });
+    transfer_cap: { max: '2000000', intent: 'cap', no_floor_acknowledged: true } });
   await f.execute({ name: 'output_floor', control: 'output_floor' });
   assert.equal(scValToNative(simulatedCall(f).args[1]), 149_999n);
   const g = fixture();

@@ -1,18 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Keypair } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID } from '../shared/approval.mjs';
+import { ACCOUNT_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { RawJson } from '../server/raw-json.mjs';
 import { DelegateCapabilities, checkDryRunPreparation, checkNativeResult, checkPrepared, nativeCaseIds,
   nativeJobText, runAccountExecution } from '../server/native-execution.mjs';
 import { offlineCapability } from '../server/native-protocol.mjs';
 import { POLICY, nativeFixture } from './native-execution-fixture.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const H = (n) => n.repeat(64);
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
 test('delegate capabilities stay in backend memory and sign only for their own registered address', () => {
-  const capabilities = new DelegateCapabilities();
+  const capabilities = new DelegateCapabilities(WALLET_NETWORKS.testnet);
   const created = capabilities.create();
   assert.deepEqual(Object.keys(created).sort(), ['address', 'capabilityId']);
   assert.match(created.capabilityId, /^[0-9a-f]{64}$/);
@@ -135,7 +137,7 @@ test('dry-run preparation must come from the CLI for this exact request and cand
         state_dependent: id === 'live_enforcement', writes_committed: false }))],
     complete: false, disclaimer: 'x' };
   const candidate = { specHash: H('1'), bindingSetHash: H('2'), accountAddress: f.expected.accountAddress,
-    delegateAddress: f.expected.delegateAddress, policyAddress: POLICY, policyCodeHash: H('9'), candidateContextRuleId: 7, sourceLedger: 1000 };
+    delegateAddress: f.expected.delegateAddress, policyAddress: POLICY, policyCodeHash: H('9'), candidateContextRuleId: 7, sourceLedger: 1000, networkId: NETWORK_ID };
   const checked = checkDryRunPreparation(clone(output), candidate);
   assert.deepEqual(checked.expected, f.expected);
   assert.deepEqual(checked.reference, f.reference);

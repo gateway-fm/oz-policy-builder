@@ -138,7 +138,11 @@ for (const failure of ['ambiguous', 'confirmed unverified']) test(`replacement r
   const assembly = await f.actions.assemble({ reviewId: f.review.reviewId });
   const submit = f.network.submitEnvelope;
   f.network.submitEnvelope = async (...args) => {
-    if (failure === 'ambiguous') throw new Error('unknown submission outcome');
+    if (failure === 'ambiguous') {
+      // As the network leaves an uncertain submission: signed and counted, no further write.
+      f.network.spentStroops = '1000'; f.network.canSubmit = false;
+      throw new Error('unknown submission outcome');
+    }
     const result = await submit(...args);
     // Keep the real event/rule ID, but break verification of the returned rule.
     const { xdr } = await import('@stellar/stellar-sdk');
@@ -151,7 +155,12 @@ for (const failure of ['ambiguous', 'confirmed unverified']) test(`replacement r
     assert.equal(status.installations[0].status, 'confirmed_unverified');
     f.installation = status.installations[0];
     await removeGrant(f);
-  } else assert.equal(status.installations.length, 0);
+  } else {
+    assert.equal(status.installations.length, 0);
+    // It may have left: the review's attempt stays spent and nothing more is sent.
+    assert.equal(status.capabilities.install, false);
+    await assert.rejects(f.actions.assemble({ reviewId: f.review.reviewId }), /refused/);
+  }
   assert.equal((await f.actions.status({})).capabilities.replacement, false);
   await assert.rejects(f.actions['prepare-replacement']({ installationId: f.installation?.installationId ?? 'a'.repeat(64) }), /refused/);
 });

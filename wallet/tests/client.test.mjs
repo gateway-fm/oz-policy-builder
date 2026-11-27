@@ -58,6 +58,17 @@ test('a refusal keeps only a listed reason from the backend, never its text', as
     await assert.rejects(request('status', {}), (error) => error.reason === undefined);
   }
 });
+test('a cap refusal keeps the operator setting and its figures only in their closed shape', async () => {
+  const limit = { setting: 'maxUploadFeeStroops', simulatedFeeStroops: '190000000', neededStroops: '190000000' };
+  for (const [reason, given, kept] of [['fee_cap', limit, true], ['spend_cap', { ...limit, setting: 'sessionSpendCapStroops' }, true],
+    ['spend_cap', limit, false], ['busy', limit, false], ['fee_cap', { ...limit, canary: 'x' }, false],
+    ['fee_cap', { ...limit, neededStroops: '-1' }, false], ['fee_cap', { ...limit, simulatedFeeStroops: 190000000 }, false],
+    ['fee_cap', 'maxUploadFeeStroops', false]]) {
+    const request = createClient(token, { fetch: async () => Response.json({ error: 'x', reason, limit: given }, { status: 422 }) });
+    await assert.rejects(request('status', {}), (error) => error.reason === reason
+      && JSON.stringify(error.limit) === JSON.stringify(kept ? given : undefined), `${reason} ${JSON.stringify(given)}`);
+  }
+});
 test('aborts a response body that stalls beyond the total request deadline', async () => {
   let cancelled = false;
   const body = new ReadableStream({ cancel() { cancelled = true; } });

@@ -1,8 +1,17 @@
 import { createServer } from 'node:http';
 import { AgentRefusal } from './agent-handoff.mjs';
 /** Why a wallet action was refused, when the backend can say: shown to the owner as plain text. */
-export const REFUSAL_REASONS = new Set(['busy', 'rpc_too_slow', 'evidence_stale', 'signatures_still_valid', 'account_changed',
-  'review_expired', 'grant_already_used']);
+export const REFUSAL_REASONS = new Set(['busy', 'rpc_too_slow', 'evidence_stale', 'signatures_still_valid', 'replay_journal_unavailable', 'account_changed',
+  'review_expired', 'deployment_quote_stale', 'grant_already_used', 'network_mismatch', 'protocol_unsupported', 'fee_cap', 'spend_cap', 'payer_unfunded',
+  'delegate_unfunded', 'pinned_code_missing', 'account_unfunded', 'registry_root_refused', 'no_diagnostic_events', 'delegate_key_unavailable']);
+/** The operator setting a cap refusal may name, by reason (client.mjs CAP_SETTINGS). */
+export const CAP_SETTINGS = Object.freeze({ fee_cap: 'maxUploadFeeStroops', spend_cap: 'sessionSpendCapStroops' });
+const stroops = (value) => typeof value === 'string' && /^(?:0|[1-9][0-9]{0,18})$/.test(value);
+/** A cap refusal's detail, only in its closed shape: the setting, the simulated cost and the least value that lets it through. */
+const capLimit = (reason, limit) => Object.hasOwn(CAP_SETTINGS, reason) && limit && typeof limit === 'object'
+  && Object.keys(limit).length === 3 && limit.setting === CAP_SETTINGS[reason]
+  && stroops(limit.simulatedFeeStroops) && stroops(limit.neededStroops)
+  ? { limit: { setting: limit.setting, simulatedFeeStroops: limit.simulatedFeeStroops, neededStroops: limit.neededStroops } } : {};
 
 const BODY_BYTES = 64 * 1024;
 const RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -115,10 +124,11 @@ export function createWalletServer({ session, actions, handoff = null }) {
       try { body = parseBody(await bodyBytes(request)); }
       catch { reply(400, { error: 'invalid wallet request' }); return; }
       try { reply(200, await routes[name](body, { signal: disconnected.signal })); }
-      // A refusal names at most one of a closed set of reasons; nothing from the request or the error.
+      // A refusal names at most one of a closed set of reasons, and a cap refusal its setting and
+      // figures; nothing else from the request or the error.
       catch (error) {
         reply(422, { error: 'wallet action unavailable; refresh and review again',
-          ...(REFUSAL_REASONS.has(error?.reason) ? { reason: error.reason } : {}) });
+          ...(REFUSAL_REASONS.has(error?.reason) ? { reason: error.reason, ...capLimit(error.reason, error.limit) } : {}) });
       }
     } finally { busy = false; }
   });

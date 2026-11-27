@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Asset, Networks, xdr } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { ACCOUNT_WASM, WEBAUTHN_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { installedRuleIdentity, monitorInstallation } from '../server/monitor.mjs';
 import { installable, installedRule } from './install-fixture.mjs';
+import { TESTNET_FEES } from '../server/network.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 const H = (n) => n.repeat(64);
 async function fixture() {
   const f = await installable();
   const ruleXdr = installedRule(f.f.intent).toXDR('base64');
-  const record = { status: 'installed', installationId: H('1'), account: f.f.wallet.contractId, ruleId: 1,
+  const record = { status: 'installed', networkId: NETWORK_ID, installationId: H('1'), account: f.f.wallet.contractId, ruleId: 1,
     ledger: f.state.ledger, ruleXdr, policy: f.policy, policyCodeHash: f.artifact.wasmHash,
     authorityCommitment: f.f.intent.authority.verdict.authority_commitment, specHash: f.artifact.specHash,
     bindingSetHash: f.f.expected.bindingSetHash, validUntilLedger: f.f.intent.valid_until_ledger };
@@ -30,7 +33,7 @@ async function fixture() {
     marker: { account: record.account, policy: record.policy, ruleId: 1, accountWasmHash: ACCOUNT_WASM, installed: true, ledger: f.state.ledger },
   };
   const owner = { wallet: f.f.wallet, ownerRuleId: 7, ownerRuleXdr: f.f.ownerRuleXdr };
-  const network = { assertTestnet: async () => {}, ledgerClock: async () => ({ sequence: f.state.ledger, closeTime: Math.floor(Date.now() / 1000) }),
+  const network = { profile: WALLET_NETWORKS.testnet, fees: TESTNET_FEES, spentStroops: '0', assertNetwork: async () => {}, ledgerClock: async () => ({ sequence: f.state.ledger, closeTime: Math.floor(Date.now() / 1000) }),
     contractLiveness: async (a) => a === record.account ? values.account : a === owner.wallet.verifier ? values.verifier : values.policy,
     targetIdentity: async () => values.target, view: async () => values.owner,
     ruleReadback: async () => values.rule, liveState: async () => values.marker };
@@ -117,4 +120,20 @@ test('an authority RPC/CLI failure is unavailable, never a silently learned base
   const f = await fixture(); f.toolchain.authority = async () => { throw new Error('confidential diagnostic'); };
   const result = await f.execute(); assert.equal(result.status, 'unavailable');
   assert.ok(!JSON.stringify(result).includes('confidential')); assert.equal(result.projectedAuthorityCommitment, null);
+});
+test('the registry part watches the account and verifier Wasm and the installed policy\'s template family, apart from the grant', async () => {
+  const f = await fixture();
+  // The generated policy has no registry entry of its own: its spec names the family it was built from.
+  f.candidate.spec = { ...f.candidate.spec, rules: f.candidate.spec.rules.map((rule) => ({ ...rule, policies: [{ generated: {
+    kind: 'gen:scope+count', template_family: 'policy-templates/scope@1', capability_schema: H('4') } }] })) };
+  const calls = [];
+  const revoked = { status: 'revoked', exit: 6, revoked: [{ watched: { template_family: 'policy-templates/scope@1' } }] };
+  f.toolchain.registryMonitor = async (watch) => { calls.push(watch); return revoked; };
+  const result = await f.execute();
+  assert.deepEqual(calls, [{ wasmHashes: [ACCOUNT_WASM, WEBAUTHN_WASM], templates: ['policy-templates/scope@1'] }]);
+  assert.deepEqual(result.registry, revoked);
+  assert.equal(result.status, 'unchanged', 'a registry revocation is reported beside the grant, not as grant drift');
+  // A monitor that threw is unavailable, not an incident.
+  f.toolchain.registryMonitor = async () => { throw new Error('refused'); };
+  assert.equal((await f.execute()).registry.status, 'monitor_unavailable');
 });

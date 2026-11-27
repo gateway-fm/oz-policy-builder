@@ -250,14 +250,14 @@ Three of those arguments are worth a word each:
   already holds it.
 - **`decisions`** stays required. The signer set, the lifetime and the call cap are what the
   grant *is*; a default would mean the toolkit decided how much authority to hand out. That
-  includes leaving a cap out: since v0.2.0, `max_calls: null` alone is refused with an
+  includes leaving a cap out: since v1.0.0, `max_calls: null` alone is refused with an
   `E_NEEDS_DECISION` finding, and an uncapped grant also needs
   `unlimited_calls_acknowledged: true`, as a grant that never expires needs
   `no_expiry_acknowledged: true`. An absent acknowledgement reads as `false`; a cap together
   with it, or an expiry ledger together with `no_expiry_acknowledged: true`, is refused as
   contradictory with an `E_INVALID_DECISION` finding. The findings are in the error's
   `details`; the top-level code is the first one's. This is a breaking change for decisions
-  documents that relied on a null cap ([release notes](release-notes/v0.2.0.md)).
+  documents that relied on a null cap ([release notes](release-notes/v1.0.0.md)).
 - **`spending_limit_capability: "pinned"`** opts in to composing OpenZeppelin's reviewed
   spending-limit policy without transcribing its hash. It is an opt-in rather than a default:
   composing a reviewed third-party contract into a grant is a decision too. Omit it and a
@@ -306,7 +306,8 @@ $ ./target/release/ozpb-mcp-server --http 127.0.0.1:8080
 Error: OZPB_HTTP_BEARER_TOKEN is required for HTTP mode
 ```
 
-That refusal is the feature. HTTP mode also requires `OZPB_RPC_ALLOWLIST`, binds localhost
+That refusal is the feature. HTTP mode also requires `OZPB_RPC_ALLOWLIST` and a build worker
+launcher (or `OZPB_HTTP_UNISOLATED_BUILDS=accept` to compile in its own trust domain), binds localhost
 unless `OZPB_HTTP_ALLOWED_HOSTS` names an ingress's public hosts, and applies bearer auth, a request quota, a request-size bound and a limit on concurrent
 builds. `docs/DEVELOPERS.md` has the full set, and what is still owed before anything
 resembling multi-tenant hosting.
@@ -314,6 +315,52 @@ This is the shape a hosted deployment would take. [`docs/SELF-HOSTING.md`](SELF-
 packages it behind a TLS proxy for one operator, and
 [`docs/ISOLATED-BUILDS.md`](ISOLATED-BUILDS.md) adds disposable build workers. No hosted
 endpoint is deployed, and this is not how to run it locally.
+
+## 6. On mainnet
+
+The server has no mainnet mode. Each request names its network, and what the server trusts and
+reads through is its operator's configuration. `scripts/mcp-server-dev.sh`, and so `.mcp.json`
+and the plugin, configure testnet only: the committed development roots, which every tool that
+pins registry trust refuses for any other network (`E_REGISTRY_ROOT_POLICY`, before any read),
+and one source named `testnet`, replacing any `OZPB_RPC_SOURCES_JSON` already set. No launcher in
+this tree configures mainnet. For a mainnet session, start `ozpb-mcp-server` yourself (from a
+release, or built as in §1) as its own server entry in your client, with:
+
+- `OZPB_REGISTRY_ROOTS_JSON`: the production root policy (`registry/mainnet/roots.json` once its
+  custodians have filled it) carrying the checkpoint you persisted (`version`, `log_index`,
+  `root`), and `OZPB_REGISTRY_MIN_VERSION` at that version; a checkpoint below the floor stops
+  startup ([pinning roots and persisting checkpoints](REGISTRY-GOVERNANCE.md#consumers-pinning-roots-and-persisting-checkpoints)).
+- `OZPB_REGISTRY_SNAPSHOT_JSON`: the signed head that checkpoint accepts (`vNNNN.signed.json`).
+- `OZPB_RPC_SOURCES_JSON`: a mainnet source,
+  `{"mainnet": {"rpc_url": "https://…", "network_passphrase": "Public Global Stellar Network ; September 2015"}}`.
+  Target capture, the authority check, the install tools and `check_against_policy` read through
+  it, and so does recording unless a request gives its own `rpc_url`; a request whose network
+  differs from its source's is refused (`E_NETWORK_MISMATCH`).
+
+There is no production registry yet: [`registry/mainnet/`](../registry/mainnet/README.md) holds an
+unsigned draft and a roots file every command refuses until the key ceremony, so until then
+synthesis and every trust-pinning check refuse on mainnet. A hosted endpoint takes the same
+settings ([self-hosting](SELF-HOSTING.md#mainnet-configuration)). No run of these tools against
+mainnet is recorded in this tree; `crates/mcp-server/tests/mcp_stdio_development_root.rs` checks
+the refusal of the development roots for mainnet.
+
+**The registry is in the spec.** `synthesize_policy` stamps the root of the snapshot it loaded
+into the spec (`registry_snapshot`), and so into the `spec_hash` the confirmation card and the
+proposal carry. The wallet does not install that spec: it records the transaction again,
+regenerates the grant under its own roots, refuses any difference in the permissions, and shows
+both spec hashes without requiring them to be equal
+([importing a proposal](POLLYWALLET-INTEGRATION.md#importing-an-agent-proposal)). Pin the same
+signed head here and in the wallet, or the checks the agent showed speak for a registry other
+than the one the installed grant was synthesized under.
+
+**The direct handoff is testnet only.** `connect_wallet` refuses a wallet session on any other
+network, whatever `OZPB_WALLET_HANDOFF_URL` names, so `send_wallet_proposal` cannot reach a
+mainnet wallet. Import the confirmed proposal in the wallet by hand
+([importing a proposal](POLLYWALLET-INTEGRATION.md#importing-an-agent-proposal)), or leave the agent
+out: a mainnet installation is driven from the wallet, which records, generates, checks and
+installs with its own registry and RPC ([installing on mainnet](MAINNET-INSTALL.md)). On mainnet
+the grant's delegate is the agent's own key, and the wallet installs only a grant whose delegate
+is the key in its `delegateKeyPath` file.
 
 ---
 

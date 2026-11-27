@@ -11,8 +11,10 @@ deterministic, auditable pipeline. **Code-first, deploy-second:** the toolkit it
 deploys anything. Three components do: `scripts/demo-tranche1.sh`, the Tranche 2
 [testnet harness](testnet-harness/README.md), and the local wallet backend of the
 [Pollywallet integration](docs/POLLYWALLET-INTEGRATION.md), which creates an account, submits
-an owner-signed sample transfer and deploys a generated policy. All three act only on testnet,
-with throwaway fee-payer keys, and only when you run them.
+an owner-signed sample transfer and deploys a generated policy. The demo script and the harness
+act only on testnet, with throwaway keys. The wallet backend acts on testnet with throwaway keys
+too, or, in a [mainnet session](docs/POLLYWALLET-INTEGRATION.md#mainnet-sessions) run from a
+production build, with the operator's own fee-payer key. Each acts only when you run it.
 
 The full technical architecture (v0.8) lives in `docs/architecture.md`. The Tranche 1
 release surface is the core pipeline — recorder → PolicySpec → synthesizer → codegen —
@@ -26,6 +28,33 @@ item to an executable check and the artifact it produces.
 
 The [Tranche 2 verification guide](docs/TRANCHE-2-VERIFICATION.md) maps every contracted item
 of the second milestone to its automated checks and live evidence.
+
+The [audit scope](docs/AUDIT-SCOPE.md) is the entry point for an external security audit:
+components with line counts, entry points, threat model, known limits and every gate.
+
+The [OpenZeppelin review package](docs/OZ-REVIEW-PACKAGE.md) is the entry point for
+OpenZeppelin's technical review of the generated code.
+
+## Documentation
+
+The [documentation index](docs/README.md) lists every document by reader. To use the toolkit:
+
+- [User guide](docs/USER-GUIDE.md) — record, decide, generate, dry-run, review, install, use,
+  monitor and revoke, with the skill, CLI and wallet entry point for each step.
+- [Tester quickstart](docs/TESTER-QUICKSTART.md) — the whole flow locally on testnet, and what to
+  report.
+- [Scoping decisions](docs/SCOPING-DECISIONS.md) — exact by default, and what each widening or
+  acknowledgement means for safety.
+- [Trust boundaries](docs/TRUST-BOUNDARIES.md) — what is guaranteed, who holds which key, and where
+  trust is checked.
+- [Incident response](docs/INCIDENT-RESPONSE.md) — revoking a grant, and what to do when something
+  it relies on is revoked or compromised.
+- [Extending the toolkit](docs/EXTENDING.md) — new constraint kinds, target adapters and wallet
+  integrations.
+- [Versioning](docs/VERSIONING.md) — which interfaces a release keeps stable, what counts as
+  breaking, and which versions are supported.
+
+Security reports and the disclosure process are in [SECURITY.md](SECURITY.md).
 
 ## Tranche 2 status
 
@@ -42,9 +71,18 @@ list every transaction and refusal. The
 [acceptance crosswalk](docs/TRANCHE-2-VERIFICATION.md#contracted-outcome-and-milestone-boundary)
 maps each item to that evidence and to the limits it keeps.
 
-The production versioned release (self-hostable; Gateway operates no service), audit
-remediation, OpenZeppelin sign-off and mainnet wallet integration are
-[Tranche 3](https://github.com/gateway-fm/oz-policy-builder/issues/4).
+## Tranche 3 status
+
+The [third milestone](https://github.com/gateway-fm/oz-policy-builder/issues/4) is the mainnet
+release: a production versioned endpoint that operators run themselves (Gateway operates no
+service), documentation, a full test suite, security-audit remediation, OpenZeppelin's sign-off
+on the generated code and one mainnet wallet integration, with a mainnet installation and a
+published audit report as its outcome. The
+[Tranche 3 crosswalk](docs/TRANCHE-3-VERIFICATION.md#contracted-outcome-and-milestone-boundary)
+maps each item to what this tree implements and to what remains, and records the owner's
+acceptance of deviations. This tree records no mainnet installation, audit report or
+OpenZeppelin sign-off. The [mainnet gate map](docs/MAINNET-GATES.md) gives each acceptance gate
+before mainnet use its status.
 
 ## The pipeline
 
@@ -122,6 +160,7 @@ scripts/            dependency-rule check, determinism check
 testnet-harness/    Tranche 2: install a generated policy into an OZ account on testnet (node)
 wallet/             Tranche 2: local wallet backend for the Pollywallet integration (node)
 deployment/         Tranche 2: self-hosted MCP image, TLS proxy and disposable build workers
+registry/           published capability-registry logs, one directory per network
 skills/             policy-builder Claude skills; .claude-plugin/ packages them with the server
 ```
 
