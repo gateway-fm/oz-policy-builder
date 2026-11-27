@@ -315,3 +315,161 @@ fn installed_policy_addresses_are_matched_independently_of_spec_order() {
         original.verdict.authority_commitment
     );
 }
+
+/// A scheduled run reads `Unchanged` only when the projection commits to exactly the recorded
+/// commitment; any other commitment, a changed recorded rule, or a finding is `Changed`.
+#[test]
+fn a_scheduled_comparison_is_unchanged_only_at_the_recorded_commitment() {
+    let (plan, before, after, expected) = installed();
+    let recorded = finish_call_surface_check(&plan, "fixture", &before)
+        .unwrap()
+        .verdict
+        .authority_commitment;
+    let observed = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
+    assert_eq!(
+        compare_installed_grant(&observed, &recorded, 0),
+        InstalledGrantComparison::Unchanged
+    );
+    assert_eq!(
+        compare_installed_grant(&observed, &"00".repeat(32), 0),
+        InstalledGrantComparison::Changed,
+        "another commitment is a changed authority"
+    );
+
+    // A finding is never unchanged, even beside the recorded commitment.
+    let refusals = finish_call_surface_check(&plan, "fixture", &after)
+        .unwrap()
+        .verdict
+        .refusals;
+    assert!(!refusals.is_empty());
+    let mut refused = observed.clone();
+    refused
+        .projected_authority
+        .as_mut()
+        .unwrap()
+        .verdict
+        .refusals = refusals.clone();
+    assert_eq!(
+        compare_installed_grant(&refused, &recorded, 0),
+        InstalledGrantComparison::Changed
+    );
+    let mut unresolved = observed;
+    unresolved
+        .projected_authority
+        .as_mut()
+        .unwrap()
+        .verdict
+        .unresolved = refusals;
+    assert_eq!(
+        compare_installed_grant(&unresolved, &recorded, 0),
+        InstalledGrantComparison::Changed
+    );
+
+    // A changed recorded rule has no projection to compare: changed whatever was recorded.
+    let (plan, _, mut after, expected) = installed();
+    after.next_id = 3;
+    let changed = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
+    assert_eq!(changed.status, "changed");
+    assert_eq!(
+        compare_installed_grant(&changed, &recorded, 0),
+        InstalledGrantComparison::Changed
+    );
+}
+
+/// Expiry alone is `Inactive`, not `Unchanged`; drift beside it is still `Changed`.
+#[test]
+fn a_scheduled_comparison_reports_expiry_as_inactive_unless_the_authority_drifted() {
+    let (mut plan, before, mut after, mut expected) = installed();
+    let until = after.reported_latest_ledger.0 - 1;
+    plan.prepared.grant.valid_until = Some(until);
+    expected.valid_until = Some(until);
+    after.rules.get_mut(&1).unwrap().valid_until = Some(until);
+    let recorded = finish_call_surface_check(&plan, "fixture", &before)
+        .unwrap()
+        .verdict
+        .authority_commitment;
+    let expired = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
+    assert_eq!(
+        compare_installed_grant(&expired, &recorded, 0),
+        InstalledGrantComparison::Inactive
+    );
+    let StoredSignerKey::Delegated { address } = &plan.prepared.grant.signers[0] else {
+        panic!("classic fixture");
+    };
+    let ozpb_call_surface_core::ClassicAccount::Found {
+        medium_threshold, ..
+    } = after.classic_accounts.get_mut(address).unwrap()
+    else {
+        panic!("funded fixture");
+    };
+    *medium_threshold = 2;
+    let drifted = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
+    assert_eq!(
+        compare_installed_grant(&drifted, &recorded, 0),
+        InstalledGrantComparison::Changed
+    );
+}
+
+/// An observation older than the floor the caller passes (the installation's ledger, or one past
+/// the last observation) is no answer: an endpoint that stopped ingesting serves an old, consistent
+/// ledger that would otherwise read unchanged forever. It is stale whatever it shows.
+#[test]
+fn a_scheduled_comparison_refuses_an_observation_older_than_the_floor() {
+    let (plan, before, after, expected) = installed();
+    let recorded = finish_call_surface_check(&plan, "fixture", &before)
+        .unwrap()
+        .verdict
+        .authority_commitment;
+    let observed = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
+    let ledger = observed.observed_ledger;
+    assert_eq!(
+        compare_installed_grant(&observed, &recorded, ledger),
+        InstalledGrantComparison::Unchanged,
+        "the floor is inclusive"
+    );
+    assert_eq!(
+        compare_installed_grant(&observed, &recorded, ledger + 1),
+        InstalledGrantComparison::Stale
+    );
+    let (plan, _, mut after, expected) = installed();
+    after.next_id = 3;
+    let changed = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
+    assert_eq!(
+        compare_installed_grant(&changed, &recorded, changed.observed_ledger + 1),
+        InstalledGrantComparison::Stale
+    );
+}
+
+/// Neither a reason this comparison does not know nor an `observed` status without a projection
+/// reads as unchanged.
+#[test]
+fn a_scheduled_comparison_reads_an_unknown_shape_as_changed() {
+    let (plan, before, after, expected) = installed();
+    let recorded = finish_call_surface_check(&plan, "fixture", &before)
+        .unwrap()
+        .verdict
+        .authority_commitment;
+    let observed = check_installed_grant_from_scan(&plan, "fixture", &after, &expected).unwrap();
+    assert_eq!(
+        compare_installed_grant(&observed, &recorded, 0),
+        InstalledGrantComparison::Unchanged
+    );
+    let mut unknown = observed.clone();
+    unknown.reason = Some("a_reason_from_a_later_release".to_string());
+    assert_eq!(
+        compare_installed_grant(&unknown, &recorded, 0),
+        InstalledGrantComparison::Changed
+    );
+    let mut bare = observed.clone();
+    bare.projected_authority = None;
+    assert_eq!(
+        compare_installed_grant(&bare, &recorded, 0),
+        InstalledGrantComparison::Changed
+    );
+    let mut status = observed;
+    status.status = "observed_later".to_string();
+    assert_eq!(
+        compare_installed_grant(&status, &recorded, 0),
+        InstalledGrantComparison::Changed
+    );
+}

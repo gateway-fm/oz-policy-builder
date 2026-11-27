@@ -54,7 +54,7 @@ function fixture(t, count = 2) {
   const snapshot = join(dir, 'snapshot.json'); writeFileSync(snapshot, '{"snapshot":{"integer":9223372036854775807}}');
   const secrets = join(dir, 'private-secrets'); mkdirSync(secrets, { mode: 0o700 });
   const env = { ...process.env, OZPB_HARNESS_SECRETS: join(secrets, 'keys.json'), OZPB_BIN: 'fake-ozpb', OZPB_NATIVE_WORKER: '/fake-worker',
-    OZPB_REGISTRY_ROOTS_FILE: '/roots.json', OZPB_REGISTRY_MIN_VERSION: '4',
+    OZPB_REGISTRY_ROOTS_FILE: '/roots.json', OZPB_REGISTRY_MIN_VERSION: '6',
     OZPB_RPC_SOURCES_FILE: '/sources.json', OZPB_SIGNED_REGISTRY_SNAPSHOT: snapshot };
   const requests = [], temporary = [], state = { change: () => {}, exit: 0 };
   const execute = () => runProtocolDryRuns(dir, env, {

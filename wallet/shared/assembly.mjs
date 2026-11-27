@@ -1,7 +1,7 @@
 // SDK 17 stays in this nested package. The upstream wallet exchanges serialized XDR only.
 import { Buffer } from 'buffer';
 import { Address, StrKey, hash, nativeToScVal, xdr } from '#wallet-stellar-sdk';
-import { NETWORK_ID, freezeCopy, reviewIntent } from './approval.mjs';
+import { freezeCopy, reviewIntent } from './approval.mjs';
 import { directAddressCredentials } from './auth-credentials.mjs';
 
 const refuse = () => { throw new Error('wallet transaction refused; refresh and review again'); };
@@ -84,7 +84,7 @@ export function validateAssembly({ approval, assembly, ownerRuleXdr, limits }) {
     if (fresh.commitment !== approval.commitment || fresh.ownerRuleId !== approval.ownerRuleId
       || fresh.ownerRuleXdr !== approval.ownerRuleXdr || fresh.observedLedger < approval.observedLedger
       || JSON.stringify(fresh.intent.authority.verdict.grant) !== JSON.stringify(approval.intent.authority.verdict.grant)) refuse();
-    if (assembly.network_id !== NETWORK_ID || assembly.fee_payer !== limits.feePayer
+    if (assembly.network_id !== approval.networkId || fresh.networkId !== approval.networkId || assembly.fee_payer !== limits.feePayer
       || !canonicalUnsigned(limits.sourceSequence) || assembly.source_sequence !== limits.sourceSequence
       || !integer(limits.maxFeeStroops, 100, 0xffffffff) || !integer(limits.validityLedgers, 1, 120)
       || !integer(limits.currentLedger, 1, 0xffffffff) || assembly.simulation_auth_mode !== 'record'

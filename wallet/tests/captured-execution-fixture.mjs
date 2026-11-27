@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { Address, Asset, Keypair, Networks, xdr } from '@stellar/stellar-sdk';
-import { ACCOUNT_WASM, NETWORK_ID } from '../shared/approval.mjs';
+import { ACCOUNT_WASM } from '../shared/approval.mjs';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { offlineDomain } from '../server/native-protocol.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 
 const vector = JSON.parse(readFileSync(new URL('../../docs/examples/native-domain-vector.json', import.meta.url)));
 const recordedDir = new URL('../../crates/source-rpc/tests/captured-testnet/target-capture-protocol30/', import.meta.url);
@@ -139,7 +141,7 @@ export function capturedFrames({ capture, captureHash, account, delegate, recipi
     provenance: 'rpc_reported target entries with outer LedgerEntry extension reconstructed as V0; fresh local candidate '
       + 'installation and synthetic counter seed; offline execution network; no owner authority, fee, reserve or live-network claim',
     cases, passed: true, complete: false };
-  const expected = { runHash, accountAddress: account, delegateAddress: delegate, policyAddress, policyCodeHash,
+  const expected = { networkId: NETWORK_ID, runHash, accountAddress: account, delegateAddress: delegate, policyAddress, policyCodeHash,
     candidateContextRuleId, observedLedger: observed, captureHash, recipient, amount: BigInt(amount) };
   return { prepared, result, expected, keys, maxCalls };
 }

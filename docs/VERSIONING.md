@@ -1,0 +1,283 @@
+# Versioning
+
+Releases are numbered `MAJOR.MINOR.PATCH` ([Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)),
+tagged `v` plus the version that `Cargo.toml` states for the workspace. The number describes the
+interfaces below and nothing else: what a breaking change to them is, what a release may change
+without one, and which releases are supported. The release that delivers the third milestone is
+**1.0.0**, the first release this policy covers; 0.x releases and their release candidates made
+no compatibility promise.
+
+## What is versioned
+
+**The MCP wire contract.** The tool names the server lists, each tool's request and response
+JSON Schema, and the `E_*` error codes. The schemas are generated with `schemars` from the
+structs in `crates/api-types`, the same ones the server parses and returns
+([architecture §4.11](architecture.md#411-engineering-architecture--workspace-boundaries-and-idioms)),
+and the codes come from the one `error_codes!` table in `crates/api-types/src/lib.rs`. Each
+release attaches `ozpb-wire-contract-<tag>.json`: the `tools/list` answer of that release's built
+server, every tool with its input and output schema, and the code list. Comparing two releases'
+files shows what changed. The tree carries the same export for its own revision, without the
+`release` and `commit` that name a release, as [`wire-contract.json`](wire-contract.json), and CI
+fails when the built server serves anything else ([below](#keeping-the-snapshot-current)). The
+streamable HTTP transport is served at `/v1/mcp`.
+
+**The CLI and operator configuration.** `ozpb` commands, flags and their environment-variable
+fallbacks, the JSON a command prints on standard output (the same `api-types` structures), and
+the exit statuses a command documents, such as `ozpb registry monitor`'s
+([registry governance](REGISTRY-GOVERNANCE.md#monitoring)) and `ozpb check-installed-grant`'s
+with `--recorded-authority-commitment`
+([incident response](INCIDENT-RESPONSE.md#watching-an-installed-grant)). A command that
+documents only zero and non-zero promises only that distinction. For the server: the `OZPB_*`
+variables ([developer guide](DEVELOPERS.md#build-configuration-operator-side)), `--http`, and
+the files the self-hosted deployment mounts
+([self-hosting](SELF-HOSTING.md#configure-the-operator-boundary)).
+
+**Persisted and exchanged formats.** Each carries its version where it has one:
+
+| Format | Version | Defined in |
+| --- | --- | --- |
+| PolicySpec | `schema: "policy-spec/v1"`; hashed under `ozpb:v1:policy-spec` | `crates/policy-spec/src/lib.rs` (`SPEC_SCHEMA`) |
+| RecordingBundle | `schema: "recording/v2"`; hashed under `ozpb:v1:recording` | `crates/recorder-core/src/lib.rs` (`RECORDING_SCHEMA`) |
+| BuildManifest | `schema: "build-manifest/v2"`; hashed under `ozpb:v2:build-manifest` | `crates/build-runner/src/lib.rs` (`BUILD_MANIFEST_SCHEMA`) |
+| PolicyBindingSet | `schema: "policy-binding-set/v1"`; hashed under `ozpb:v1:policy-binding-set` | `crates/api-types/src/policy_operations.rs` |
+| Registry snapshot | `schema: "registry/v1"`; hashed under `ozpb:v1:registry-snapshot` (its `version` and `log_index` number the content, not the format) | `crates/registry/src/lib.rs` (`REGISTRY_SCHEMA`) |
+| Registry governance files | `registry-change/v1`, `registry-signature/v1`, `registry-monitor/v1` | `crates/registry/src/governance.rs` |
+| Registry roots file and checkpoint | no version field: `{threshold, keys[, checkpoint]}` and `{version, log_index, root, revocations}`, both closed objects | `crates/toolkit/src/lib.rs` (`registry_trust_from_roots_json`), `crates/registry/src/lib.rs` (`RegistryCheckpoint`) |
+| Grant proposal | `schema: "ozpb-grant-proposal/v1"` | `wallet/shared/proposal.mjs` |
+| Reference suite cases | `ozpb-reference-suite-cases/v1` | `crates/harness/src/lib.rs` (`CASES_FORMAT`) |
+| Published build | no version field: `<wasm hash>/<manifest hash>/` holding `SHA256SUMS`, `policy-spec.json`, `build-manifest.json`, `policy.wasm` and `source/` ([publishing](PUBLISHING.md)) | `crates/toolkit/src/publication.rs` |
+| Build worker launcher frames | `build-worker-job/v1` in, `build-worker-result/v1` and `contained-build-result/v2` out; the `--protocol` answer naming both ([launcher contract](ISOLATED-BUILDS.md#launcher-contract-for-another-provider)) | `crates/build-runner/src/worker.rs`, `deployment/worker-launcher.py` |
+| Native worker frames | `schema: 1` in the job and result frames ([machine protocol](NATIVE-EXECUTION.md#machine-protocol)) | `execution-runtime/src/execution.rs`, `execution-runtime/src/captured.rs` |
+| Release wire contract | `schema: "ozpb-wire-contract/v1"`; `docs/wire-contract.json` is the same document without `release` and `commit` | `scripts/release-artifacts.py` |
+
+The hash domains are specified in [canonical hashing](CANONICAL-HASHING.md#domains).
+
+**Generated artifacts.** The Wasm and BuildManifest a spec builds to. `verify` and the
+recognition of an installed generated policy both rebuild it from its spec and compare the
+result with the claim, every manifest field except `producer`. Anything that changes that
+result for an existing spec changes whether installed policies are recognized: the generated
+source, the generated crate's lockfile, the pinned Soroban SDK and OpenZeppelin versions
+([Soroban dependencies](SOROBAN-DEPENDENCIES.md)), the pinned Rust and Stellar CLI
+(`ozpb_domain::pinned_upstream`), or the codegen version the artifact states in `ozpb_generator`
+(`oz-policy-builder/codegen@1`). The workspace version is in none of these.
+
+Not versioned: human-readable text (`message`, the strings in `details`, help output, logs), the
+internal Rust API of the crates, the container images' contents beyond the configuration above,
+and the content of a registry. A signed registry version that revokes a capability is the
+[revocation procedure](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal) working, not a
+change to the toolkit.
+
+## Breaking and additive
+
+**Breaking — a new major version:**
+
+- removing or renaming a tool, command, flag, environment variable, field or `E_*` code, or
+  changing what one means, its type, or a default in a way that grants more;
+- a new required input field, or refusing an input an earlier release accepted;
+- a new value in an output enumeration, except a new `E_*` code; a new field in an object the
+  published schema closes (`additionalProperties: false`);
+- a change to a documented exit status;
+- a format change after which a document an earlier release wrote is refused, read differently,
+  or hashes differently, including a new `schema` version or hash domain the earlier one does
+  not read (as `recording/v2` and `build-manifest/v2` did);
+- a change to a frame either worker protocol exchanges;
+- any change to the generated artifact of an existing spec, as above.
+
+**Additive — a minor version:** a new tool, command, flag or optional input field; a new output
+field in an open object (clients ignore output fields they do not recognize); a new `E_*` code
+(clients treat a code they do not recognize as a failure); accepting an input an earlier release
+refused; a new optional format field, written only when the feature it serves is used, whose
+absence leaves a document's meaning and canonical hash unchanged. A document that uses a new
+field is not readable by an earlier release, so upgrade every component that exchanges it first.
+
+**Patch:** fixes that change none of the above.
+
+**Exceptions.** A fix for a security defect, or a change the Stellar network forces (a protocol
+upgrade the pinned SDK cannot follow), may break a contract in a minor or patch release when
+waiting for a major one would leave users exposed or unable to work. The release notes mark it
+**Breaking** and say what to do; a security fix stays under Security, marked so, as the v1.0.0
+notes do for the [account advisory](release-notes/v1.0.0.md#security).
+
+## Keeping the snapshot current
+
+`docs/wire-contract.json` is written only by the release export, run against a built server:
+
+```sh
+cargo build -p ozpb-mcp-server
+python3 scripts/release-artifacts.py check-wire-contract --server target/debug/ozpb-mcp-server
+```
+
+Without `--update` this compares what the server serves with the committed file, byte for byte,
+and fails on any difference, naming the tools and codes that differ and printing the diff. CI's
+host job and `scripts/verify-phase1.sh` run it. Nothing in it decides whether a difference is
+breaking. When a change to the server or to `crates/api-types` alters the contract on purpose,
+the same commit regenerates the file with `--update` and adds a release-notes entry that says,
+under the rules above, whether the change is breaking or additive; a change to a description
+alone is human-readable text, which this policy does not version, and needs no entry. A
+difference nobody intended is a defect in the change that caused it.
+
+The `E_*` codes are also pinned without a server build: an `api-types` test
+(`published_error_codes_are_pinned_by_the_committed_wire_contract`) compares the `error_codes!`
+table with the file's `error_codes`. A code removed or renamed fails it as a breaking change; a
+new code fails it until the file is regenerated, and is additive.
+
+The wallet's TypeScript declarations for the two install tools,
+`wallet/shared/install-wire.d.mts`, are held to the file's schemas by
+`wallet/tests/install-wire.test.mjs`: a regenerated schema they no longer match fails that test
+until they are updated in the same commit.
+
+## What 1.0 promises, and for how long
+
+During the grant period, which ends when the Stellar Community Fund accepts the third milestone,
+no 1.x release breaks the contracts above except under the exceptions; a breaking change waits
+for 2.0.0. The latest release line is the supported one, as in
+[SECURITY.md](../SECURITY.md#supported-versions): fixes go on `main` and into its next release,
+with no maintained branches and no backports. A 2.0.0, if there is one, ends support for 1.x.
+
+After the grant period there is no commitment: no further releases, fixes or support are
+promised ([architecture §10, Maintenance](architecture.md#10-delivery-plan)). Releases already
+published stay as they are, and the code remains open source for anyone to run, fork or maintain.
+
+## Pre-releases
+
+A tag `vX.Y.Z-rc.N` is a candidate for `X.Y.Z`. Its contracts may still change before that
+release, and it is published as a GitHub pre-release. The release workflows run for it as for a
+release, under the same tag check.
+
+## The release gate
+
+The steps to make release `X.Y.Z`; the decision to release, and the version, are the owner's.
+
+1. **Choose the number** from the draft notes in `docs/release-notes/`: a breaking change outside
+   the exceptions makes it major, an addition minor, anything else a patch.
+   Once the previous release's tree carries `docs/wire-contract.json`,
+   `git diff v<previous> -- docs/wire-contract.json` shows every wire-contract change since then,
+   and each one should already have its entry in the notes.
+2. **Prepare one release commit** on top of the reviewed `main`:
+   - set `version` under `[workspace.package]` in `Cargo.toml`, and the same `version` in
+     `execution-runtime/Cargo.toml`, the worker's own workspace (the binaries workflow refuses
+     the two disagreeing);
+   - let the lockfiles follow, and move nothing else. The root workspace, `execution-runtime/` and
+     `contracts/` each record the workspace crates' version (the last two depend on them by path):
+     run `cargo update --workspace` with each one's `--manifest-path`, then check that
+     `cargo metadata --locked --format-version 1 --manifest-path <workspace>/Cargo.toml` succeeds
+     for all three and that `git diff` changes only `ozpb-*` versions;
+   - set `version` in `.claude-plugin/plugin.json`;
+   - rename the draft notes to `docs/release-notes/vX.Y.Z.md` if they carry another number, and
+     replace "draft" and "Not yet released" with the release date.
+
+   Leave these alone: the `version` of every crate under `contracts/` and the crate version
+   codegen emits. A contract crate's version is part of the `-C metadata` cargo compiles it with,
+   which can change its Wasm, and the generated crates are byte-for-byte fixtures. The workspace
+   version reaches no Wasm and no fixture: the CLI's `--version` reports it, and the release
+   workflows check the tag against it.
+3. **Run the gates on the exact release commit.** Run `bash scripts/verify-phase2.sh` locally.
+   Dispatch `ci.yml`, `nightly-live.yml` (without the live-write probe), and `mutation.yml` on
+   that commit's branch. Check the run's `headSha` against the release commit and wait for each
+   dispatch to finish successfully. Run `release-binaries.yml` on the branch as a packaging
+   rehearsal. A release that delivers the milestone, or the candidate its mainnet installation is
+   made from, also needs the
+   [Tranche 3 acceptance records](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here).
+4. **Tag the tested commit.** If a merge produces a different release commit, dispatch the three
+   workflows again for its SHA before tagging. Create and push an annotated `vX.Y.Z` tag.
+5. **Create a draft GitHub Release** from the tag, titled for the milestone it delivers when it
+   delivers one, with the release notes as its body; mark a `-rc.N` as a pre-release
+   (`gh release create vX.Y.Z --draft --verify-tag --title <title> --notes-file <notes>`, adding
+   `--prerelease` for a candidate).
+6. **Attach the binaries**: `gh workflow run release-binaries.yml --ref vX.Y.Z`. On a tag, the
+   workflow refuses a tag that does not name the workspace version or whose release is not a
+   draft, and attaches the binaries, `SHA256SUMS` and the wire contract to the draft, each with
+   an attestation. It never replaces an asset, so delete a partial upload from the draft before
+   re-running it, and re-run all its jobs: a re-run of only the failed ones stops, since files
+   pass between its jobs under names that carry the attempt.
+7. **If the release changes a registry**, attach its new head, `roots.json` and the head
+   checkpoint to the draft ([publishing](REGISTRY-GOVERNANCE.md#publishing)).
+8. **Publish the draft** once all gates and the tagged binary build pass. Verify the assets and
+   attestations against the tested source SHA with the
+   [self-hosting checks](SELF-HOSTING.md#obtain-and-verify). Image publication verifies the exact
+   revision's three workflow dispatches, the complete binary asset set, checksums and attestations
+   against the same source commit. This check runs after GitHub makes the release public, so
+   complete the draft checks before publishing. If publication fails partway, rerun the original workflow so
+   the immutable tags already staged for that run can be reused.
+9. **Check the images**: `publish-image.yml` green, and the image references from its summary
+   added to the release body.
+
+### The order for 1.0.0
+
+The milestone's one mainnet installation is made from a release candidate, `1.0.0-rc.N`
+([pre-releases](#pre-releases)); 1.0.0 follows the audit's remediation. The steps come in this
+order:
+
+1. A freeze commit fixes the reviewed revision ([audit scope](AUDIT-SCOPE.md)). OpenZeppelin's
+   review of the generated code ([review package](OZ-REVIEW-PACKAGE.md)) and the external
+   security audit of the authorization-to-install path both start on it, in parallel.
+2. OpenZeppelin's documented sign-off is recorded as a row of the
+   [review record](OZ-REVIEW-PACKAGE.md#review-record). A change to generated code their review
+   asks for before they sign off goes to the auditor too, and is within the remediation's scope
+   (step 7).
+3. The owner's acceptance: every deviation under
+   [Deviations for the owner's acceptance](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)
+   has a row in [Acceptance recorded here](TRANCHE-3-VERIFICATION.md#acceptance-recorded-here)
+   or, for a gate's deviation, its gate is closed (the release gate's step 3). One of them is
+   that the installation precedes the audit's report and remediation
+   ([deviation 6](TRANCHE-3-VERIFICATION.md#deviations-for-the-owners-acceptance)).
+4. The mainnet registry's key ceremony. The draft genesis carries `PENDING` text where the
+   template pack's review reference goes, naming OpenZeppelin's review record: their review of
+   the generated code is the review of what the template pack produces. The custodians sign
+   version 1 once that sign-off row exists, after replacing the text with its reference,
+   confirming every other reference and setting the validity interval
+   ([mainnet registry](../registry/mainnet/README.md)). The audit's report is not needed for
+   version 1; it enters through the successor of step 8. The ceremony's commit replaces
+   `registry/mainnet/v0001.draft.json` with `v0001.signed.json`, writes the custodians' keys into
+   `roots.json`, and updates what reads the draft or calls the log unsigned:
+   `crates/registry/tests/mainnet_draft.rs`, `crates/cli/tests/registry_governance_cli.rs`
+   (`the_committed_mainnet_log_awaits_its_key_ceremony`, and the rehearsal genesis it builds from
+   the draft) and every document or comment that names the draft or calls the mainnet log an
+   unsigned draft (the wallet's mainnet test fixture among them).
+5. The release candidate is released through the release gate from the revision OpenZeppelin's
+   sign-off covers. Unless `main` is still at that revision, the release commit goes on a branch
+   `release/v1.0.0-rc.N` cut from it, as `v0.2.0-rc.1` and `v0.2.0-rc.2` were. The release
+   gate's workflows are dispatched on that branch and checked against the release commit, and the
+   tag is made there on the tested commit rather than on `main` (the release gate's steps 3 and
+   4). The branch adds nothing but the records of steps 2 and 3, the ceremony's commit and the
+   release commit; the records and the ceremony's commit land on `main` as well. The v1.0.0
+   notes stay a draft for the candidate: they are renamed and dated (the release gate's step 2)
+   for 1.0.0 only. The candidate carries the signed head, `roots.json` and the head checkpoint (the
+   release gate's step 7).
+6. The owner makes the mainnet installation from that release candidate
+   ([installing on mainnet](MAINNET-INSTALL.md)), checking those records first, since the wallet
+   does not, and the installed policy's build is published by its Wasm hash
+   ([publishing the installed policy](MAINNET-INSTALL.md#publishing-the-installed-policy)).
+7. The audit's report is recorded in the remediation log's
+   [report table](AUDIT-REMEDIATION.md#report), and its findings are remediated, each fix with
+   its regression test ([remediation log](AUDIT-REMEDIATION.md)), until no row of its
+   [findings table](AUDIT-REMEDIATION.md#findings) is `open`. That closes
+   [G14](MAINNET-GATES.md#g14-security-review).
+8. The custodians sign a successor version of the mainnet registry whose template-pack review
+   reference adds the audit report to OpenZeppelin's review, and carries any template-pack
+   change the remediation made. It is signed whether or not the template pack changed, since the
+   design has the template pack "audited once, with OpenZeppelin review"
+   ([architecture §5](architecture.md#5-why-generated-policies-stay-small-and-auditable),
+   [making and signing a version](REGISTRY-GOVERNANCE.md#making-and-signing-a-version)). Once it
+   is published, `ozpb registry monitor` reports it to an operator still on version 1 as a newer
+   version (exit 3), as expected ([monitoring](REGISTRY-GOVERNANCE.md#monitoring)). Once
+   advanced, the persisted checkpoint refuses version 1, and a grant synthesized under version 1
+   fails its checks under another root: remove the demonstration grant
+   ([how to revoke](MAINNET-INSTALL.md#how-to-revoke)) before moving its operator to the
+   successor, and keep version 1 pinned while it is installed.
+9. 1.0.0 is released from the remediated tree, carrying the records of steps 2, 3 and 7, and the
+   successor's head, `roots.json` and the head checkpoint (the release gate's step 7). The
+   owner's acceptance must hold for that tree: a new row for any deviation the remediation
+   changed.
+10. If a remediated finding changes the installed policy's code or the shape of the grant, the
+    demonstration grant is removed if it is still installed
+    ([how to revoke](MAINNET-INSTALL.md#how-to-revoke)). When the finding is in that policy's
+    code, the successor of step 8 also revokes `policy/<wasm hash>` of the candidate's build,
+    which recognition then refuses
+    ([revocation](REGISTRY-GOVERNANCE.md#revocation-and-emergency-removal)). The installation is
+    repeated from 1.0.0, costing about the runbook's figures again
+    ([every mainnet write](MAINNET-INSTALL.md#every-mainnet-write-in-order-with-its-simulated-fee)).
+
+The milestone is submitted with both of its outcomes: the installation's evidence and the
+published audit report with its remediation
+([TRANCHE-3-VERIFICATION.md](TRANCHE-3-VERIFICATION.md#contracted-outcome-and-milestone-boundary)).

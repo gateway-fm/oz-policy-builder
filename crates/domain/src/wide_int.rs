@@ -267,6 +267,30 @@ mod tests {
         assert!(serde_json::from_value::<Wide>(float).is_err());
     }
 
+    /// A rounded float or a wrong-typed value is refused with the forms that would have been
+    /// accepted, so a client that sent a JSON float learns to send a string instead.
+    #[test]
+    fn a_refused_type_names_the_accepted_forms() {
+        for (field, value, name) in [
+            ("signed", serde_json::json!(1.5), "i64"),
+            ("unsigned", serde_json::json!(true), "u64"),
+            ("amount", serde_json::json!([1]), "i128"),
+        ] {
+            let mut json =
+                serde_json::json!({"signed": "1", "unsigned": "1", "amount": "1", "maybe": null});
+            json[field] = value;
+            let err = serde_json::from_value::<Wide>(json)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains(&format!(
+                    "expected a {name} as an integer or a canonical decimal string"
+                )),
+                "{field}: {err}"
+            );
+        }
+    }
+
     /// The canonical preimage is the integer, exactly as for a plain field: adopting the wire form
     /// changes no hash.
     #[test]

@@ -2,6 +2,7 @@
 // refused, so removing any one check fails a test here.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { WALLET_NETWORKS } from '../shared/networks.mjs';
 import { Keypair, StrKey, xdr } from '@stellar/stellar-sdk';
 import { reviewIntent } from '../shared/approval.mjs';
 import { validateAssembly } from '../shared/assembly.mjs';
@@ -205,11 +206,33 @@ function consentBase() {
   const approval = value.approval;
   const checked = validateAssembly(value);
   const i = approval.intent;
-  const spec = { smart_account: { address: i.account_contract }, rules: [{ context: { contract: i.context_contract },
+  const spec = { network_id: approval.networkId, smart_account: { address: i.account_contract }, rules: [{ context: { contract: i.context_contract },
     valid_until: { ledger: i.valid_until_ledger }, authorization: { signers: [{ delegated: { address: i.delegate_signers[0].address } }] },
     state: [{ call_count_per_installation: { max_calls: 1 } }], allowed_calls: [{ fn: 'transfer', args: [] }] }] };
   return { approval, checked: structuredClone(checked), spec, maxFeeStroops: 10_000_000, ruleId: RULE_ID };
 }
+test('on mainnet the installation consent names the agent as the delegate key\'s holder', () => {
+  const MAINNET = WALLET_NETWORKS.mainnet;
+  const testnet = installConsent(consentBase());
+  assert.match(testnet.warning, /whose key this wallet backend holds as its automation delegate/);
+  const base = consentBase();
+  base.approval = { ...base.approval, networkId: MAINNET.networkId };
+  base.spec.network_id = MAINNET.networkId;
+  const display = installConsent(base);
+  assert.equal(display.network, 'mainnet');
+  assert.doesNotMatch(JSON.stringify(display), /in-memory|discarded|whose key this wallet backend holds as its automation delegate/);
+  assert.match(display.warning, /the agent's own key, held by the agent and by this backend from the operator's file/);
+  assert.match(display.warning, /the agent can use the grant itself, without this wallet/);
+  assert.match(display.warning, /anyone who obtains it before then, the agent included, could submit it/);
+  // An operator-funded testnet session says the same: its delegate is the agent's key from the operator's file.
+  const rehearsal = installConsent({ ...consentBase(), operatorFunded: true });
+  assert.equal(rehearsal.network, 'testnet');
+  assert.match(rehearsal.warning, /the agent's own key, held by the agent and by this backend from the operator's file/);
+  assert.match(rehearsal.warning, /anyone who obtains it before then, the agent included, could submit it/);
+  assert.doesNotMatch(JSON.stringify(rehearsal), /whose key this wallet backend holds as its automation delegate/);
+  // Mainnet is always operator-funded, whatever a caller passes.
+  assert.deepEqual(installConsent({ ...base, operatorFunded: false }), display);
+});
 test('the installation consent is derived only for the reviewed grant, rule and fee bound', () => {
   const display = installConsent(consentBase());
   assert.equal(display.grant.rule_id, RULE_ID);

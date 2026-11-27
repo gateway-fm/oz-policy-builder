@@ -21,6 +21,10 @@ stellar-xdr = { workspace = true }
 stellar-strkey = { workspace = true }
 sha2 = { workspace = true }
 
+[dev-dependencies]
+# The mainnet corpus imports its captured evidence through the real import adapter.
+ozpb-source-bundle = { workspace = true }
+
 [features]
 default = ["http"]
 # `HttpTransport`. Off for a caller that supplies its own `RpcTransport` (the contracts

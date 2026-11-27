@@ -1,6 +1,6 @@
 use super::*;
 use crate::dev;
-use ozpb_domain::{sha256, MAINNET_PASSPHRASE, TESTNET_PASSPHRASE};
+use ozpb_domain::{pinned_upstream, sha256, MAINNET_PASSPHRASE, TESTNET_PASSPHRASE};
 
 fn network() -> NetworkId {
     NetworkId::from_passphrase(TESTNET_PASSPHRASE)
@@ -483,7 +483,7 @@ fn checkpoint_of(chain: &[SignedSnapshot]) -> RegistryCheckpoint {
 fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
     let chain = chain();
     let at_v1 = checkpoint_of(&chain[..1]);
-    let watch_nothing: [Hash32; 0] = [];
+    let watch_nothing: [Watched; 0] = [];
 
     let report = monitor(
         roots(),
@@ -502,7 +502,10 @@ fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
     assert_eq!(report.validity, ValidityStatus::Valid);
 
     // A hash the consumer relies on was revoked in a version it has not seen.
-    let watched = [revoked_hash(), sha256(b"an unrelated hash")];
+    let watched = [
+        Watched::Code(revoked_hash()),
+        Watched::Code(pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM),
+    ];
     let report = monitor(
         roots(),
         network(),
@@ -515,7 +518,7 @@ fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
     .unwrap();
     assert_eq!(report.status, MonitorStatus::Revoked);
     assert_eq!(report.revoked.len(), 1);
-    assert_eq!(report.revoked[0].wasm_hash, revoked_hash());
+    assert_eq!(report.revoked[0].watched, Watched::Code(revoked_hash()));
     assert_eq!(report.revoked[0].effective_version, 2);
     assert_eq!(report.revoked[0].reason, "found faulty in review");
 
@@ -572,7 +575,7 @@ fn monitoring_reports_newer_versions_expiry_and_watched_revocations() {
 fn monitoring_fails_loudly_on_a_log_that_contradicts_the_checkpoint() {
     let chain = chain();
     let at_v2 = checkpoint_of(&chain[..2]);
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
 
     // Same version, different contents: equivocation.
     let mut equivocation = chain[1].snapshot.clone();
@@ -628,7 +631,7 @@ fn monitoring_fails_loudly_on_a_log_that_contradicts_the_checkpoint() {
 #[test]
 fn monitoring_reports_a_head_scheduled_to_start_later() {
     let chain = chain();
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
     // Version 3 is valid from 2_500.
     let behind = monitor(
         roots(),
@@ -657,7 +660,7 @@ fn monitoring_reports_a_head_scheduled_to_start_later() {
     .unwrap();
     assert_eq!(accepted_early.status, MonitorStatus::NotYetValid);
     // A watched revocation still outranks it.
-    let watched = [revoked_hash()];
+    let watched = [Watched::Code(revoked_hash())];
     let revoked = monitor(
         roots(),
         network(),
@@ -695,7 +698,7 @@ fn a_root_rotation_is_followed_by_a_consumer_that_re_pins() {
     let v4 = combine(&rotated, network(), v4, &detached, 4_100).unwrap();
     let mut published = chain.clone();
     published.push(v4.clone());
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
 
     let report = monitor(
         rotated.clone(),
@@ -747,33 +750,52 @@ fn a_root_rotation_is_followed_by_a_consumer_that_re_pins() {
 }
 
 /// A draft still carrying a pending review reference is not something custodians have finished:
-/// it cannot be combined, and a signed one does not replay.
+/// no custodian signs it, with a local key or by handing in a device's signature, so the fault
+/// surfaces at the first signature rather than at combine once the threshold is collected. Signed
+/// some other way, it is not combined, and a signed one does not replay.
 #[test]
-fn a_pending_review_reference_is_never_combined_or_replayed() {
+fn a_pending_review_reference_is_never_signed_combined_or_replayed() {
+    use ed25519_dalek::Signer;
     let mut draft = genesis();
-    let template = draft.templates.values_mut().next().unwrap();
+    let (family, template) = draft.templates.iter_mut().next().unwrap();
     template.review_reference = format!("{PENDING_REVIEW_PREFIX} the security review's reference.");
-    let signatures = [
-        sign_detached("a", &custodian("a"), &draft).unwrap(),
-        sign_detached("b", &custodian("b"), &draft).unwrap(),
-    ];
-    assert!(matches!(
-        combine(&roots(), network(), draft.clone(), &signatures, 1_000),
-        Err(GovernanceError::PendingReview(_))
-    ));
-    assert!(matches!(
-        require_no_pending_review(&draft),
-        Err(GovernanceError::PendingReview(_))
-    ));
-    // Signed some other way, it still does not pass the gate before distribution.
+    let pending = GovernanceError::PendingReview(format!("template/{family}"));
+    assert_eq!(
+        sign_detached("a", &custodian("a"), &draft).unwrap_err(),
+        pending
+    );
+    let root = snapshot_root(&draft).unwrap();
+    let device = custodian("b");
+    let produced = hex::encode(device.sign(&root.0).to_bytes());
+    assert_eq!(
+        external_signature("b", &device.verifying_key().to_bytes(), &produced, &draft).unwrap_err(),
+        pending
+    );
+    assert_eq!(require_no_pending_review(&draft).unwrap_err(), pending);
+    // Signed some other way, it is neither combined nor passes the gate before distribution.
     let signed = sign_snapshot_with_roots(
         &BTreeMap::from([
             ("a".to_string(), custodian("a")),
             ("b".to_string(), custodian("b")),
         ]),
-        draft,
+        draft.clone(),
     )
     .unwrap();
+    let signatures: Vec<DetachedSignature> = signed
+        .signatures
+        .iter()
+        .map(|(id, signature)| DetachedSignature {
+            schema: DETACHED_SIGNATURE_SCHEMA.to_string(),
+            key_id: id.clone(),
+            public_key: hex::encode(custodian(id).verifying_key().to_bytes()),
+            root,
+            signature: signature.clone(),
+        })
+        .collect();
+    assert_eq!(
+        combine(&roots(), network(), draft, &signatures, 1_000).unwrap_err(),
+        pending
+    );
     assert!(matches!(
         replay(roots(), network(), &[signed], 1_000),
         Err(GovernanceError::PendingReview(_))
@@ -781,12 +803,34 @@ fn a_pending_review_reference_is_never_combined_or_replayed() {
     require_no_pending_review(&genesis()).unwrap();
 }
 
+/// What a custodian reviews before signing lists every entry whose review reference is still
+/// pending, not only the first one a refusal names, in the order the refusal checks them.
+#[test]
+fn every_pending_review_reference_is_listed() {
+    let mut draft = genesis();
+    assert!(pending_reviews(&draft).is_empty());
+    let (family, template) = draft.templates.iter_mut().next().unwrap();
+    let family = family.clone();
+    template.review_reference = format!("{PENDING_REVIEW_PREFIX} the template review.");
+    let (account, entry) = draft.accounts.iter_mut().next().unwrap();
+    let account = account.clone();
+    entry.review_reference = format!("  {PENDING_REVIEW_PREFIX} the account review.");
+    assert_eq!(
+        pending_reviews(&draft),
+        vec![format!("account/{account}"), format!("template/{family}")]
+    );
+    assert_eq!(
+        require_no_pending_review(&draft).unwrap_err(),
+        GovernanceError::PendingReview(format!("account/{account}"))
+    );
+}
+
 /// The accepted version's published copy must be for the consumer's network too.
 #[test]
 fn the_checkpoint_version_must_be_for_the_pinned_network() {
     let chain = chain();
     let mainnet = NetworkId::from_passphrase(MAINNET_PASSPHRASE);
-    let none: [Hash32; 0] = [];
+    let none: [Watched; 0] = [];
     assert!(matches!(
         monitor(
             roots(),
@@ -799,4 +843,235 @@ fn the_checkpoint_version_must_be_for_the_pinned_network() {
         ),
         Err(GovernanceError::Registry(RegistryError::Network { .. }))
     ));
+}
+
+/// A mainnet checkpoint can predate the rule that a pending review reference is never admitted,
+/// and the checkpoint's own version is not loaded again, so monitoring checks that version itself:
+/// accepted with a pending reference, it is refused; with the reference resolved, it is current.
+#[test]
+fn mainnet_monitoring_refuses_a_pending_review_at_the_checkpoint_version() {
+    let mainnet = NetworkId::from_passphrase(MAINNET_PASSPHRASE);
+    let none: [Watched; 0] = [];
+    let accepted = |snapshot: &RegistrySnapshot| {
+        let signers = BTreeMap::from([
+            ("a".to_string(), custodian("a")),
+            ("b".to_string(), custodian("b")),
+        ]);
+        let checkpoint = RegistryCheckpoint {
+            version: snapshot.version,
+            log_index: snapshot.log_index,
+            root: snapshot_root(snapshot).unwrap(),
+            revocations: snapshot.revocations.clone(),
+        };
+        (
+            sign_snapshot_with_roots(&signers, snapshot.clone()).unwrap(),
+            checkpoint,
+        )
+    };
+    let mut reviewed = genesis();
+    reviewed.network_id = mainnet;
+    let (signed, checkpoint) = accepted(&reviewed);
+    let report = monitor(roots(), mainnet, checkpoint, &[signed], 1_500, 0, &none).unwrap();
+    assert_eq!(report.status, MonitorStatus::Current);
+
+    let mut pending = reviewed;
+    let (family, template) = pending.templates.iter_mut().next().unwrap();
+    let family = family.clone();
+    template.review_reference = format!("{PENDING_REVIEW_PREFIX} the security review's reference.");
+    let (signed, checkpoint) = accepted(&pending);
+    assert_eq!(
+        monitor(roots(), mainnet, checkpoint, &[signed], 1_500, 0, &none).unwrap_err(),
+        GovernanceError::PendingReview(format!("template/{family}"))
+    );
+}
+
+/// The validity boundaries, to the second: the head (version 3) is valid from 2_500 to 5_000
+/// inclusive, and "expires soon" starts exactly `window` seconds before its end.
+#[test]
+fn monitoring_validity_boundaries_are_exact() {
+    let chain = chain();
+    let at_v3 = checkpoint_of(&chain);
+    let none: [Watched; 0] = [];
+    let validity = |now: i64, window: i64| {
+        monitor(
+            roots(),
+            network(),
+            at_v3.clone(),
+            &chain,
+            now,
+            window,
+            &none,
+        )
+        .unwrap()
+        .validity
+    };
+    assert_eq!(validity(2_499, 600), ValidityStatus::NotYetValid);
+    assert_eq!(validity(2_500, 600), ValidityStatus::Valid);
+    assert_eq!(validity(2_501, 600), ValidityStatus::Valid);
+    assert_eq!(validity(4_399, 600), ValidityStatus::Valid);
+    assert_eq!(validity(4_400, 600), ValidityStatus::ExpiresSoon);
+    assert_eq!(validity(4_401, 600), ValidityStatus::ExpiresSoon);
+    assert_eq!(validity(4_999, 0), ValidityStatus::Valid);
+    assert_eq!(validity(5_000, 0), ValidityStatus::ExpiresSoon);
+    assert_eq!(validity(5_000, 600), ValidityStatus::ExpiresSoon);
+    assert_eq!(validity(5_001, 600), ValidityStatus::Expired);
+}
+
+/// Each field of the checkpoint match refuses on its own. A consumer's persisted checkpoint is a
+/// file: one corrupted or edited field, with the others intact, must not pass.
+#[test]
+fn each_checkpoint_field_mismatch_is_refused_alone() {
+    let chain = chain();
+    let accepted = checkpoint_of(&chain);
+    let none: [Watched; 0] = [];
+    let check = |checkpoint: RegistryCheckpoint| {
+        monitor(roots(), network(), checkpoint, &chain[2..], 2_600, 0, &none)
+    };
+    check(accepted.clone()).unwrap();
+
+    let mut root = accepted.clone();
+    root.root = sha256(b"another root");
+    let mut log_index = accepted.clone();
+    log_index.log_index += 1;
+    let mut revocations = accepted.clone();
+    revocations.revocations.clear();
+    for (field, edited) in [
+        ("root", root),
+        ("log_index", log_index),
+        ("revocations", revocations),
+    ] {
+        assert!(
+            matches!(
+                check(edited),
+                Err(GovernanceError::Registry(RegistryError::Transparency(_)))
+            ),
+            "a checkpoint differing only in {field} must be refused"
+        );
+    }
+}
+
+/// A generated policy is recognized through its template family, so a family revocation is the
+/// revocation that reaches it: watched, it is reported with its reason, like revoked code.
+#[test]
+fn monitoring_reports_a_revoked_watched_template_family() {
+    let chain = chain();
+    let family = "policy-templates/scope@1";
+    let mut revoke = changes(2_500, 6_000);
+    revoke.revocations.insert(
+        format!("template/{family}"),
+        "the template emits a check that can be bypassed".to_string(),
+    );
+    let v4 = successor(roots(), network(), &chain[2], &revoke, 2_600).unwrap();
+    let mut published = chain.clone();
+    published.push(signed_by(&v4, &["a", "b"]));
+    let at_v3 = checkpoint_of(&chain);
+
+    let watched = [Watched::TemplateFamily(family.to_string())];
+    let report = monitor(
+        roots(),
+        network(),
+        at_v3.clone(),
+        &published,
+        2_600,
+        0,
+        &watched,
+    )
+    .unwrap();
+    assert_eq!(report.status, MonitorStatus::Revoked);
+    assert_eq!(
+        report.revoked,
+        vec![RevokedCapability {
+            watched: Watched::TemplateFamily(family.to_string()),
+            capability: format!("template/{family}"),
+            reason: "the template emits a check that can be bypassed".to_string(),
+            effective_version: 4,
+        }]
+    );
+    // Registered code the head does not revoke is not reported.
+    let unrelated = [Watched::Code(pinned_upstream::OZ_SMART_ACCOUNT_WASM)];
+    let report = monitor(roots(), network(), at_v3, &published, 2_600, 0, &unrelated).unwrap();
+    assert_eq!(report.status, MonitorStatus::NewerVersion);
+    assert!(report.revoked.is_empty());
+}
+
+/// A watch item the head neither registers nor revokes can never report anything, so a typo would
+/// leave a cron job reading "current" forever. It is an error naming the item, not a silence.
+#[test]
+fn a_watch_item_the_head_does_not_know_is_an_error() {
+    let chain = chain();
+    let at_v3 = checkpoint_of(&chain);
+    for item in [
+        Watched::TemplateFamily("policy-templates/scope@l".to_string()),
+        Watched::Code(sha256(b"a mistyped hash")),
+    ] {
+        let error = monitor(
+            roots(),
+            network(),
+            at_v3.clone(),
+            &chain,
+            2_600,
+            0,
+            std::slice::from_ref(&item),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, GovernanceError::NotWatchable { item: named, .. } if *named == item),
+            "{error}"
+        );
+        // The message names the item, so the operator can find the typo.
+        let named = match &item {
+            Watched::TemplateFamily(family) => format!("template family {family:?}"),
+            Watched::Code(hash) => format!("wasm hash {}", hash.to_hex()),
+        };
+        assert!(error.to_string().starts_with(&named), "{error}");
+    }
+    // Code registered under each role, alone, is something the head can report on.
+    for registered in [
+        pinned_upstream::OZ_SPENDING_LIMIT_POLICY_WASM,
+        pinned_upstream::OZ_SMART_ACCOUNT_WASM,
+        pinned_upstream::OZ_ED25519_VERIFIER_WASM,
+        ozpb_domain::target_adapters::SOROSWAP_ROUTER_TESTNET_WASM,
+    ] {
+        monitor(
+            roots(),
+            network(),
+            at_v3.clone(),
+            &chain,
+            2_600,
+            0,
+            &[Watched::Code(registered)],
+        )
+        .unwrap();
+    }
+    // Registered, or revoked without an entry: both are things a head can report on.
+    monitor(
+        roots(),
+        network(),
+        at_v3,
+        &chain,
+        2_600,
+        0,
+        &[
+            Watched::TemplateFamily("policy-templates/scope@1".to_string()),
+            Watched::Code(revoked_hash()),
+        ],
+    )
+    .unwrap();
+}
+
+/// A family name is checked with the registry's own rule before it is watched.
+#[test]
+fn a_watched_template_family_must_be_a_valid_family_name() {
+    assert_eq!(
+        Watched::template_family("policy-templates/scope@1").unwrap(),
+        Watched::TemplateFamily("policy-templates/scope@1".to_string())
+    );
+    for bad in [
+        "",
+        " policy-templates/scope@1",
+        "policy templates",
+        "family\n",
+    ] {
+        assert!(Watched::template_family(bad).is_err(), "{bad:?}");
+    }
 }

@@ -48,7 +48,12 @@ pub mod domains {
     pub const SIGNER_SET: &str = "ozpb:v1:signer-set";
     pub const REGISTRY_SNAPSHOT: &str = "ozpb:v1:registry-snapshot";
     pub const CODEGEN_INPUT: &str = "ozpb:v1:codegen-input";
-    pub const BUILD_MANIFEST: &str = "ozpb:v1:build-manifest";
+    /// Schema 2 of the build manifest: schema 1 plus the canonicalization version, build target
+    /// and producer record. The digit is the structure's schema version, as everywhere here.
+    pub const BUILD_MANIFEST: &str = "ozpb:v2:build-manifest";
+    /// The generator's template source — the emitter half of `crates/codegen` and the lockfile it
+    /// copies — keyed by repository path. Recorded in a BuildManifest's producer record.
+    pub const TEMPLATE_PACK: &str = "ozpb:v1:template-pack";
     pub const POLICY_BINDING_SET: &str = "ozpb:v1:policy-binding-set";
     /// The full typed request for a state-dependent installed-policy check.
     pub const POLICY_CHECK_REQUEST: &str = "ozpb:v1:policy-check-request";
@@ -108,6 +113,7 @@ pub mod domains {
         REGISTRY_SNAPSHOT,
         CODEGEN_INPUT,
         BUILD_MANIFEST,
+        TEMPLATE_PACK,
         POLICY_BINDING_SET,
         POLICY_CHECK_REQUEST,
         DRY_RUN_REQUEST,
@@ -533,6 +539,17 @@ mod tests {
     fn hash32_rejects_bad_hex() {
         assert!(Hash32::from_hex("not-hex").is_err());
         assert!(Hash32::from_hex("abcd").is_err()); // too short
+    }
+
+    #[test]
+    fn hash32_renders_as_its_hex_in_reports_and_debug_output() {
+        // Reports and error messages print hashes with `{}`; a reader compares that text with
+        // the hex a verifier computes, so it must be exactly the hex, nothing added or missing.
+        let h = sha256(b"rendered");
+        let hex = h.to_hex();
+        assert_eq!(hex.len(), 64);
+        assert_eq!(format!("{h}"), hex);
+        assert_eq!(format!("{h:?}"), format!("Hash32({hex})"));
     }
 
     // --- trust levels ----------------------------------------------------------------

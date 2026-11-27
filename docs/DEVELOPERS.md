@@ -130,6 +130,10 @@ ozpb reference-suite --spec spec.json
 # over exactly that list (format `ozpb-reference-suite-cases/v1`; the hash is
 # sha256("ozpb-reference-suite-cases/v1\n" + spec_hash + "\n" + compact JSON of `cases`)). The
 # testnet harness replays its live-realizable denials against an installed rule from this output.
+# A spec whose suite would derive more than 20,000 cases (cross products grow with the square of
+# a function's tuples times their arity), or whose cases would hold more than about 64 MiB (each
+# copies the tuple it varies), is refused with E_SPEC_LIMITS and both figures, here and by
+# `verify` and `prepare-dry-run`, before anything is derived or built.
 ozpb reference-suite --spec spec.json --emit-cases > cases.json
 
 # 4. generate the locked crate, build Wasm, and emit its binding BuildManifest (never deploys)
@@ -141,6 +145,15 @@ ozpb generate --spec spec.json --rule 0 --out ./generated
 ozpb verify --spec spec.json --rule 0 --generated-dir ./generated \
   --wasm ./generated/generated_sub_transfer_r0.wasm \
   --manifest ./generated/build-manifest.json
+
+# 6. optional: lay the same files out under the Wasm hash for others to check
+# (docs/PUBLISHING.md). Writes ./published/<wasm sha256>/<build manifest hash>/ and uploads
+# nothing; the whole spec, every rule in it, is published with it. A reviewer reproduces it with
+# verify-published, which exits 0 when the report matches, 3 when it does not, 1 refused.
+ozpb publish-artifact --spec spec.json --generated-dir ./generated \
+  --wasm ./generated/generated_sub_transfer_r0.wasm \
+  --manifest ./generated/build-manifest.json --out ./published
+ozpb verify-published ./published/<wasm sha256>/<build manifest hash>
 
 # Optional: simulate an exact envelope with its intended authorization entries.
 # Read it from a file so the base64 and signatures stay out of shell history/process arguments.
@@ -176,8 +189,9 @@ it), `sign` (`--print-root`, or a detached signature from a 0600 key file or fro
 signature made elsewhere over the printed root), `combine` (refusing what a consumer's load
 would refuse before it writes), `verify` (`--signed` one snapshot, or
 `--replay` a published `registry/<network>/` log from genesis; prints the checkpoint to persist)
-and `monitor` (newer version, a head not yet valid, expiry, revoked watched hashes; exit 0, 3,
-7, 4, 5 or 6 for cron, 1 when the log cannot be verified). The procedure is [Registry governance](REGISTRY-GOVERNANCE.md).
+and `monitor` (newer version, a head not yet valid, expiry, revoked watched hashes and template
+families; exit 0, 3,
+7, 4, 5 or 6 for cron, 1 when the log cannot be verified or a watch item is unknown to it). The procedure is [Registry governance](REGISTRY-GOVERNANCE.md).
 
 The install-intent design in §4.8 derives the `add_context_rule` arguments from the same grant
 the authority check commits to, and never says "safe": the wallet that holds the owner key
@@ -213,13 +227,13 @@ validates local report consistency, not imported evidence authenticity.
 
 ### Build configuration (operator-side)
 
-`generate` and `verify` compile the policy and accept the same build flags (each with an
-environment fallback the MCP server reads too):
+`generate`, `verify` and `verify-published` compile the policy and accept the same build flags
+(each with an environment fallback the MCP server reads too):
 
 | Flag | Env | Default |
 |---|---|---|
 | `--build-timeout-secs` | `OZPB_BUILD_TIMEOUT_SECS` | 600 |
-| `--build-cache-dir` | `OZPB_BUILD_CACHE_DIR` | a shared dir under the system temp dir |
+| `--build-cache-dir` | `OZPB_BUILD_CACHE_DIR` | a shared per-user dir beside the build directories (see below) |
 | `--build-jobs` | `OZPB_BUILD_JOBS` | available parallelism − 1 |
 | `--stellar-binary` | `OZPB_STELLAR_BINARY` | `stellar` on `PATH` |
 
@@ -227,12 +241,31 @@ environment fallback the MCP server reads too):
 `soroban-sdk` and `stellar-accounts` from scratch, which is what the timeout is mostly
 spent on. Two properties of a shared cache to plan for: it is **not pruned** (cargo does not
 GC target directories, so distinct specs accumulate — give the volume a quota and clear it on
-a schedule), and it **serializes concurrent builds** on cargo's build-directory lock, so a
+a schedule; an `--http` server instead removes each crate it builds, keeping the dependencies,
+so its clients' spec names cannot fill it; give each server its own cache, since that removal is
+serialized only within one process), and it **serializes concurrent builds** on cargo's
+build-directory lock, so a
 hosted worker should size its concurrency to one build at a time per cache. The default path
 is per-uid and is refused if it is a symlink, not a directory, owned by another user, or
 group/world-accessible — a shared cache an attacker can pre-create is a route to poisoned
 dependency artifacts, and `verify` reproduces through the same cache, so a poisoned build
 would reproduce identically.
+
+**Where a build runs.** Each build compiles in a fresh directory, and cargo reads
+`.cargo/config.toml` from that directory and every parent of it, and takes a parent's
+`Cargo.toml` as a workspace root. A parent another local user can add entries to lets that user
+choose the compiler, which then runs as you: on Linux, any user can create `/tmp/.cargo`. So the
+build directory is created only under a directory that, like each of its parents, only root and
+you can add entries to (a read-only mount qualifies). That is the system temporary directory
+(`TMPDIR`) when it qualifies, as it does on macOS; otherwise `ozpb/build` in your cache
+directory (`$XDG_CACHE_HOME`, else `~/.cache`), created owner-only. The default build cache sits
+in the same directory. When neither qualifies (a `~/.cache` that a umask of 002 left
+group-writable does not), the build is refused with `E_BUILD_UNAVAILABLE` before anything runs;
+set `TMPDIR` to a private directory. Your own parents' cargo configuration still applies, as
+`~/.cargo/config.toml` does. A read-only mount is trusted as nobody can write through it, though
+it may be a view of a directory others write to elsewhere; macOS access-control entries
+(`chmod +a`) are not read. Against both, a `.cargo` (other than your cargo home) or a `Cargo.toml`
+already in the build directory or any parent is refused too.
 
 These are deliberately *not* request fields: a caller-chosen timeout is resource exhaustion
 and a caller-chosen builder path is arbitrary execution, so they stay operator configuration
@@ -362,7 +395,9 @@ The tools, each with a JSON output schema generated from `crates/api-types`:
 - **Install intent (advisory)** — `prepare_install_intent` runs the authority check itself
   (same request) and, only when nothing is refused and nothing is unresolved, returns the
   exact `add_context_rule` arguments derived from the grant the commitment covers, with the
-  answer attached. Otherwise it is an error carrying every finding. It never assembles, signs
+  answer attached. Otherwise it is an error carrying every finding. A rule that requires its
+  target's code (adapter-derived, or refuse on drift) has that code read in the same capture,
+  and other code there is refused with `E_TARGET_CODE_CHANGED`. It never assembles, signs
   or submits.
 - **Unsigned install assembly (advisory)** — `assemble_install_transaction` reruns that check
   and returns bounded unsigned XDR with current sequence and fees. It never signs or
@@ -433,7 +468,12 @@ an authenticated, TLS-terminating ingress forwards (a comma-separated `host[:por
 wildcards) that is not loopback. Only then does it accept a routable address, and it then answers
 only those hosts; any other `Host`, loopback names included, is refused (`403`), as is any request
 with an `Origin` header, in either mode. It refuses to start unless `OZPB_HTTP_BEARER_TOKEN`
-(≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set. The allowlist is a comma-separated list of the
+(≥32 bytes) and `OZPB_RPC_ALLOWLIST` are set, and unless builds have somewhere to go besides its
+own trust domain: an `OZPB_BUILD_WORKER_LAUNCHER` ([disposable workers](ISOLATED-BUILDS.md)), or
+`OZPB_HTTP_UNISOLATED_BUILDS=accept`, the operator's statement that it compiles its clients'
+specs beside itself, as the Compose package does for one operator with trusted clients. A
+failed build then reports its exit status without the compiler's output, which names the
+host's paths. The allowlist is a comma-separated list of the
 full `https://` URLs the record tools may reach: each entry is parsed as a URL, so a bare
 hostname is refused at startup rather than at first use. Every request to `/v1/mcp` then
 passes three checks in order: the bearer token (`401`), a request quota (`429`) and a body
@@ -459,6 +499,13 @@ and pure tools use neither limit and remain bounded by the quota
 and their own size and time limits. Terminate TLS and add per-client authorization and per-client limits
 at a reverse proxy in front of it. The [disposable build-worker mode](ISOLATED-BUILDS.md)
 supplies OS-level compile isolation and a no-secrets worker role.
+
+The endpoints are the operator's, so an `--http` server reports a failed RPC read by its code and
+a fixed description only: a transport error would quote the URL (path included, where providers
+put API keys), and a JSON-RPC error or a reply carries whatever the endpoint wrote. Refusals of
+the caller's own envelope keep their wording. `record_simulation` and `preflight_transaction`
+refuse an envelope carrying signatures before any request. A stdio server, like the CLI, reports
+the endpoint's own words.
 
 A client's `notifications/cancelled` for a tool call, or the end of its MCP session, stops the
 work that call started; as MCP specifies, the cancelled call gets no response. A local build's whole process group
@@ -486,7 +533,24 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
   a spec *only* through an explicit `Widening` decision carrying intent + blast radius, or
   an adapter (`crates/synthesizer/src/adapters.rs`) bound to a verified target code hash.
   The XDR type alone never implies a direction (lowering a `min_output` makes a swap
-  *less* safe).
+  *less* safe). An argument takes at most one widening: a second one naming the same contract,
+  function and index is an `E_INVALID_DECISION` finding, never silently dropped, as is a numeric
+  bound that excludes the recorded value, and a widening that would apply to more than one
+  distinct permitted call of its function (a decision names an argument, not a call). A range
+  (`range_i128`) bounds both ends and needs no further decision; it is the safe form of "up to
+  X". A cap (`le_i128`) bounds a signed `i128` from above only, so its widening also needs
+  `no_floor_acknowledged: true` (absent reads as `false`): without it, an `E_NEEDS_DECISION`
+  finding; on a floor or `any_value`, an `E_INVALID_DECISION`. A range from `i128::MIN` renders
+  the same check as a cap and is held to the same acknowledgement. Synthesis never adds a floor.
+- **The blast radius has a floor the bound sets.** A bound with no finite top (a floor, or a
+  maximum of `i128::MAX`) admits any larger value, so synthesis requires `high` for it, except on
+  a minimum output a reviewed adapter declares; a bound at both type limits is `any_value` by
+  another name, and spec validation holds it to `high` (`E_SPEC_ANY_VALUE_BLAST_RADIUS`).
+- **A user bound cannot contradict an adapter's role.** Where a bound adapter declares an
+  argument a minimum output, a widening that admits anything below the recorded value is an
+  `E_INVALID_DECISION`; where it declares a maximum input, so is one with no finite cap; where it
+  keeps the argument exact, so is any widening. These rules and the open-top rating run in
+  synthesis only: `generate` takes a spec and no decisions.
 - **Signers are a required decision.** The delegate signer set + predicate can't be
   inferred from a recording; named-identity predicates are strict (a later `add_signer`
   can't silently broaden the grant).
@@ -495,9 +559,9 @@ Its rules (all fail-closed — ambiguity is an error, never a guess):
   reads as `false`). Neither answer is an `E_NEEDS_DECISION` finding; both answers to one
   question (a cap and the unlimited acknowledgement, or an expiry ledger and the no-expiry
   acknowledgement) are contradictory, an `E_INVALID_DECISION` finding. A refusal lists every
-  finding in `details` under the first one's code. Before v0.2.0 a null `max_calls` alone produced
+  finding in `details` under the first one's code. Before v1.0.0 a null `max_calls` alone produced
   an uncapped grant and a contradictory lifetime kept the ledger; those are the breaking changes
-  in the [release notes](release-notes/v0.2.0.md).
+  in the [release notes](release-notes/v1.0.0.md).
 - **Compose-first.** Where an audited OZ prebuilt (`spending_limit`, thresholds) expresses
   the constraint, it is configured rather than generated; the generated policy carries only
   what no prebuilt expresses (function/argument scope, call count, recipient/path).
@@ -519,25 +583,36 @@ the tests guide you (TDD: add the failing test first):
    reference semantics). This is the executable spec.
 3. **`crates/codegen`** — emit the check in `emit_lib`'s per-arg match, embedding values as
    validated literals (never interpolated into identifiers); add pre-emission validation in
-   `generate`. Regenerate both committed examples by running each fixture test explicitly:
+   `generate`. Regenerate the committed examples by running each fixture test explicitly:
 
    ```sh
    UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::golden_crate_matches_committed_output -- --exact
    UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::soroswap_crate_matches_committed_output -- --exact
+   UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::range_crate_matches_committed_output -- --exact
+   UPDATE_GOLDEN=1 cargo test -p ozpb-codegen --lib tests::two_payment_crate_matches_committed_output -- --exact
    ```
 4. **`crates/harness`** (Tranche 2) — add mutation cases for it in `build_suite` so the deny
    suite covers the new boundary; add its `concrete_for` arm.
 5. **`crates/synthesizer`** — decide how it enters a spec (observed-exact by default, or via
    a `Widening`/adapter). Never let it in heuristically.
 6. **`contracts/`** — the differential suite drives the generated transfer policy in the
-   Soroban environment. The committed Soroswap policy is a second generated example; its
-   complete file set must match regeneration, and it builds as a standalone crate. Add
+   Soroban environment. The committed Soroswap policy is a second generated example, and the
+   two-payment policy, whose rule accepts two tuples of one function, a third; each complete file
+   set must match regeneration, and each builds as a standalone crate. Add
    explicit evaluator/contract cases for new constraints. End-to-end account
    integration and policy-aware live preflight remain separate work.
 
 Adding a new *template family* or reviewed prebuilt hash also means a
-`crates/registry` capability entry (keyed by reviewed wasm hash) so validation can prove
-what it enforces — an address or claimed kind is never sufficient.
+`crates/registry` capability entry (a prebuilt keyed by its reviewed wasm hash, a template by
+its family name) so validation can prove what it enforces — an address or claimed kind is never sufficient. A new constraint kind must
+also be declared in its template family's registry entry (`constraint_kinds`): synthesis refuses
+a spec that uses a kind the family does not declare. Published development versions keep the
+vocabulary they were signed with (`dev::CONSTRAINT_KINDS_V1_TO_V6`), so the kind arrives in a
+successor, as `range_i128` did in version 7 (`dev::range_constraint_successor`), with its root
+pinned in `published_signed_example_root_is_immutable` and `docs/examples/registry.signed.json`
+regenerated by `cargo run -p ozpb-cli -- dev-registry --out docs/examples`. The kinds are, in the
+spec's wire form: `eq_address`, `eq_scval`, `eq_i128`, `le_i128` (a cap), `ge_i128` (a floor),
+`range_i128` (both, inclusive) and `any_value`.
 
 ### Invariants CI enforces (don't break these)
 
@@ -545,6 +620,17 @@ what it enforces — an address or claimed kind is never sufficient.
   independence); cores stay transport/async-free. The harness half of that rule governs a
   Tranche-2 crate.
 - Every generated crate builds standalone (`[profile.release]` with `overflow-checks`) and
-  passes the same `rustfmt`/`clippy -D warnings` as handwritten code.
+  passes the same `rustfmt` and `clippy -D warnings` as handwritten code. CI names each committed
+  crate, since neither workspace lints it.
 - Determinism: same `ValidatedSpec` ⇒ byte-identical source/wasm.
 - `scripts/check-publication-allowlist.sh`: no confidential material in the public tree.
+- `scripts/mutation-test.sh` (`.github/workflows/mutation.yml`): a pull request that touches one
+  of the eight pure cores (recorder-core, evaluator, synthesizer, policy-spec,
+  call-surface-core, registry, domain, codegen) fails if a mutant on a line it changed survives
+  that crate's own tests, or times out. Resolve it with a test in that crate that the mutant
+  fails, or — only for a mutant no input can observe — an `exclude_re` entry in
+  `.cargo/mutants.toml` with a comment giving the reason. Run it locally with
+  `cargo install cargo-mutants --locked --version 27.1.0`, then
+  `bash scripts/mutation-test.sh --in-diff origin/main` for your branch's lines or
+  `bash scripts/mutation-test.sh -p ozpb-<core>` for a whole core; survivors are listed in
+  `target/mutants/mutants.out/missed.txt`.

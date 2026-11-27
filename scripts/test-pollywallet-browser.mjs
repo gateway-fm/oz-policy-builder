@@ -20,7 +20,8 @@ import { Buffer } from 'buffer';
 import { Account, Address, Asset, Keypair, Networks, Operation, SorobanDataBuilder, StrKey, TransactionBuilder, hash, nativeToScVal, xdr } from '@stellar/stellar-sdk';
 import { createPasskey, signWalletAuthEntries } from './passkey';
 import { validateSignedAuthorization } from '../policy-builder/shared/signature.mjs';
-import { NETWORK_ID } from '../policy-builder/shared/approval.mjs';
+import { WALLET_NETWORKS } from '../policy-builder/shared/networks.mjs';
+const NETWORK_ID = WALLET_NETWORKS.testnet.networkId;
 import { decodeBase64Url } from '../policy-builder/shared/base64url.mjs';
 import { reviewSample, validateSampleAssembly } from '../policy-builder/shared/sample.mjs';
 export async function check() {
@@ -46,7 +47,7 @@ export async function check() {
       .addOperation(Operation.invokeHostFunction({
         func: xdr.HostFunction.hostFunctionTypeInvokeContract(entry.rootInvocation().function().contractFn()), auth: [entry],
       })).setTimeout(0).build();
-    const approval = { wallet, ownerRuleId: 7, commitment: 'a'.repeat(64) };
+    const approval = { networkId: NETWORK_ID, wallet, ownerRuleId: 7, commitment: 'a'.repeat(64) };
     const checked = { envelopeXdr: tx.toXDR(), authEntriesXdr: [entry.toXDR('base64')],
       ownerRuleId: 7, expirationLedger: 200, authorityCommitment: approval.commitment,
       minLedger: 100, maxLedger: 201, feeStroops: 100 };
@@ -65,7 +66,7 @@ export async function check() {
     };
     const ownerRuleXdr = xdr.ScVal.scvMap(Object.entries(ownerFields).map(([name, val]) =>
       new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(name), val }))).toXDR('base64');
-    const sampleApproval = reviewSample({ wallet, ownerRuleXdr,
+    const sampleApproval = reviewSample({ wallet, ownerRuleXdr, networkId: NETWORK_ID,
       descriptor: { recipient: payer.publicKey(), amountStroops: '1000000', ownerRuleXdr } });
     const sampleCall = new xdr.InvokeContractArgs({
       contractAddress: new Address(Asset.native().contractId(Networks.TESTNET)).toScAddress(),

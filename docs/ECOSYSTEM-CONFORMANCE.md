@@ -13,6 +13,12 @@ conformance pass, which added §15 and closed §6's open decision. Verified agai
 the repository as of that pass. Sections 9–14 record the subsystems that pass hardened; the
 disallowed-type gate that was pending at first compilation has since landed (§4).
 
+Generated policies have since moved to `soroban-sdk` 28.0.0 and `stellar-accounts` 0.8.0, and the
+recognized account to OpenZeppelin's example built at v0.7.3 (§14,
+[SOROBAN-DEPENDENCIES.md](SOROBAN-DEPENDENCIES.md)). A citation below that names `soroban-sdk`
+26.1.0, `stellar-accounts` 0.7.2 or tag v0.7.2 with a line number points into that version, where
+it was read.
+
 **Verdict legend:** ✅ conforms · 🗓 later-milestone scope · ⚠️ diverges · ❌ gap · ℹ️ open decision ·
 — reference, not an assessment
 
@@ -30,12 +36,12 @@ category exists and a later reading may need it.
 | § | Subject | Verdict | In one line |
 |---|---|---|---|
 | 1 | Serialization and hashing | ✅ | Canonical form is XDR throughout, with a versioned preimage an outside implementation can reproduce from `docs/CANONICAL-HASHING.md`. |
-| 2 | Artifact identity and verification | ℹ️ | Artifacts are readable by standard tooling but carry no provenance of ours. Both verification SEPs are Draft and unimplemented by released tooling; one question in them is genuinely open for generated contracts. Separately, our reproducibility holds across comparable hosts, not across any host. |
+| 2 | Artifact identity and verification | ℹ️ | A generated artifact names its generator, template family and normalized codegen input in its own SEP-46 meta; the spec it came from stays in the BuildManifest, so that one grant shape stays one Wasm. Both verification SEPs are Draft; released `stellar-cli` ships SEP-58's source-archive step but not its verification workflow, and one question in them is genuinely open for generated contracts. Separately, our reproducibility holds across comparable hosts, not across any host. |
 | 3 | State archival and TTL | ✅ | Bounded, threshold-conditional extension that never reaches past the rule's own window; restoration semantics verified against the environment rather than assumed. |
 | 4 | Value system and numeric types | ✅ | No type without a faithful `ScVal` form, and the ban is enforced by lint rather than declared. |
 | 5 | Authorization model | ✅ / 🗓 | No authorization primitive of our own, and OpenZeppelin's `spending_limit` is used by hash. External-verifier signers are refused outright rather than half-supported. |
-| 6 | Errors and observability | ✅ / ℹ️ | Stable machine-readable error codes throughout; whether to emit an event on a successful `enforce` is undecided. |
-| 7 | External security tooling | ℹ️ | Scout and the Veridise checklist are customary, not required. We check the generator thoroughly; running them over what it generates is a decision, not a shortfall. |
+| 6 | Errors and observability | ✅ | Stable machine-readable error codes throughout; a successful `enforce`, `install` and `uninstall` each publish an event, and a denial cannot. |
+| 7 | External security tooling | ℹ️ | Scout and the Veridise checklist are customary, not required. Scout was run and cannot analyse the generated contracts, so no static analyzer checks them; the external audit is the control for that class. |
 | 8 | Upgradeability and immutability | ✅ | No setters, no upgrade entry point. For an artifact whose value is "the reader sees exactly what executes", immutability is the requirement. |
 | 9 | Evidence provenance and RPC binding | ✅ | Requested and returned transaction identity is bound and re-derived under the verified network passphrase. It remains RPC evidence, not a ledger-inclusion proof. |
 | 10 | Capability registry governance | ✅ / 🗓 | The mechanism conforms; the committed root is a deterministic development key, suitable for reproducible examples and not for production governance. |
@@ -98,7 +104,7 @@ order. The signer set — previously the sharpest divergence, a hand-written
 account itself stores (`SignerSpec::to_stored_scval`, `crates/policy-spec/src/lib.rs:219`; the
 sort over encodings in `signer_set_hash`, `:274`, sorted at `:279`). Call arguments inside the generated contract
 compare as XDR, as they always did (`v{i}.to_xdr(e)`, emitted by `emit_lib`'s `EqScval` arm,
-`crates/codegen/src/lib.rs:1614`).
+`crates/codegen/src/lib.rs`).
 
 Since the hardening pass the preimages are also **bounded before hashing**: encoded evidence is
 capped below the 4 MiB canonical-hash preimage ceiling (per-value and total caps in §14), so a
@@ -135,10 +141,14 @@ a Stellar contract cannot parse JSON at all, which closes the road to on-chain v
 `soroban-sdk` or by the flag `stellar contract build --meta KEY=VALUE`. This is standard,
 released functionality.
 
-Some of the keys the toolchain writes **itself**. Checked on our own artifact:
+Some of the keys the toolchain writes **itself**, and three the generator writes. Checked on the
+golden policy:
 
 ```
-$ stellar contract info meta --wasm <our wasm>
+$ stellar contract info meta --wasm generated_sub_transfer_r0.wasm
+ • ozpb_generator: oz-policy-builder/codegen@1                      (ours)
+ • ozpb_codegen_input: 662ad7a94de0d249461d9e8b2c6525a95ab64f4e46f5ca0abf78479cf6181260   (ours)
+ • ozpb_template_family: policy-templates/scope@1                   (ours)
  • rsver: 1.91.1                                                    (Rust version)
  • rssdkver: 28.0.0#48d506712f964094d14176e2f0b02afcd1054567        (SDK + commit)
  • rssdk_spec_shaking: 2
@@ -149,7 +159,8 @@ $ stellar contract info meta --wasm <our wasm>
 complementary approaches are specified.
 
 **SEP-58 — Contract Build Reproducibility for Verification** (status **Draft**, version 0.6.0,
-updated 2026-07-15) defines the vocabulary for rebuild-based verification. The vocabulary is
+updated 2026-07-15 — unchanged when re-read on 2026-11-19) defines the vocabulary for
+rebuild-based verification. The vocabulary is
 storage-independent: these are fields, not `contractmetav0` keys, and SEP-46's section is one of
 the three venues SEP-58 allows for carrying them.
 
@@ -171,24 +182,60 @@ instead: the build CI signs an attestation and a verifier checks that attestatio
 rebuilding. SEP-58 states that the two are complementary and can coexist on the same contract.
 
 Maturity has to be stated exactly, because it is easy to overstate in either direction. Both
-SEPs are Draft, and **no released `stellar-cli` implements SEP-58 support**. The command
-`stellar contract build` carries no subcommands at any tag from v20.0.0 through the current
-release v28.0.0 (2026-08-26), so `stellar contract build verify` does not exist — that spelling comes
-from `stellar/stellar-cli` PR #2525, which was closed without merging, and must not be written
-down as if it were shipped. Neither of the two PRs that would add the workflow has landed, and
-they did not fail the same way: #2585, adding a `--verifiable` flag to `stellar contract build`,
-is open; #2586, adding `stellar contract verify` as a **sibling** of `build` rather than a
-subcommand of it, was closed unmerged on 2026-08-27. Implementations are in flight as well — the public repository
+SEPs are Draft, and **no released `stellar-cli` implements SEP-58 verification**. Re-checked on
+2026-11-19 against the current release, v30.0.1 (2026-11-03; there is no v29 or v30.0.0 tag):
+`stellar contract` has no `verify` command, and `stellar contract build` has exactly one
+subcommand, `archive`, added in v28.1.0 (2026-09-26, PR #2731). It writes or inspects a
+byte-reproducible archive of the working tree — the artifact SEP-58's `source_sha256` is the
+hash of — and nothing else: it builds nothing and verifies nothing. So `stellar contract build
+verify` still does not exist — that spelling comes from `stellar/stellar-cli` PR #2525, which
+was closed without merging, and must not be written down as if it were shipped. Neither PR that
+would add the workflow has landed: #2585, adding a `--verifiable` flag to `stellar contract
+build`, was closed unmerged on 2026-08-31 and resubmitted as #2709, which is open; #2586, adding
+`stellar contract verify` as a **sibling** of `build` rather than a subcommand of it, was closed
+unmerged on 2026-08-27. SEP-58 0.6.0 also allows the producer to regenerate the archive's exact
+bytes on demand instead of keeping it, which is the shape a generator has; what it still does not
+say is what a verifier should do with a contract whose source exists only as the output of a
+generator, and the discussion it came from (`stellar-protocol#1923`) has no answer to that. Implementations are in flight as well — the public repository
 `stellar-experimental/contract-verifications` **calls itself an experiment** — while explorers
 already surface a status of their own: Stellar Lab shows a "Build Verified" badge, citing
 SEP-55, and StellarExpert's page is headed "Contract Code Validation", carrying a `Source code:`
 field with a `verified`/`unverified` enum in its API. So: a specified direction with a named
 vocabulary to stay compatible with, not a finalized standard we are in breach of.
 
-**What we have.** `contractmeta!` is absent from the generator's template entirely, so a
-generated artifact carries no meta we wrote — no reference to the spec it came from — and we
-publish the SEP-58 fields nowhere at all, in that section or in any other venue the SEP allows:
-no `bldimg`, `bldarg`, `bldopt`, `source_sha256` or `source_uri`. What stands in its place is
+**What we have.** The generated crate root emits three `contractmeta!` entries, shown above:
+`ozpb_generator` (the generator and its codegen version), `ozpb_template_family`, and
+`ozpb_codegen_input` (the normalized codegen-input hash). `stellar contract info meta` reads all
+three. Recomputing `ozpb_codegen_input` from a spec is not a standard-tooling operation: it needs
+`ozpb`, or a reimplementation of the normalization and canonical hash that
+[`CANONICAL-HASHING.md`](CANONICAL-HASHING.md#the-normalized-codegen-input) specifies. The entries
+are also self-asserted — any contract can carry the same three strings — so they state what an
+artifact claims to be. Only reproduction establishes where it came from: `ozpb verify`, or
+generated-binding recognition, which rebuilds the artifact from its spec and compares code hashes.
+The keys
+are namespaced because no standard key fits: SEP-46 defines no registry and leaves keys to other
+SEPs; SEP-55's `source_repo` would send a verifier looking for a build attestation of this Wasm
+that no repository holds; SEP-58's fields are taken up below.
+
+Three things are deliberately **not** in the Wasm, because each would have to be compiled in.
+The spec hash, the registry snapshot root and the account would make one grant shape a
+different Wasm per spec, per registry update and per account, which is the property that lets
+equal grants share one deployment (`normalized_hash_ignores_non_code_fields`, in
+`crates/codegen`). The toolkit's revision cannot be a fixed point of the source at all — the
+committed golden crates would have to contain the hash of the commit that contains them — and its
+crate version is not a release identifier. All of those are in the `BuildManifest`, which binds
+this Wasm's hash to the spec and the build. Every value is emitted through a validating type
+(`render::MetaValue`) whose charset admits no quote, backslash, whitespace or `*`, so a value
+cannot leave its literal (`a_hostile_meta_value_cannot_leave_its_literal`).
+
+We publish the SEP-58 fields nowhere, in that section or in any other venue the SEP allows: no
+`bldimg`, `bldarg`, `bldopt`, `source_sha256` or `source_uri`. `source_sha256` in particular
+cannot be compiled in from the source — it is the hash of an archive of that source — and is
+added after compilation by `stellar contract build --meta` when it is recorded at all, and no
+archive of a generated crate exists for it to name. `ozpb publish-artifact` publishes a generated
+crate with its spec, manifest and Wasm under the Wasm hash ([publishing](PUBLISHING.md)), but as
+a directory with a `SHA256SUMS` index, not the archive `stellar contract build archive` writes,
+so it records no `source_sha256` either. What stands in its place is
 `BuildManifest`, an out-of-band record whose `ToolchainIdentity.rustc_version` restates
 `rsver`, `stellar_cli_version` restates `cliver`, and `soroban_sdk_version` restates
 `rssdkver` — and the platform's variants are more precise than ours, since they include commits.
@@ -197,7 +244,7 @@ artifact was produced. The difference is that SEP-55's attestation is signed by 
 performed the build and checkable against it, whereas `BuildManifest` is checkable only with our
 CLI — which the build runner already says out loud, stamping every real build
 `builder: BUILDER_LOCAL`, whose value is `local-unattested` (stamped in `build_local`,
-`crates/build-runner/src/lib.rs:847`), with the reason in that function's doc comment (`:777-780`):
+`crates/build-runner/src/lib.rs`), with the reason in that function's doc comment:
 "trust requires local reproduction or a separately trusted build attestation".
 
 Those three restatements are no longer taken on the builder's word, which is the one thing about
@@ -219,11 +266,13 @@ SEP-55's signature or SEP-58's rebuild. It makes our own statement about the too
 one instead of an asserted one.
 
 **Verdict on the provenance half: a deliberate divergence, and an open question we did not
-invent.** Our artifacts are **readable** by standard tooling already — `stellar contract info
-meta` shows the SEP-46 keys the toolchain writes itself (`rsver`/`cliver`/`rssdkver`) and anyone
-can compute the wasm hash. What they do not carry is any trace of provenance: neither a reference
-to the spec the policy was derived from, nor the fields either verification SEP needs. So the
-link "artifact ↔ specification" can today be checked only with our `BuildManifest` and our CLI.
+invent.** Our artifacts are **readable** by standard tooling — `stellar contract info meta` shows
+the SEP-46 keys the toolchain writes itself (`rsver`/`cliver`/`rssdkver`) and the generator's
+three, and anyone can compute the wasm hash. What they do not carry is the spec they were
+derived from, nor the fields either verification SEP needs. So standard tooling shows what an
+artifact claims about its origin. Checking that claim — that this Wasm is this grant shape from
+this generator, and the full link "artifact ↔ specification" — needs our CLI, which reproduces
+the artifact.
 
 Nothing requires otherwise. No SEP obliges a contract to write meta of its own; both
 verification SEPs are Draft and no released `stellar-cli` implements either; neither the RFP this
@@ -240,7 +289,7 @@ one is not waiting on anybody.** It is worth separating from the paragraph above
 one is a standard in progress and this one is a limit of what we can currently promise. We pin
 rustc through `rust-toolchain.toml`, pin
 dependency versions, and build `--locked` (in `BUILD_ARGS`,
-`crates/build-runner/src/lib.rs:463-469`). SEP-58 pins the
+`crates/build-runner/src/lib.rs`). SEP-58 pins the
 container image by digest, which covers the operating system, the system libraries, the linker
 and the toolchain in a single field. We pin neither the OS nor a container, so an identical wasm
 hash reproduces on a sufficiently similar host and is not guaranteed off it. Containerised builds
@@ -258,8 +307,9 @@ two cold runs" means on comparable hosts, which is what CI measures and all this
 claims.
 
 **What that measurement currently says.** `stellar contract build` produces a byte-identical
-wasm across a full `cargo clean` rebuild: sha256 `9cf2a72a…` for the golden policy, and
-`ded75163…` for the Soroswap policy under the same toolchain, measured in the same sweep. The
+wasm across a full `cargo clean` rebuild: sha256 `7996bfa9…` for the golden policy, and
+`af57280d…` for the Soroswap policy under the same toolchain, measured in the same sweep on an
+aarch64-apple-darwin host when the provenance meta above was added. The
 gate asserting it hashed `contracts/target/…` until 2026-08-13, a path the rebuild never
 writes — the golden crate carries its own `[profile.release]` and so is excluded from the
 contracts workspace, and `stellar contract build` writes to *its* target directory. That gate
@@ -273,10 +323,11 @@ need to pin `stellar-cli` and not only rustc: the platform records the version i
 which is what makes the dependency visible, but reproducibility still requires the pin.
 
 **Action.**
-1. Emit `contractmeta!` into the generated crate with a reference to provenance: `spec_hash`,
-   `normalized_input_hash`, `template_family`, `registry_snapshot`. The artifact then describes
-   what it was derived from self-sufficiently, in the SEP-46 section, read by standard
-   `stellar contract info meta` — without our `BuildManifest`.
+1. ~~Emit `contractmeta!` into the generated crate with a reference to provenance.~~ **Done**
+   for what the Wasm can carry without ceasing to be one Wasm per grant shape: generator,
+   template family and normalized codegen input. `spec_hash` and `registry_snapshot`, which this
+   item originally listed, stay in the `BuildManifest` for the reason given under "What we
+   have".
 2. ~~Stop duplicating what the toolchain writes itself; in `BuildManifest`, either reference the
    wasm metadata or reconcile against it and fail on divergence.~~ **Done** for the reconciling
    half: the three restated versions are now checked against the wasm's `contractmetav0` and a
@@ -286,6 +337,12 @@ which is what makes the dependency visible, but reproducibility still requires t
 3. Decide whether to build inside a digest-pinned container image and record it as SEP-58
    `bldimg` (with `bldarg`/`bldopt` for the invocation). This is the ecosystem's answer to
    reproducibility, and it is strictly stronger than pinning rustc and dependency versions.
+   **Partly done:** the optional disposable worker builds in an image pinned by ID or digest, and
+   the BuildManifest records it as `producer.build_image`, beside the toolkit's own commit and
+   dirty flag and the template-pack hash. It is our field rather than `bldimg`: written into the
+   Wasm, the image would make a worker build and a host build of one spec two different
+   artifacts, and the default builder still compiles in the API's own environment, with no
+   container per build.
 4. Settle an open design question (ℹ️): a generated contract **has no source in the
    repository** — it is created on demand. This is a smaller obstacle than it first appears,
    because SEP-58 keys verification to `source_sha256` over the bytes of a source archive and
@@ -295,7 +352,10 @@ which is what makes the dependency visible, but reproducibility still requires t
    verifier reproduces the source by re-running generation — is worth specifying alongside it.
    **Unresolved.** It is settled by choosing a publication point for the archive and writing it
    down, or by establishing with the SEP's authors that a generator-plus-spec pointer satisfies
-   a verifier; neither has been done.
+   a verifier; neither has been done. A published build ([publishing](PUBLISHING.md)) would be
+   an input to the second — the spec and the generated crate under the Wasm hash, checked with
+   `ozpb verify-published` — but it is not SEP-58's archive, and nobody has agreed that it
+   satisfies a verifier.
 
 ---
 
@@ -341,8 +401,8 @@ still a fair question. Two of the five entry points check the window, and
 `the_validity_window_is_checked_by_the_two_entry_points_that_extend` is what holds that sentence
 to the code.) A denied
 call extends nothing, `uninstall` extends nothing, and the extension is threshold-conditional
-rather than unconditional, so routine authorizations do not each buy rent. The policy does not
-separately extend the **wasm code** entry (see action 2 below).
+rather than unconditional, so routine authorizations do not each buy rent. The instance
+extension also extends the **wasm code** entry; it is not a separate call (see action 2 below).
 
 That the two agree is structural rather than asserted: the emitter has one extension block and
 both write paths use it, and `only_the_write_paths_extend_and_the_getters_say_why_they_do_not`
@@ -414,15 +474,17 @@ entry, after which `install` is possible and the counter starts from zero. Both 
 address (`Default` or `CallContract(policy)`), not only the owner's. Whoever holds such a rule
 can therefore reset an existing grant's cap. `account_wasm_invariants.rs` demonstrates this
 through the pinned account. `check_policy_call_surface` lists such rules before installation and
-refuses one the agent's key can use alone. A rule added later is detected only when someone runs
-the wallet's on-demand check, and only for a grant installed by the running backend; it counts
-any later rule allocation as drift (see "On-demand installed-grant monitoring" in
-`docs/POLLYWALLET-INTEGRATION.md`). Nothing monitors in the background. The architecture states
-the cap per installation — `docs/architecture.md:598-600` says "within an installation" rather
-than "lifetime", and the reinstall invariant at `:586-591` is scoped to the installer flow
-instead of being asserted of the policy contract, which cannot enforce it. The generated
-contract enforces its half of that scoping since the hardening pass: `install` refuses a second
-installation (`AlreadyInstalled`), `uninstall` of something never installed refuses
+refuses one the agent's key can use alone. A rule added later is detected when someone runs
+the wallet's on-demand check, for a grant installed by the running backend, or by
+`ozpb check-installed-grant` on the operator's schedule, whose exit status is the alert; both
+count any later rule allocation as drift (see "On-demand installed-grant monitoring" in
+`docs/POLLYWALLET-INTEGRATION.md` and "Watching an installed grant" in
+`docs/INCIDENT-RESPONSE.md`). Nothing in this tree schedules it, and each run sees one ledger.
+The architecture states the cap per installation — `docs/architecture.md:598-600` says "within
+an installation" rather than "lifetime", and the reinstall invariant at `:586-591` is scoped to
+the installer flow instead of being asserted of the policy contract, which cannot enforce it.
+The generated contract enforces its half of that scoping since the hardening pass: `install`
+refuses a second installation (`AlreadyInstalled`), `uninstall` of something never installed refuses
 (`NotInstalled`), `uninstall` removes the policy-owned state, and `enforce` fails closed
 (`MissingState`) when the installation marker is absent — so "a new grant" is a new marker,
 never a resumed one.
@@ -461,12 +523,18 @@ not on who paid for an extension.
    `VALID_UNTIL_LEDGER`, so the entries live no longer than the policy can permit and are
    archived naturally after it expires.
 2. Extend the TTL of the **contract instance and of the wasm code** — their own entries with
-   their own deadlines. **Done for the instance entry**, extended alongside the persistent
-   entries in `install` and in a permitting `enforce`. The **wasm code** entry is deliberately left
-   to the operator/installer: anyone may extend it, an archived entry is restored rather than
-   lost, and the code entry is shared with every other deployment of the same wasm, so its rent
-   is not obviously this policy's to pay. Two emitted comments claimed the code entry was kept
-   alive alongside the instance; they were wrong and now say what the block does. Keep both extensions proportionate: since extensions
+   their own deadlines. **Done for both**, in `install` and in a permitting `enforce`, alongside
+   the persistent entries: `e.storage().instance().extend_ttl` extends the instance and the code
+   entry together (soroban-sdk 28 `Instance::extend_ttl`, which calls the host's
+   `extend_current_contract_instance_and_code_ttl`). `contracts/differential/tests/ttl.rs` reads
+   the instance TTL only: it registers the policy natively, so its environment has no code entry
+   to read, and the code half of the claim rests on the SDK and host. The code entry is shared
+   with every other deployment of the same wasm, so a generated policy also pays some of that
+   shared rent. That is a cost, not a safety property: an archived code entry is restored rather
+   than lost. An instance-only extension (`Deployer::extend_ttl_for_contract_instance`) would
+   leave it out, but would change every generated policy's Wasm, so it is not made here. This
+   item once said the code entry was left to the operator; that was wrong, and the generated
+   comment that repeated it now says what the block does. Keep both extensions proportionate: since extensions
    may not be relied on for functionality or safety, they buy predictability, and any design
    that would need them to hold a guarantee is the wrong design.
 3. Do **not** reject, at generation time, a policy whose `valid_until` exceeds `max_ttl()`.
@@ -525,7 +593,7 @@ as signers, context rules, and policies; a policy is a separate contract with
 `enforce`/`install`/`uninstall`, and denial is expressed by a panic.
 
 **What we have.** The generated policy implements exactly the `Policy` trait from
-`stellar-accounts` 0.7.2, reads
+`stellar-accounts` 0.8.0, the version it builds against, reads
 `soroban_sdk::auth::Context::Contract(ContractContext { contract, fn_name, args })`, and denies
 by panicking. The order of checks is fixed and documented in the artifact's header: account
 authorization and installation state first, then the signer predicate (the account defers
@@ -652,8 +720,10 @@ state, which is what the earlier "no on-chain trace" verdict was about.
   does not apply here.)
 - **The Soroban security checklist** from Veridise.
 - **The Soroban Security Audit Bank** — an SDF programme funding audits: SDF has conducted over
-  40 audits, deploying over $3 million. STRIDE appears there as the audit-readiness support SDF
-  offers to participating projects, not as preparation those projects are required to bring.
+  40 audits, deploying over $3 million. Its
+  [official rules](https://stellar.gitbook.io/scf-handbook/supporting-programs/audit-bank/official-rules)
+  require an applicant to bring a STRIDE threat model, and the results of one of its self-service
+  tooling options with a remediation plan for the critical, high and medium findings.
 
 **What we have.** Differential testing (an independent reference evaluator against the real
 compiled contract), mutation testing of the core, property tests, reproducibility gates. That is
@@ -665,17 +735,44 @@ requirements** and not "conformance" in the sense discussed in the other section
 third-party tools that the ecosystem customarily applies. Our gap is not that we breach a norm,
 but that we check the generator thoroughly and do not check what it generates.
 
+**Scout, measured.** The plan here was to run Scout over the reference generated policies and
+make a gate of it only once three things held: a pinned version, evidence that the analyzer
+applies to our input at all, and a false-positive policy. It was run during Tranche 1, with
+`cargo-scout-audit` 0.3.16, and the first two do not hold:
+
+- **It does not build our SDK.** Scout's detectors are compiled against one fixed nightly
+  (`cargo scout-audit --toolchain` prints `nightly-2025-08-07`). Every `soroban-sdk-macros`
+  release this repository has pinned, 26.1.0 through 30.0.0-rc.1, calls `str::floor_char_boundary`,
+  which that nightly still keeps behind its feature gate; the SDK declares `rust-version` 1.91.0.
+  So the contract never compiles under the analyzer, and nothing is analysed.
+- **Its default target is one the SDK refuses.** It builds for `wasm32-unknown-unknown`, which
+  `soroban-sdk`'s build script rejects on Rust 1.82 and later in favour of `wasm32v1-none`.
+- **It succeeds having analysed nothing.** A run that analysed nothing exited 0. That is the
+  decisive one: a gate on its exit status would be green for ever while checking nothing, and
+  would be read as a check.
+- **A version pin would not pin the verdict.** The detectors are fetched at run time from a
+  branch of CoinFabrik's `scout-audit` git repository rather than from a released version, so
+  the same `cargo-scout-audit` version can apply different detectors on different days.
+
+The detector toolchain, the default target, the git-branch source and the SDK's use of
+`floor_char_boundary` were rechecked on 19 November 2026 against the same installed version; the
+exit status on an empty analysis was not re-run. **Consequence:** no static analyzer currently
+checks the generated contracts. They are checked by the differential suite against the
+independent evaluator (§11), by execution through the pinned account Wasm, and by review of the
+templates that produce them. The class of defect a Soroban-specific analyzer would find is left to
+the external audit, scoped in [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md). A Scout release that builds
+current SDKs and fails when it analyses nothing would be worth measuring again.
+
 **Action.**
-1. Run Scout over the reference generated policies and look at the result. **Before** making a
-   gate of it, three things are needed: pin the version (from `cargo-mutants` we already know
-   that a tool's version changes the verdict, and that this is part of the point of a gate);
-   establish that the analyzer applies to our kind of input at all — generated source or wasm;
-   and define the false-positive policy. A gate without those three will be either noise that
-   people start routing around, or theatre.
+1. ~~Run Scout over the reference generated policies and decide on a gate.~~ **Done, and it does
+   not apply** — see the measurement above.
 2. Work through the Veridise checklist against the generated template and record the result line
    by line.
 3. **Apply to the Soroban Security Audit Bank.** An external audit is the control this section
    cannot substitute for, and the programme is a funded route to obtaining one.
+   [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) is the scope prepared for it, with the STRIDE threat
+   model; [`docs/SAST-TRIAGE.md`](SAST-TRIAGE.md) holds the Aikido results and what was done
+   with each.
 
 ---
 
@@ -857,12 +954,14 @@ it is read against whether or not we ever open a PR there.
 
 Every path in this section that is not prefixed `crates/`, `contracts/`, `docs/` or `scripts/` is
 a path in **their** repository, not ours — worth stating once, since the same document cites both
-and our own `CONTRIBUTING.md` is 77 lines long.
+and both repositories have a `CONTRIBUTING.md`.
 
-The reference points throughout are the pinned audited release, `stellar-accounts` 0.7.2, and the
-two sibling policy examples at tag v0.7.2:
+The reference points throughout are `stellar-accounts` 0.7.2, the audited release pinned when this
+section was written, and the two sibling policy examples at tag v0.7.2:
 `examples/multisig-smart-account/threshold-policy/src/contract.rs` and
-`.../spending-limit-policy/src/contract.rs`.
+`.../spending-limit-policy/src/contract.rs`. Generated policies now build against
+`stellar-accounts` 0.8.0 and `soroban-sdk` 28.0.0 (§14); the line citations stay at the version
+where they were read.
 
 ### What we now satisfy
 
@@ -871,7 +970,7 @@ two sibling policy examples at tag v0.7.2:
 | No lint suppression; `-D warnings` clean | The emitter wrote `authenticated_signers.len() == 0` — `clippy::len_zero`, warn-by-default — in every policy it had ever generated, and their rules forbid an `#[allow]`, so the emitter changed. `soroban_sdk::Vec::is_empty` exists (`soroban-sdk-26.1.0/src/vec.rs:835`). The contracts job now lints the generated crates directly; clippy does not lint dependencies, so nothing before this covered them. |
 | `rustfmt.toml`, theirs | Emitted into the generated crate, option for option from their v0.7.2 file, and emission derives its layout from those settings rather than piping output through rustfmt — which would put the rustfmt version among the inputs to every shipped wasm hash. `cargo +nightly fmt --all -- --check`, the command their `CONTRIBUTING.md` step 4 prescribes, is now the same gate ours runs. |
 | Imports: `imports_granularity = "Crate"`, `group_imports` | One grouped `use` per crate (`render::use_statement`), which is what their config produces and what both sibling examples show (`threshold-policy/src/contract.rs:8-12`, `spending-limit-policy/src/contract.rs:18-22`). |
-| Module file layout: root + `contract.rs` | `src/lib.rs` is `#![no_std]` and a `pub mod contract;`; the contract is `src/contract.rs`. |
+| Module file layout: root + `contract.rs` | `src/lib.rs` is `#![no_std]`, a `pub mod contract;` and the artifact's `contractmeta!` provenance (§2); the contract is `src/contract.rs`. |
 | Canonical section delimiters | `// ################## NAME ##################`, eighteen hashes each side. The **names** are theirs verbatim — ERRORS and EVENTS from `smart_account/mod.rs:532`, `:574`; CONSTANTS, QUERY STATE and CHANGE STATE from every policy module; HELPER FUNCTIONS from `policies/spending_limit.rs:445`. The **order** is ours, and divergence 8 says why: no upstream file declares all of these in one place, so there is no order of theirs to copy. `STORAGE KEYS` is a name of our own (divergence 8). |
 | Storage keys named `<Module>StorageKey` | `PolicyStorageKey`, replacing the tutorial's `DataKey`; compare `SimpleThresholdStorageKey` (`policies/simple_threshold.rs:121`). |
 | Doc comment on every public item | The error enum and all eleven variants, the storage-key enum, the contract struct, the associated type, and all five entry points. |
@@ -1039,9 +1138,17 @@ are the control that tells a red run from a broken one. Proved red by putting
 with `contract events size bytes: 16508 > 16384` at the 16,000-byte size, and the non-vacuity test
 still passes.
 
+**Upstream's fix.** OpenZeppelin fixed their three policies in
+[OpenZeppelin/stellar-contracts#896](https://github.com/OpenZeppelin/stellar-contracts/pull/896),
+merged on 20 November 2026. On their main branch the enforce events carry a bounded projection,
+`EnforcedContext`: the target and function name of a call, or the executable and salt of a
+deployment, without arguments. No release carries it yet; v0.8.0, the latest, still embeds the
+`Context`. A generated policy cannot name a type its pinned `stellar-accounts` lacks, so generated
+policies keep `context_hash`.
+
 ### Three upstream defects found while doing this
 
-**Reportable, and the one worth reporting first: their own enforce events are unbounded.** This is
+**Reported, and fixed on their main branch: their own enforce events are unbounded.** This is
 divergence 9 above, read as a finding about `stellar-accounts` rather than as a decision about our
 emitter. `SpendingLimitEnforced`, `SimpleEnforced` and `WeightedEnforced` each embed a `Context`
 (`policies/spending_limit.rs:49`, `simple_threshold.rs:62`, `weighted_threshold.rs:78`), and a
@@ -1057,9 +1164,10 @@ composed by an account whose other policies may bound the call, and they publish
 independently-implemented model that a divergence would contradict. What remains is a transaction
 that fails on a resource limit rather than on a decision, at a size no reviewer of the policy would
 think to check. The reproduction above is on a generated policy because that is the crate this
-repository builds and tests; the field, the limit and the ordering are theirs unchanged, and the
-fix — a digest, or any bounded projection of the context — is available to them at the same
-cost.
+repository builds and tests; the field, the limit and the ordering are theirs unchanged. Reported
+as [OpenZeppelin/stellar-contracts#852](https://github.com/OpenZeppelin/stellar-contracts/issues/852)
+and fixed by #896 with a bounded projection of the context, which is not in a release yet
+(divergence 9, "Upstream's fix").
 
 
 **Reportable: their checklist's wasm build cannot succeed for any crate in their own workspace.**
@@ -1081,10 +1189,11 @@ which asked for `stellar contract build` **and/or** the cargo form. Searches of 
 `experimental_spec_shaking`, `custom build command` and `build fails` return nothing, so this
 appears unreported. The fix is one word in two documents.
 
-**Not reportable, already fixed in flight:** their `CONTRIBUTING.md:99` links
+**Not reportable, already fixed upstream:** their `CONTRIBUTING.md:99` links
 `.claude/skills/code-quality.md` while the file is at `.claude/commands/code-quality.md` (there is
-no `.claude/skills/` directory in the tree at all). Their open PR #836 already changes that exact
-line, so it is recorded here only so a reader who follows the broken link knows it is known.
+no `.claude/skills/` directory in the tree at all). Their PR #836, merged on 5 November 2026,
+changes that exact line; v0.8.0 still carries the broken link. It is recorded here only so a
+reader who follows that link knows it is known.
 
 **Verdict.** Conforms on every rule their checklist states for a contract of this kind, with nine
 divergences that are decisions rather than gaps — six forced by properties this project sells (a
@@ -1124,7 +1233,9 @@ successive extensions; refusing it would cut off the long-lived grant the tool e
 - [SEP-46 — Contract Meta (Active)](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0046.md)
 - [SEP-55 — Contract Build Verification (Draft)](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0055.md)
 - [SEP-58 — Contract Build Reproducibility for Verification (Draft, 0.6.0)](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0058.md)
-- SEP-58 support in `stellar-cli`, neither landed: [#2585 `--verifiable`, open](https://github.com/stellar/stellar-cli/pull/2585) · [#2586 `stellar contract verify`, closed unmerged on 2026-08-27](https://github.com/stellar/stellar-cli/pull/2586); the unshipped `build verify` spelling comes from [#2525, closed](https://github.com/stellar/stellar-cli/pull/2525)
+- SEP-58 support in `stellar-cli`, verification not landed: [#2585 `--verifiable`, closed unmerged on 2026-08-31](https://github.com/stellar/stellar-cli/pull/2585), resubmitted as [#2709, open](https://github.com/stellar/stellar-cli/pull/2709) · [#2586 `stellar contract verify`, closed unmerged on 2026-08-27](https://github.com/stellar/stellar-cli/pull/2586); the unshipped `build verify` spelling comes from [#2525, closed](https://github.com/stellar/stellar-cli/pull/2525). Released: [#2731 `stellar contract build archive`](https://github.com/stellar/stellar-cli/pull/2731), in [v28.1.0](https://github.com/stellar/stellar-cli/releases/tag/v28.1.0); current release [v30.0.1](https://github.com/stellar/stellar-cli/releases/tag/v30.0.1)
+- [SEP-55 — Contract Build Verification (Draft, 0.4.1)](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0055.md) defines the `source_repo` and `home_domain` meta keys; SEP-46 defines none
+- [`stellar-protocol` discussion #1923](https://github.com/stellar/stellar-protocol/discussions/1923), where SEP-58 was proposed
 - [stellar-experimental/contract-verifications](https://github.com/stellar-experimental/contract-verifications)
 - [Contract code validation — StellarExpert](https://stellar.expert/explorer/public/contract/validation)
 - [Contract Source Validation SEP — stellar/discussions#1573](https://github.com/orgs/stellar/discussions/1573)

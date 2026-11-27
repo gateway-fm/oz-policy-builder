@@ -44,7 +44,7 @@ import { composedPolicies, subscriptionConfig } from './subscription.mjs';
 import { TRUST_OPERATOR, checkRequest, walletTrust } from './wallet-decision.mjs';
 import {
   NETWORK_PASSPHRASE, POLICY_WASM_UPLOAD_FEE, args, assertTestnet, contractCodeHash, contractIdOf, latestLedger,
-  loadKey, log, readJson, recordAuth, submit, viewCall, writeJson,
+  loadKey, log, readJson, recordAuth, runSpecPath, submit, viewCall, writeJson,
 } from './rpc.mjs';
 
 const ADMIN_RULE = 0;
@@ -52,8 +52,9 @@ const ADMIN_RULE = 0;
 const opts = args();
 const runPath = join(opts['run-dir'], 'run.json');
 const run = readJson(runPath);
-// Read exactly: with --authority-check the spec and manifest are passed on to the check.
-const spec = parseJsonExact(readFileSync(run.spec, 'utf8'));
+// Read exactly: with --authority-check the spec and manifest are passed on to the check. Only the
+// run directory's own spec.json; a journal naming any other file is refused.
+const spec = parseJsonExact(readFileSync(runSpecPath(opts['run-dir'], run), 'utf8'));
 const wasm = readFileSync(opts.wasm);
 
 // The authority check, if asked for, is configured before anything is deployed, so a missing
