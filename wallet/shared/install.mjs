@@ -2,6 +2,7 @@
 // browser and the backend from the reviewed grant and the validated unsigned assembly. Both must
 // produce the same display before the passkey is asked.
 import { freezeCopy } from './approval.mjs';
+import { DELEGATE_HOLDERS, delegateHolder } from './live-consent.mjs';
 import { networkById, stroopsText } from './networks.mjs';
 
 /**
@@ -15,13 +16,16 @@ const integer = (n, min, max) => Number.isSafeInteger(n) && n >= min && n <= max
 /**
  * `approval` is the reviewed approval (`reviewIntent`), `checked` the validated assembly
  * (`validateAssembly`), `spec` the retained specification, `ruleId` the context rule ID the
- * installation will create (the one every layer ran with) and `maxFeeStroops` the fee payer's
- * ceiling after enforce-mode re-simulation.
+ * installation will create (the one every layer ran with), `maxFeeStroops` the fee payer's ceiling
+ * after enforce-mode re-simulation and `operatorFunded` the session's funding model.
  */
-export function installConsent({ approval, checked, spec, maxFeeStroops, ruleId }) {
+export function installConsent({ approval, checked, spec, maxFeeStroops, ruleId, operatorFunded = false }) {
   try {
     const intent = approval.intent;
     const network = networkById(approval.networkId);
+    // Operator-funded (mainnet always is), the delegate is the agent's own key (the operator's delegateKeyPath),
+    // which the agent holds too.
+    const agent = delegateHolder(network.networkId, { operatorFunded }) === DELEGATE_HOLDERS.operator;
     const rule = spec?.rules?.[0];
     const signers = intent.delegate_signers;
     const delegates = rule?.authorization?.signers;
@@ -47,12 +51,17 @@ export function installConsent({ approval, checked, spec, maxFeeStroops, ruleId 
       transaction: { min_ledger: checked.minLedger, max_ledger: checked.maxLedger, signature_expiration_ledger: checked.expirationLedger },
       fee: { prepared_fee_stroops: checked.feeStroops, max_fee_stroops: maxFeeStroops, paid_by: `the local ${network.name} fee payer, not this account` },
       warning: `Your passkey signs one transaction that installs rule "${intent.rule_name}" (rule ID ${ruleId}) on account `
-        + `${intent.account_contract}. Once it is confirmed, the delegate ${delegate}, whose key this wallet backend holds as its `
-        + `automation delegate, can make the calls listed here to ${intent.context_contract} on this account's behalf without your `
-        + `passkey, at most ${maxCalls} time${maxCalls === 1 ? '' : 's'}, until ledger ${until}. The rule stays installed until it `
-        + 'expires or you revoke it, which is a separate transaction signed with your passkey. Your signature is a complete '
-        + `installation until ledger ${checked.expirationLedger}, even if this wallet refuses to submit it; until then it releases `
-        + 'no other installation, and afterwards it checks that the account did not change. Before the fee payer submits it, the '
+        + `${intent.account_contract}. Once it is confirmed, the delegate ${delegate}, `
+        + (agent ? 'the agent\'s own key, held by the agent and by this backend from the operator\'s file, '
+          : 'whose key this wallet backend holds as its automation delegate, ')
+        + `can make the calls listed here to ${intent.context_contract} on this account's behalf without your `
+        + `passkey, at most ${maxCalls} time${maxCalls === 1 ? '' : 's'}, until ledger ${until}`
+        + (agent ? ': the agent can use the grant itself, without this wallet. ' : '. ')
+        + 'The rule stays installed until it expires or you revoke it, which is a separate transaction signed with your passkey. '
+        + `Your signature is a complete installation until ledger ${checked.expirationLedger}, even if this wallet refuses to submit it`
+        + (agent ? ', and anyone who obtains it before then, the agent included, could submit it' : '')
+        + '; until then it releases no other installation, and afterwards it checks that the account did not change. '
+        + 'Before the fee payer submits it, the '
         + 'backend re-reads the account\'s authority, checks that the live check\'s signatures were not used and that the evidence '
         + `is recent. The fee payer pays at most ${stroopsText(maxFeeStroops, network)}; the prepared fee is an estimate.`,
       labels: ['owner_passkey_signs_installation', 'human_approval_attested:false'],

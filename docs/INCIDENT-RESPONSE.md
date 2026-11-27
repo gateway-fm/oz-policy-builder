@@ -23,15 +23,22 @@ says what changes.
 
 ## How to revoke a grant
 
-- **Wallet integration.** `Prepare revocation`, then approve with the owner passkey
-  ([Revocation](POLLYWALLET-INTEGRATION.md#revocation)). The wallet reports the rule `removed`
-  only after the account's `context_rule_removed` event and a readback that the rule is gone;
-  policy cleanup is reported separately. It is offered for installations made by the running
-  backend session: a restarted backend cannot revoke a rule an earlier one installed
-  ([After a restart](POLLYWALLET-INTEGRATION.md#after-a-restart)), and nothing else in this tree
-  can have the wallet account's passkey sign a removal. Any tool that can have the owner sign
-  `remove_context_rule` for the rule ID works; for a grant you may need to revoke in a hurry, keep
-  the installing session running.
+- **Wallet integration.** For a grant the running backend session installed, `Prepare
+  revocation`, then approve with the owner passkey
+  ([Revocation](POLLYWALLET-INTEGRATION.md#revocation)). After a restart, attach the account and
+  use **Remove a grant an earlier session installed**: the wallet lists the account's rules as
+  stored now and removes the one you choose, bound to its exact current bytes and approved with
+  the same passkey ([Removing an earlier session's grant](POLLYWALLET-INTEGRATION.md#removing-an-earlier-sessions-grant)).
+  Either way the wallet reports the rule `removed` only after the account's
+  `context_rule_removed` event and a readback that the rule is gone; policy cleanup is reported
+  separately. It removes only grant-shaped rules (one contract's calls, limited by at least one
+  policy): the owner rule, a rule naming the owner's passkey, a `Default`-context or
+  policy-less rule, and a rule on the account's own calls or on a policy contract are refused. A
+  restarted backend checks or funds its fee payer for the removal itself, so no deployment is
+  needed first; on mainnet an unfunded payer is refused as `payer_unfunded`. On mainnet the session spend cap never stops a removal; the
+  per-transaction cap still applies. A send whose result is uncertain blocks every later write in
+  that session, a removal included: look the transaction up, then start a new session. Any other
+  tool that can have the owner sign `remove_context_rule` for the rule ID works too.
 - **Testnet harness runs.** `node lifecycle.mjs --run-dir <run>` in `testnet-harness/scripts`: the
   owner signs the removal, so it needs the run's keys
   ([Running the parts](../testnet-harness/README.md#running-the-parts)).
@@ -39,14 +46,80 @@ says what changes.
 Revoking a rule ends the grant; a replacement is a new review and a new installation with a fresh
 call counter ([Revoke-first replacement](POLLYWALLET-INTEGRATION.md#revoke-first-replacement)).
 
+## Watching an installed grant
+
+A rule added to the account after installation can reach the grant's policy or the account
+itself. `ozpb check-installed-grant` reads the account and compares it with what was installed:
+the exact recorded rule, no rule allocated after it, and the modeled authority without the rule
+against the `authority_commitment` the installation was approved against. Given that commitment
+and a ledger floor, its exit status is the alert, so run it on a schedule like the
+[registry monitor](REGISTRY-GOVERNANCE.md#scheduling-the-monitor):
+
+```bash
+ozpb check-installed-grant --request installed-grant.json --rpc-sources rpc-sources.json \
+  --registry-roots grant-monitor-roots.json \
+  --registry-min-version <the installation's registry version> \
+  --recorded-authority-commitment <the installation's authority_commitment> \
+  --min-ledger <installation ledger, then observed_ledger + 1 from the last run that exited 0>
+```
+
+The request is `{"candidate": …, "installed_rule": …}`: the `check-policy-call-surface` request
+the installation was checked with, and the rule as the account stored it (`id`, `name`,
+`context_contract`, `valid_until`, `signer_ids`, `policy_ids`). The commitment is the
+`verdict.authority_commitment` of the install intent the installation was built from; the wallet
+keeps it with its installation record. The JSON observation is printed either way.
+
+**The ledger floor.** An endpoint that stopped ingesting keeps serving an old, consistent ledger,
+which would read as unchanged on every run. `--min-ledger` refuses an observation of an older
+ledger (exit 4): pass the installation's ledger on the first run, then one more than the
+`observed_ledger` of the last run that exited 0, so a ledger that does not advance is no answer.
+Record the floor only from such a run and never lower it: a stale run's older ledger would
+otherwise let that endpoint pass as unchanged again. At a ledger every five or six seconds, an
+hourly run may pass a floor several hundred higher.
+
+**The registry version is the installation's.** The request's spec pins the exact registry
+snapshot the installation was checked under, and the commitment covers its root. Under the
+operator's shared roots file, once its checkpoint and floor advance (the registry monitor's
+exit 3 asks for that), the check refuses that older snapshot as a rollback and every run exits 1.
+So keep a separate roots file for monitoring, `grant-monitor-roots.json`: the keys that signed
+the installation's snapshot, no checkpoint or one at that version, and `--registry-min-version`
+at that version. It is used only by this read-only check; revocations in later versions are the
+[registry monitor](#a-a-hash-you-rely-on-is-revoked-in-the-registry)'s to report. When that
+snapshot expires, the check refuses it and exits 1 on every run: the watch has ended, and
+watching again needs a new review and installation against a current snapshot.
+
+| Exit | Meaning | Action |
+|---|---|---|
+| 0 | unchanged: the recorded rule, nothing allocated after it, and the recorded commitment | record `observed_ledger` for the next floor |
+| 5 | inactive: the rule has expired and is otherwise unchanged | it authorizes nothing; remove it when convenient |
+| 3 | changed: the rule, its signers or policies, a later rule, or the modeled authority (a new refusal or unresolved item included) | page; unless the change is the owner's own, [revoke the grant](#how-to-revoke-a-grant) and treat it as [(b)](#b-an-agent-or-delegate-key-may-be-compromised) |
+| 4 | no answer: the read or the check refused, for an incomplete or archived state, code at the account, a policy or the target other than the recognized code, or an endpoint failure; or the observation is older than `--min-ledger` | read the error; an endpoint failure or a lagging endpoint can be run again (or another endpoint used), anything else is treated as 3 |
+| 1 | an error before any read: configuration, request, registry trust (an expired or superseded snapshot included) or build | fix it; until then the grant is not watched |
+| 2 | a usage error: a malformed commitment, or one of the two flags without the other | fix the command |
+
+Any other non-zero status (a crash is 101) is an alert too. These codes are not the registry
+monitor's: 3, 4 and 5 mean different things there, so each command needs its own handler.
+
+Each run sees one ledger from one endpoint (`rpc_reported`): an entry archived and restored
+between runs, or a change made and undone, is not observed. Unlike the wallet's
+[on-demand check](POLLYWALLET-INTEGRATION.md#on-demand-installed-grant-monitoring), it does not
+read the policy's installation marker. A legitimate later rule counts as changed, as it does in
+the wallet. Without the commitment and the floor any observation exits 0, which is what the
+wallet expects; never schedule it that way.
+
 ## (a) A hash you rely on is revoked in the registry
 
-**Detect it.** Watch every hash a grant relies on: the account's Wasm, each owner verifier's, each
-reviewed policy's, and the target's code hash where a target adapter is bound to it.
-`ozpb registry monitor` matches a watched hash against revoked `policy/`, `account/`, `verifier/`
-and `target_adapter/` entries. A generated policy has no entry to match (it is recognized by its
-reproduced build), and a template-family revocation (`template/<family>`) is not matched by hash:
-it shows in the report's `head.revocations` and in the project's advisory.
+**Detect it.** Watch everything a grant relies on: with `--wasm-hash`, the account's Wasm, each
+owner verifier's, each reviewed policy's, and the target's code hash where a target adapter is
+bound to it; with `--template`, the template family of each generated policy (its spec's
+`template_family`). `ozpb registry monitor` matches a watched hash against revoked `policy/`,
+`account/`, `verifier/` and `target_adapter/` entries, and a watched family against revoked
+`template/<family>` entries. A generated policy has no entry of its own: it is recognized through
+its family and by rebuilding it, so the family's revocation reaches every build of it. A
+revocation of one build's hash (`policy/<hash>`) is refused by recognition too, but that hash
+cannot be watched in advance: the head registers nothing under it until a revocation names it, so
+watch the family. A watch item the head neither registers nor revokes, a typo above all, is
+refused with exit `1` and named.
 
 The monitor compares the published registry with your checkpoint: the one in your roots file, or
 the one `ozpb registry verify` printed when you accepted the snapshot. The development roots file
@@ -59,19 +132,26 @@ N="Test SDF Network ; September 2015"
 # once, when you accept the snapshot:
 ozpb registry verify --signed docs/examples/registry.signed.json \
   --registry-roots docs/examples/registry-roots.json --network "$N" > checkpoint.json
-# then on a schedule, against the newest published copy:
+# then on a schedule, against the published copy:
 ozpb registry monitor --published docs/examples/registry.signed.json --checkpoint checkpoint.json \
   --registry-roots docs/examples/registry-roots.json --network "$N" \
   --wasm-hash <account wasm hash> --wasm-hash <owner verifier wasm hash> \
-  --wasm-hash <reviewed policy wasm hash> --wasm-hash <adapter-bound target wasm hash>
+  --wasm-hash <reviewed policy wasm hash> --wasm-hash <adapter-bound target wasm hash> \
+  --template policy-templates/scope@1
 ```
 
-A governed registry is monitored the same way with `--published registry/<network>` (its log) and
-your pinned roots. Exit `6` means a watched hash is revoked; the report names each with the
-custodians' reason. Exit `1` means the published log cannot be verified against your checkpoint —
-a fork, an equivocation, a rollback, or roots you have not pinned, each an incident in itself — and
-also any other error, such as a missing checkpoint or an unreadable file, so read its message. The
-other codes are in [Monitoring](REGISTRY-GOVERNANCE.md#monitoring).
+One published file is checked as a head that directly extends your checkpoint, so it verifies
+only while it is your checkpoint's version or the next one. The development registry publishes
+that one file and no log: once it is two or more versions past your checkpoint, the monitor exits
+`1` for the missing versions between. Review the new version and accept it again with
+`ozpb registry verify`. A governed registry keeps every version, so monitor it with
+`--published registry/<network>` (its log) and your pinned roots, and a head several versions on
+is checked through each of them. Exit `6` means a watched hash or template family is revoked; the
+report names each with the custodians' reason. Exit `1` means the published log cannot be
+verified against your checkpoint — a fork, an equivocation, a rollback, a gap in the versions,
+or roots you have not pinned, each an incident in itself unless it is the single file's gap
+above — and also any other error, such as a missing checkpoint or an unreadable file, so read
+its message. The other codes are in [Monitoring](REGISTRY-GOVERNANCE.md#monitoring).
 
 **Act on it.**
 
@@ -113,13 +193,16 @@ The delegate key signs calls under the grant; the owner rule is the authority ov
 Until the rule is removed, the generated policy still limits the key to the exact recorded calls
 and approved widenings, the call cap per installation and the expiry ledger.
 
-Where the key lives decides the exposure: in the wallet integration the automation key exists only
-in the backend's memory and disappears when the backend stops; `ozpb dry-run` reads a delegate key
-from a 0600 file and signs only offline-domain requests, but the key stays a live credential on its
-own network ([SECURITY.md](../SECURITY.md#what-this-milestone-does-and-does-not-claim)). The agent
-holds no key: a compromised agent session can at most deliver a draft the wallet regenerates and
-the owner must approve. **Disconnect Claude** ends draft delivery; it does not revoke an installed
-grant.
+Where the key lives decides the exposure. On testnet the wallet's automation key exists only in the
+backend's memory and disappears when the backend stops. On mainnet the delegate is the agent's own
+key: the wallet backend reads it from the operator's 0600 file (`delegateKeyPath`) and holds it in
+memory, and that file, like every other copy the agent keeps, stays a live credential after the
+backend stops. `ozpb dry-run` reads a delegate key from a 0600 file and signs only offline-domain
+requests, but the key stays a live credential on its own network
+([SECURITY.md](../SECURITY.md#what-this-milestone-does-and-does-not-claim)). The Claude session
+and the MCP server hold no key: a compromised agent session can at most deliver a draft the wallet
+regenerates and the owner must approve. **Disconnect Claude** ends draft delivery; it does not
+revoke an installed grant.
 
 A compromised **owner** credential is outside this toolkit: the owner rule can change everything,
 and recovery is the account's and the wallet's own. A compromised **registry custodian** key is
@@ -139,10 +222,14 @@ What is specific to generated code:
   changes every affected source and Wasm hash, so a grant built before it is replaced, not
   updated: revoke it, regenerate from the same recording and decisions, review, and install.
 - **The advisory names what is affected**: the template family, the toolkit releases and the grant
-  shapes (constraint kinds, compositions) that reach the defect. The spec and BuildManifest record
-  the template family and the constraints, but not the generator's source revision
-  ([SCOPE.md item 2](SCOPE.md#implementation-boundaries)), so keep a note of which release
-  generated each grant you install.
+  shapes (constraint kinds, compositions) that reach the defect. Keep each installed grant's
+  PolicySpec: it records the template family, every constraint and the composed policies, which
+  is what an advisory's shapes are matched against. Its BuildManifest records the template family
+  and the `spec_hash` that ties it to that spec, but no constraint or composition. Its producer
+  record names the toolkit commit when the build knew it, and the template-pack hash: the
+  producer's own statements, not an attestation
+  ([SCOPE.md item 2](SCOPE.md#implementation-boundaries)). So keep the spec with the manifest,
+  and a note of which release generated each grant you install.
 - **A template family that is unsound is revoked** (`template/<family>`); a corrected template is a
   new family version, because a revocation is permanent.
 

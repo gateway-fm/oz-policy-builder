@@ -28,6 +28,9 @@ services:
       OZPB_HTTP_MAX_BODY_BYTES: ${OZPB_HTTP_MAX_BODY_BYTES:-1048576}
       OZPB_HTTP_MAX_CONCURRENCY: 1
       OZPB_BUILD_JOBS: 1
+      # This package compiles in the API's own container (see the note at the top); the server
+      # refuses to do so without this acceptance. Worker mode sets a launcher instead.
+      OZPB_HTTP_UNISOLATED_BUILDS: accept
     tmpfs:
       - /tmp/ozpb:size=536870912,uid=10001,gid=10001,mode=0700,nosuid,nodev
       # Cargo executes native build scripts from its target directory.

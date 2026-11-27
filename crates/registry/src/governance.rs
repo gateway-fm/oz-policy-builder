@@ -27,11 +27,12 @@ pub const CHANGE_SCHEMA: &str = "registry-change/v1";
 pub const DETACHED_SIGNATURE_SCHEMA: &str = "registry-signature/v1";
 pub const MONITOR_SCHEMA: &str = "registry-monitor/v1";
 /// How a review reference begins while the custodians still have to supply it (the mainnet draft
-/// carries one). A snapshot holding one is never combined and never passes `verify`.
+/// carries one). A snapshot holding one is never signed, never combined and never passes `verify`.
 pub const PENDING_REVIEW_PREFIX: &str = "PENDING, replace before signing:";
 
-/// The capability kinds a revocation of an exact code hash can name.
-const HASH_KINDS: [&str; 4] = ["policy", "account", "verifier", "target_adapter"];
+/// The capability kinds a revocation of an exact code hash can name. The monitor watches a hash
+/// under all of them, and [`crate::Registry::ensure_code_not_revoked`] refuses it under all of them.
+pub(crate) const HASH_KINDS: [&str; 4] = ["policy", "account", "verifier", "target_adapter"];
 
 /// Why a governance step refused. These reach only the `ozpb registry` CLI, never the MCP wire:
 /// the leading labels name the registry code each fault belongs to, and `E_REGISTRY_PARSE` (a
@@ -182,13 +183,16 @@ pub fn successor(
     Ok(next)
 }
 
-/// Sign a snapshot's root with a locally held key, as a detached signature.
+/// Sign a snapshot's root with a locally held key, as a detached signature. A snapshot still
+/// carrying a pending review reference is refused here, as [`combine`] would refuse it: the
+/// custodians learn of it at the first signature, not after the threshold is collected.
 pub fn sign_detached(
     key_id: &str,
     key: &SigningKey,
     snapshot: &RegistrySnapshot,
 ) -> Result<DetachedSignature, GovernanceError> {
     require_key_id(key_id)?;
+    require_no_pending_review(snapshot)?;
     let signed = sign_snapshot_with_roots(
         &BTreeMap::from([(key_id.to_string(), key.clone())]),
         snapshot.clone(),
@@ -208,7 +212,8 @@ pub fn sign_detached(
 }
 
 /// Accept a signature produced elsewhere — a hardware key, another machine — over this
-/// snapshot's root, refusing one that does not verify under the given public key.
+/// snapshot's root, refusing one that does not verify under the given public key, and refusing a
+/// snapshot with a pending review reference as [`sign_detached`] does.
 pub fn external_signature(
     key_id: &str,
     public_key: &[u8; 32],
@@ -216,6 +221,7 @@ pub fn external_signature(
     snapshot: &RegistrySnapshot,
 ) -> Result<DetachedSignature, GovernanceError> {
     require_key_id(key_id)?;
+    require_no_pending_review(snapshot)?;
     let detached = DetachedSignature {
         schema: DETACHED_SIGNATURE_SCHEMA.to_string(),
         key_id: key_id.to_string(),
@@ -362,7 +368,8 @@ pub enum Watched {
     /// whichever role the registry holds it.
     Code(Hash32),
     /// A template family. A generated policy has no registry entry of its own: it is recognized
-    /// through its family, so revoking the family is the revocation that reaches it.
+    /// through its family, so the family is what can be watched for it. (A revocation of one
+    /// build's hash is reported through [`Watched::Code`] once it exists.)
     TemplateFamily(String),
 }
 
@@ -455,6 +462,10 @@ pub fn monitor(
         Registry::with_pinned_roots_for_network_at_checkpoint(roots, network, checkpoint.clone())?;
     let mut head_checkpoint = checkpoint.clone();
     for signed in &relevant {
+        // A checkpoint can predate the admission rule and does not run Registry::admit again.
+        if network == NetworkId::from_passphrase(ozpb_domain::MAINNET_PASSPHRASE) {
+            require_no_pending_review(&signed.snapshot)?;
+        }
         if signed.snapshot.version == checkpoint_version {
             require_matches_checkpoint(&signed.snapshot, &checkpoint, network)?;
         } else {
@@ -543,7 +554,17 @@ pub fn monitor(
 /// ([`PENDING_REVIEW_PREFIX`]): a draft custodians have not finished must not be signed by
 /// accident or distributed.
 pub fn require_no_pending_review(snapshot: &RegistrySnapshot) -> Result<(), GovernanceError> {
-    let references = snapshot
+    match pending_reviews(snapshot).into_iter().next() {
+        Some(entry) => Err(GovernanceError::PendingReview(entry)),
+        None => Ok(()),
+    }
+}
+
+/// Every entry (`template/<family>`, `account/<hash>`, …) whose review reference is still
+/// pending, in the order [`require_no_pending_review`] checks them. What a custodian reviews
+/// before signing lists them all, since a device signs whatever root it is given.
+pub fn pending_reviews(snapshot: &RegistrySnapshot) -> Vec<String> {
+    snapshot
         .policies
         .iter()
         .map(|(key, entry)| (format!("policy/{key}"), &entry.review_reference))
@@ -570,13 +591,10 @@ pub fn require_no_pending_review(snapshot: &RegistrySnapshot) -> Result<(), Gove
                 .templates
                 .iter()
                 .map(|(key, entry)| (format!("template/{key}"), &entry.review_reference)),
-        );
-    for (entry, reference) in references {
-        if reference.trim_start().starts_with(PENDING_REVIEW_PREFIX) {
-            return Err(GovernanceError::PendingReview(entry));
-        }
-    }
-    Ok(())
+        )
+        .filter(|(_, reference)| reference.trim_start().starts_with(PENDING_REVIEW_PREFIX))
+        .map(|(entry, _)| entry)
+        .collect()
 }
 
 /// The published copy of the version a consumer has already accepted must be exactly what it

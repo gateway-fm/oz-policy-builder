@@ -1,27 +1,37 @@
 name: release binaries
 
-# Builds the `ozpb` CLI, the MCP server and the native execution worker for each published GitHub
-# Release (pre-releases included) and attaches them to it, with SHA256SUMS, the MCP wire contract
-# the built server serves, and a GitHub build-provenance attestation for every asset. It deploys
-# nothing and runs no service. A `workflow_dispatch` run is a dry run on the chosen ref: it builds,
-# packages and assembles exactly as a release does, keeps its run artifacts for a day, and neither
-# attests nor attaches anything to a release. What the assets promise is docs/VERSIONING.md; how an
-# operator verifies them, docs/SELF-HOSTING.md.
+# Builds the `ozpb` CLI, the MCP server and the native execution worker for a release tag and
+# attaches them to that tag's draft GitHub Release (pre-releases included), with SHA256SUMS, the
+# MCP wire contract the built server serves, and a GitHub build-provenance attestation for every
+# asset. It deploys nothing and runs no service. Dispatched on a tag
+# (`gh workflow run release-binaries.yml --ref vX.Y.Z`), it refuses unless the tag's release
+# exists and is still a draft; the owner publishes the draft after a green run. Dispatched on a
+# branch, it is a dry run: it builds, packages and assembles exactly as a release run does, keeps
+# its run artifacts for a day, and neither attests nor attaches anything. What the assets promise
+# is docs/VERSIONING.md; how an operator verifies them, docs/SELF-HOSTING.md.
+#
+# Draft first, because GitHub's immutable releases refuse an asset added to a published release:
+# attaching before publication works with that setting on or off. The run is on the tag's own ref
+# rather than taking a tag as input, so the checkout, GITHUB_SHA and the attestations' source ref
+# are the tag itself. A published release's trigger cannot be used: publication is what locks it.
 #
 # A workflow of its own rather than more jobs in publish-image.yml: the binaries need a macOS
 # runner and permission to write release assets, the images need neither, and a red check in one
 # should not hold back the other. Both refuse a release whose tag does not name the workspace
 # version, with the same check.
 #
-# Three stages, so the token that can write the release never sits in a job that runs a build:
+# On a tag, verify-revision (actions: read, contents: read) first refuses unless ci.yml,
+# nightly-live.yml and mutation.yml each have a successful workflow_dispatch run on the tagged
+# commit (scripts/require-release-checks.sh). Then three stages, so the token that can write the
+# release never sits in a job that runs a build:
 #   build     one job per platform, contents: read. Third-party build scripts run here.
 #   assemble  contents: read. Checks every package, keeps one wire contract, writes SHA256SUMS,
 #             and states the SHA-256 of SHA256SUMS as a job output. Dry runs stop after it.
-#   publish   release only: contents: write, id-token: write, attestations: write. It runs no
-#             repository code: it downloads the assembled assets into a fresh directory, refuses
-#             them unless SHA256SUMS has the digest assembly stated and lists exactly the files
-#             present with their digests, then attests them and uploads them with the
-#             preinstalled gh.
+#   publish   tag runs only: contents: write, id-token: write, attestations: write. It runs no
+#             repository code: it refuses unless the tag's release is a draft, downloads the
+#             assembled assets into a fresh directory, refuses them unless SHA256SUMS has the
+#             digest assembly stated and lists exactly the files present with their digests,
+#             then attests them and uploads them to the draft with the preinstalled gh.
 # Files move between jobs as artifacts of this run (upload-artifact and download-artifact, pinned
 # by SHA), not through the Actions cache: cache entries are shared by every job on the ref, so a
 # build script, or another workflow building on the same tag, could have planted one under a
@@ -36,12 +46,7 @@ name: release binaries
 # (ubuntu-24.04), linux aarch64 (ubuntu-24.04-arm, the runner publish-image.yml already uses) and
 # macOS arm64 (macos-15, as nightly-live.yml). The Linux binaries link the runner's glibc and may
 # need one as new as Ubuntu 24.04's; the macOS binaries are not signed or notarized.
-#
-# Uploading after publication fails if the repository turns on GitHub's immutable releases, which
-# refuse assets added to a published release; that setting would need a draft-first flow here.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -52,7 +57,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-revision:
+    name: verify release CI on the exact tagged revision
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/require-release-checks.sh
+
   build:
+    needs: verify-revision
+    if: ${{ !cancelled() && (github.ref_type != 'tag' || needs.verify-revision.result == 'success') }}
     name: build (${{ matrix.target }})
     strategy:
       fail-fast: true
@@ -70,21 +93,18 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      # Through the environment, not interpolated into scripts: the tag comes from the event
-      # payload.
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       # The check publish-image.yml makes, so a release cannot carry binaries of another version.
-      # A dry run is labelled with the version it would release.
+      # A dry run, on a branch, is labelled with the version it would release.
       - name: the release tag names the workspace version
         run: |
           set -euo pipefail
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
-          if [ "$GITHUB_EVENT_NAME" = release ] && [ "$RELEASE_TAG" != "v$version" ]; then
-            echo "release tag $RELEASE_TAG does not name workspace version v$version" >&2
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "release tag $GITHUB_REF_NAME does not name workspace version v$version" >&2
             exit 1
           fi
           # The worker is its own workspace with its own version; its archive carries the
@@ -214,7 +234,7 @@ jobs:
             echo "SHA-256 of SHA256SUMS: \`$sums\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: hand the assets to publishing
-        if: github.event_name == 'release'
+        if: github.ref_type == 'tag'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets-attempt-${{ github.run_attempt }}
@@ -223,8 +243,8 @@ jobs:
           retention-days: 1
 
   publish:
-    name: attest and attach to the release
-    if: github.event_name == 'release'
+    name: attest and attach to the draft release
+    if: github.ref_type == 'tag'
     needs: assemble
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -233,8 +253,24 @@ jobs:
       id-token: write
       attestations: write
     env:
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      # Through the environment, not interpolated into scripts.
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
+      # Before anything is attested. Only a token that can write contents sees draft releases,
+      # so this check cannot move to an earlier, read-only job.
+      - name: the tag's release exists and is a draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! draft=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft); then
+            echo "::error::$RELEASE_TAG has no release; create it as a draft first" >&2
+            exit 1
+          fi
+          if [ "$draft" != true ]; then
+            echo "::error::the release for $RELEASE_TAG is published; assets are attached to a draft only" >&2
+            exit 1
+          fi
       - name: nothing is in the way of the download
         run: test ! -e release
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -270,18 +306,18 @@ jobs:
         with:
           subject-path: release/*
           create-storage-record: false
-      # No --clobber: an asset already on the release is never replaced. A re-run after a partial
-      # upload needs the partial assets deleted by hand first.
-      - name: attach the assets to the release
+      # No --clobber: an asset already on the draft is never replaced. A re-run after a partial
+      # upload needs the partial assets deleted from the draft by hand first.
+      - name: attach the assets to the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$RELEASE_TAG" release/* --repo "$GITHUB_REPOSITORY"
       - name: record how to verify them
         run: |
           {
-            echo "### Assets attached to $RELEASE_TAG"
+            echo "### Assets attached to the draft release $RELEASE_TAG"
             echo
-            echo "Every asset, SHA256SUMS included, carries a build-provenance attestation:"
+            echo "Publish the draft once every asset is there. Every asset, SHA256SUMS included, carries a build-provenance attestation:"
             echo
             echo "- \`gh attestation verify <asset> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release-binaries.yml --source-ref refs/tags/$RELEASE_TAG --deny-self-hosted-runners\`"
           } >> "$GITHUB_STEP_SUMMARY"

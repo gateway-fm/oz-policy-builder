@@ -2,8 +2,9 @@
 //!
 //! The value is what git said about this workspace when the crate was compiled: the commit, and
 //! whether any toolkit input differed from it. It is empty when there is no checkout to ask — a
-//! source archive or the container image build — and the manifest then claims no commit rather
-//! than one the binary cannot know. Every input path and the git state that decides the answer are
+//! source archive — and the manifest then claims no commit rather than one the binary cannot know.
+//! The container image's build has no checkout either; it passes the commit its context was cut
+//! from as `OZPB_TOOLKIT_SOURCE`. Every input path and the git state that decides the answer are
 //! watched, so a recorded value is never older than the sources the binary was built from.
 
 #[path = "src/toolkit_source.rs"]

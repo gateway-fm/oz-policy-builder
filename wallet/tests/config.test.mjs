@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { StrKey } from '@stellar/stellar-sdk';
 import { loadWalletConfig } from '../server/config.mjs';
 import { createWalletRuntime } from '../server/main.mjs';
 import { WALLET_NETWORKS } from '../shared/networks.mjs';
@@ -19,7 +20,7 @@ function fixture(t) {
   writeFileSync(registrySnapshotPath, '{"valid_until":9223372036854775807}', { mode: 0o600 });
   writeFileSync(registryRootsPath, '{}', { mode: 0o600 });
   const value = { executable, workRoot, rpcUrl: 'https://rpc.example/testnet',
-    registrySnapshotPath, registryRootsPath, registryMinimumVersion: 3 };
+    registrySnapshotPath, registryRootsPath, registryMinimumVersion: 6 };
   const path = join(root, 'operator.json');
   const save = (data = value) => writeFileSync(path, JSON.stringify(data), { mode: 0o600 });
   save();
@@ -33,7 +34,7 @@ test('operator configuration retains exact registry bytes and has a closed build
   const config = loadWalletConfig(path);
   assert.equal(config.registrySnapshot, '{"valid_until":9223372036854775807}');
   assert.equal(config.registryRoots, '{}');
-  assert.equal(config.registryMinimumVersion, 3);
+  assert.equal(config.registryMinimumVersion, 6);
   assert.deepEqual(config.buildEnvironment, { CARGO_NET_OFFLINE: 'true',
     OZPB_STELLAR_BINARY: value.executable, OZPB_BUILD_CACHE_DIR: value.workRoot,
     OZPB_BUILD_JOBS: '2', OZPB_BUILD_TIMEOUT_SECS: '300' });
@@ -117,4 +118,28 @@ test('launcher creates private retained state without startup network writes or 
     authorization: `Bearer ${/^#session=([0-9a-f]{64})&network=testnet$/.exec(new URL(runtime.launchUrl).hash)[1]}` }), true);
   assert.throws(() => captured.session.authenticate({ host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000',
     authorization: `Bearer ${new URL(runtime.launchUrl).hash.slice('#session='.length)}` }), /unauthorized/);
+});
+
+test('a restarted wallet recovers earlier signing expiries for the same account and refuses a damaged journal', async (t) => {
+  const { path } = fixture(t);
+  const start = async () => {
+    let parts;
+    await createWalletRuntime(path, { actionsFactory: (value) => { parts = value; return {}; } });
+    return parts;
+  };
+  const account = StrKey.encodeContract(Buffer.alloc(32, 7));
+  const other = StrKey.encodeContract(Buffer.alloc(32, 8));
+  const first = await start();
+  first.network.recordLiveObligation({ signatureExpirationLedger: 210, snapshot: { account } });
+  first.network.recordInstallObligation({ signatureExpirationLedger: 220, snapshot: { account } });
+  assert.equal(first.priorAuthorizationExpiry(account), 0);
+
+  const restarted = await start();
+  assert.equal(restarted.priorAuthorizationExpiry(account), 220);
+  assert.equal(restarted.priorAuthorizationExpiry(other), 0);
+  // Legacy testnet sessions already stored the obligations but had no per-session binding.
+  unlinkSync(join(first.toolchain.sessionRoot, 'journal', '0000.session.json'));
+  assert.equal(restarted.priorAuthorizationExpiry(account), 220);
+  writeFileSync(join(first.toolchain.sessionRoot, 'journal', '0003.install-release.json'), '{');
+  assert.throws(() => restarted.priorAuthorizationExpiry(account), { reason: 'replay_journal_unavailable' });
 });

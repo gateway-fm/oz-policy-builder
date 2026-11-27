@@ -31,9 +31,18 @@ const A = (address) => new Address(address).toScVal();
 const requireThat = (condition) => { if (!condition) throw new Error('invalid protocol plan'); };
 const positive = (n) => typeof n === 'string' && /^[1-9][0-9]{0,38}$/.test(n) && BigInt(n) <= (1n << 127n) - 1n;
 
-export const SOROSWAP_DECISIONS_SCHEMA = 'ozpb-soroswap-operator-decisions/v2';
+export const SOROSWAP_DECISIONS_SCHEMA = 'ozpb-soroswap-operator-decisions/v3';
 /** The operator's explicit choice to retain the recorded cutoff. */
 export const ADAPTER_DEADLINE_ACCEPTED = 'keep_recorded_deadline';
+/**
+ * Journals written before the current schema, readable only where `allowLegacy` asks: the
+ * deadline acceptance each one carried. v1 accepted an open deadline; v2 predates the transfer
+ * cap's floor decision.
+ */
+const LEGACY_DEADLINES = new Map([
+  ['ozpb-soroswap-operator-decisions/v1', 'accept_any_value_high_blast_radius'],
+  ['ozpb-soroswap-operator-decisions/v2', ADAPTER_DEADLINE_ACCEPTED],
+]);
 const MAX_SWAP_INPUT = 10_000_000n;
 const exactKeys = (value, keys) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
@@ -42,23 +51,28 @@ const intent = (text) => typeof text === 'string' && text.length >= 1 && text.le
 /**
  * The W3 decisions an operator makes, read from a file, never from the harness's own code: the
  * absolute output floor (the router's `amount_out_min`), the cap on the independently usable
- * native transfer to the pair, and the acceptance of the adapter's any-value deadline. The
- * journaled copy (`journal: true`) also names the SHA-256 of the file it was read from.
+ * native transfer to the pair with the acceptance that it sets no floor (the amount is a signed
+ * i128 and synthesis refuses a cap without that answer), and the acceptance of the adapter's
+ * recorded deadline. The journaled copy (`journal: true`) also names the SHA-256 of the file it
+ * was read from.
  */
 export function soroswapDecisions(value, { journal = false, allowLegacy = false } = {}) {
   const fail = (what) => { throw new Error(`invalid Soroswap operator decisions: ${what}`); };
   const keys = ['schema', 'output_floor', 'transfer_cap', 'adapter_deadline', ...(journal ? ['source_sha256'] : [])];
   if (!exactKeys(value, keys)) fail(`expected exactly ${keys.join(', ')}`);
-  const legacy = allowLegacy && value.schema === 'ozpb-soroswap-operator-decisions/v1';
+  const legacy = allowLegacy && LEGACY_DEADLINES.has(value.schema);
   if (!legacy && value.schema !== SOROSWAP_DECISIONS_SCHEMA) fail(`schema must be ${SOROSWAP_DECISIONS_SCHEMA}`);
   const floor = value.output_floor, cap = value.transfer_cap;
   if (!exactKeys(floor, ['min', 'intent']) || !positive(floor.min) || BigInt(floor.min) < 2n || !intent(floor.intent)) {
     fail('output_floor needs a decimal min of at least 2 (its control lowers it by one) and a 1-200 character intent');
   }
-  if (!exactKeys(cap, ['max', 'intent']) || !positive(cap.max) || BigInt(cap.max) > MAX_SWAP_INPUT || !intent(cap.intent)) {
-    fail(`transfer_cap needs a decimal max of at most ${MAX_SWAP_INPUT} and a 1-200 character intent`);
+  const capKeys = legacy ? ['max', 'intent'] : ['max', 'intent', 'no_floor_acknowledged'];
+  if (!exactKeys(cap, capKeys) || !positive(cap.max) || BigInt(cap.max) > MAX_SWAP_INPUT || !intent(cap.intent)
+    || (!legacy && cap.no_floor_acknowledged !== true)) {
+    fail(`transfer_cap needs a decimal max of at most ${MAX_SWAP_INPUT}, a 1-200 character intent and `
+      + 'no_floor_acknowledged: true, the acceptance that the cap sets no floor on the signed amount');
   }
-  if (value.adapter_deadline !== (legacy ? 'accept_any_value_high_blast_radius' : ADAPTER_DEADLINE_ACCEPTED)) {
+  if (value.adapter_deadline !== (legacy ? LEGACY_DEADLINES.get(value.schema) : ADAPTER_DEADLINE_ACCEPTED)) {
     fail(`adapter_deadline must be "${ADAPTER_DEADLINE_ACCEPTED}": the current policy preserves the approved recorded deadline exactly`);
   }
   if (journal && !/^[0-9a-f]{64}$/.test(value.source_sha256 ?? '')) fail('missing source file hash');

@@ -102,10 +102,19 @@ fi
 
 # cargo-mutants exits 2 when a mutant was missed and 3 when one timed out; a timeout is not a
 # kill, so both fail the gate. Its own report names each mutant.
+report=$(mktemp)
+trap 'rm -f "$report" "${diff_file:-}"' EXIT
 status=0
-cargo mutants "${args[@]}" || status=$?
+cargo mutants "${args[@]}" 2>&1 | tee "$report" || status=$?
 case "$status" in
-    0) echo "mutation testing OK: every mutant in ${packages[*]} was caught" ;;
+    0)
+        if grep -Eq 'No mutants (to filter|found under the active filters|were generated|were viable)' "$report"; then
+            echo "mutation testing: no viable mutants were exercised in ${packages[*]}"
+            if [ -z "$diff_base" ]; then exit 1; fi
+        else
+            echo "mutation testing OK: every viable mutant in ${packages[*]} was caught"
+        fi
+        ;;
     2 | 3)
         echo "mutation testing FAILED: surviving or timed-out mutants, listed in" >&2
         echo "  target/mutants/mutants.out/missed.txt and timeout.txt" >&2

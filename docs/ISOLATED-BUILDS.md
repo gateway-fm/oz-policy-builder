@@ -30,8 +30,10 @@ networking are not needed during a job. Build the host binary for the host opera
 require a newer host libc; compiling the host binary avoids that assumption.
 
 Install these reviewed files using your normal host configuration system. Install the API binary
-and the launcher from the same revision: each rejects the other's output from a different one,
-and every build would then retain its slot.
+and the launcher from the same revision: each rejects the other's output from a different one.
+The API asks the launcher its protocol when it starts and refuses to start on another answer;
+a launcher replaced while the API runs is found only by its first frame, and every build would
+then retain its slot.
 
 | Source | Host destination | Ownership and mode |
 | --- | --- | --- |
@@ -67,7 +69,9 @@ container. The Compose service remains the separate single-operator mode.
 
 For a CLI invocation, set `OZPB_BUILD_WORKER_LAUNCHER` to the same protected executable or
 use `--build-worker-launcher`. Invalid, missing, relative, symlinked or writable launcher paths
-fail configuration; they never fall back to host compilation.
+fail configuration; they never fall back to host compilation. An unset launcher does not
+either: the HTTP server refuses to start without one unless `OZPB_HTTP_UNISOLATED_BUILDS=accept`
+says it should compile in its own trust domain, which only the Compose package sets.
 
 ## Trust and lifecycle
 
@@ -87,7 +91,12 @@ That release rejects explicit `uid`/`gid` mount options. The single worker princ
 UID/GID `10001`; its source directory, Cargo home and target directory are mode `0700`
 under umask `0077`. Each container has its own mount, so this does not expose one job's
 files to another job or the API. Linux acceptance observes the actual Rust build directory's
-ownership and mode while compiling, as well as fresh-cache isolation.
+ownership and mode while compiling, as well as fresh-cache isolation. Outside a worker, a build
+refuses a temporary directory any other user can add entries to, because cargo reads
+configuration from every parent of the directory it builds in
+([build configuration](DEVELOPERS.md#build-configuration-operator-side)); the worker builds in
+this `1777` mount anyway, since its only principal is the job itself. `ozpb-build-worker` skips
+that check unconditionally, so it belongs only inside the launcher's container, never on a host.
 
 Podman's [runtime timeout](https://docs.podman.io/en/v5.7.0/markdown/podman-run.1.html#timeout-seconds)
 is enforced by conmon, independently of the API and launcher processes. Namespace teardown
@@ -113,7 +122,15 @@ retained until the operator has cleaned up.
 
 ## Launcher contract for another provider
 
-The API starts the configured executable with no arguments, a private file on stdin, bounded
+Before it serves, the API runs the configured executable once with the single argument
+`--protocol`, no input and a minimal host environment. The launcher must print exactly the line
+`build-worker-job/v1 contained-build-result/v2` (the job schema it reads and the frame schema it
+writes) and exit 0, without reading its configuration or starting anything. Any other answer or
+a non-zero exit stops the API's startup with an error naming the revision mismatch; a launcher
+that predates the query takes no argument and is refused the same way. One that does not answer
+within 10 seconds is killed with its process group and reported as a timeout; the API waits up
+to 5 more seconds for each of its two output pipes to close, so at most 20 seconds in all. For
+each job, the API starts the executable with no arguments, a private file on stdin, bounded
 stdout capture, and a minimal host environment. The input is JSON with schema
 `build-worker-job/v1`, `crate_name`, `files` (an array of `{path, body}`), `timeout_seconds`, and
 `jobs`. Time and parallelism originate in operator configuration, and the launcher must check
@@ -137,7 +154,8 @@ The API refuses a frame whose `image` is not such an immutable identity, and rec
 BuildManifest as `producer.build_image`. It is the operator's statement of which image ran, not
 an attestation: the launcher is trusted for it in the same way it is trusted for teardown.
 A frame of another `contained-build-result` version comes from a launcher installed from another
-revision. The API cannot read its removal claim, so it handles the job as it handles a dead
+revision after the API started (the startup query refuses one installed before). The API cannot
+read its removal claim, so it handles the job as it handles a dead
 launcher: the slot stays retained. The error then says that the launcher is from another
 revision, rather than only that cleanup is unconfirmed. Once every slot is retained, worker mode
 accepts no builds. Install the API and the launcher from the same revision, confirm cleanup, and
