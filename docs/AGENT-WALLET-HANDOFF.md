@@ -6,7 +6,9 @@ exact native-XLM testnet transfer shape, with a call cap of at most 512 so the n
 execution checks can run. Manual import accepts up to 10,000 for inspection, but a cap above
 512 cannot complete the current worker checks. Claude and the wallet backend must run on the same
 computer. A remote hosted MCP server cannot reach a user's local wallet; no relay or general
-wallet-connection protocol is supplied.
+wallet-connection protocol is supplied. It is for testnet sessions only: a session on another
+network, mainnet included, neither offers nor pairs it, and the proposal comes in by
+[manual import](POLLYWALLET-INTEGRATION.md#importing-an-agent-proposal).
 
 ## Use it
 

@@ -173,6 +173,25 @@ fn dry_run_preparation_refuses_the_development_root_outside_testnet() {
     assert_eq!(error.code, EC::ERegistryRootPolicy, "{error}");
 }
 
+/// The suite is the preparation's first product; one over the limit is refused before the
+/// call-surface preparation rebuilds anything.
+#[test]
+fn dry_run_preparation_refuses_a_spec_whose_reference_suite_is_too_large() {
+    let mut input = request();
+    input.candidate.spec = crate::test_support::oversized_suite_spec();
+    input.artifact.spec = input.candidate.spec.clone();
+    let error =
+        prepare_dry_run_with_build_config(&input, &registry_trust(), &build_config()).unwrap_err();
+    assert_eq!(error.code, EC::ESpecInvalid, "{error}");
+    assert!(
+        error
+            .details
+            .iter()
+            .any(|d| d.starts_with("E_SPEC_LIMITS: ")),
+        "{error:?}"
+    );
+}
+
 #[test]
 fn candidate_and_artifact_must_describe_the_same_rule_and_spec() {
     let input = request();

@@ -38,22 +38,26 @@ export const LIVE_CASES = Object.freeze(['target:original:0', 'target:argument-d
 export const LIVE_LABELS = Object.freeze(['state_dependent', 'simulation_only', 'signatures_valid_until_ledger',
   'delegate_is_wallet_in_memory_automation_key']);
 /**
- * Who holds the grant's delegate key, by network, as the consent, its labels and the live evidence name
- * it. On testnet it is the backend's own in-memory automation key. On mainnet it is the agent's own
- * key, which the agent holds and this backend holds too, from the operator's `delegateKeyPath` file.
+ * Who holds the grant's delegate key, by the session's funding model, as the consents, their labels and
+ * the live evidence name it. With the wallet's disposable fee payer (testnet) it is the backend's own
+ * in-memory automation key. Operator-funded (always on mainnet; on testnet when the operator configures
+ * its own fee payer) it is the agent's own key, which the agent holds and this backend holds too, from
+ * the operator's `delegateKeyPath` file.
  */
 export const DELEGATE_HOLDERS = Object.freeze({
-  testnet: Object.freeze({ label: LIVE_LABELS[3], evidence: 'wallet_in_memory_automation_key',
+  automation: Object.freeze({ label: LIVE_LABELS[3], evidence: 'wallet_in_memory_automation_key',
     key: 'the wallet backend\'s in-memory automation key, discarded when it stops' }),
-  mainnet: Object.freeze({ label: 'delegate_is_agent_key_from_operator_file', evidence: 'agent_key_from_operator_file',
+  operator: Object.freeze({ label: 'delegate_is_agent_key_from_operator_file', evidence: 'agent_key_from_operator_file',
     key: 'the agent\'s key, held by the agent and by this backend from the operator\'s file' }),
 });
 const refuse = () => { throw new Error('live check refused; prepare it again'); };
-/** The delegate key's holder for the network `networkId` names (`DELEGATE_HOLDERS`). */
-export function delegateHolder(networkId) {
+/**
+ * The delegate key's holder (`DELEGATE_HOLDERS`) in a session on the network `networkId` names:
+ * `operatorFunded` is the session's funding model, and a mainnet session always is.
+ */
+export function delegateHolder(networkId, { operatorFunded = false } = {}) {
   const network = networkById(networkId);
-  if (!Object.hasOwn(DELEGATE_HOLDERS, network.name)) refuse();
-  return DELEGATE_HOLDERS[network.name];
+  return network.name === 'mainnet' || operatorFunded === true ? DELEGATE_HOLDERS.operator : DELEGATE_HOLDERS.automation;
 }
 const sha256 = (value) => Buffer.from(hash(Buffer.from(value))).toString('hex');
 const integer = (n, min, max) => Number.isSafeInteger(n) && n >= min && n <= max;
@@ -163,10 +167,11 @@ export function liveCases({ approval, spec, helper, policyCodeHash, expectedRule
 }
 
 /**
- * The consent statement for the two cases: both exact calls, the expiry and the warning. The
+ * The consent statement for the two cases: both exact calls, the expiry and the warning, naming the
+ * delegate key's holder by the session's funding model (`operatorFunded`, `delegateHolder`). The
  * backend keeps its SHA-256; the browser shows this same object and returns that hash to consent.
  */
-export function consentDisplay(cases, { currentLedger }) {
+export function consentDisplay(cases, { currentLedger, operatorFunded = false }) {
   try {
     const [permit, denial] = cases;
     const network = networkById(permit.network_id);
@@ -185,8 +190,8 @@ export function consentDisplay(cases, { currentLedger }) {
         context_rule_ids: [c.expected_rule_id] },
     });
     const amount = (text) => stroopsText(text, network);
-    const holder = delegateHolder(network.networkId);
-    const agent = network.name === 'mainnet';
+    const holder = delegateHolder(network.networkId, { operatorFunded });
+    const agent = holder === DELEGATE_HOLDERS.operator;
     return freezeCopy({
       schema: 'ozpb-live-consent/v1', network: network.name, network_id: network.networkId,
       current_ledger: currentLedger, signature_expiration_ledger: n,

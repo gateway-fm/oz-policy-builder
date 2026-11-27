@@ -115,11 +115,28 @@ test('on mainnet the consent names the agent as the delegate key\'s holder, and 
   assert.equal(testnet.labels[3], 'delegate_is_wallet_in_memory_automation_key');
   assert.match(testnet.delegate.key, /in-memory automation key, discarded when it stops/);
   assert.doesNotMatch(testnet.warning, /the agent/);
-  // The live evidence names the holder the same way, by network.
+  // The live evidence names the holder the same way, by the session's funding model: mainnet is always operator-funded.
   assert.equal(delegateHolder(WALLET_NETWORKS.testnet.networkId).evidence, 'wallet_in_memory_automation_key');
   assert.equal(delegateHolder(MAINNET.networkId).evidence, 'agent_key_from_operator_file');
-  assert.deepEqual(Object.keys(DELEGATE_HOLDERS).sort(), ['mainnet', 'testnet']);
+  assert.equal(delegateHolder(MAINNET.networkId, { operatorFunded: false }).evidence, 'agent_key_from_operator_file');
+  assert.deepEqual(Object.keys(DELEGATE_HOLDERS).sort(), ['automation', 'operator']);
   const liveCheck = readFileSync(new URL('../server/live-check.mjs', import.meta.url), 'utf8');
-  assert.doesNotMatch(liveCheck, /'wallet_in_memory_automation_key'/, 'the evidence label is derived from the network, not fixed');
+  assert.doesNotMatch(liveCheck, /'wallet_in_memory_automation_key'/, 'the evidence label is derived from the session, not fixed');
   assert.match(liveCheck, /delegateHolder\(/);
+});
+
+test('an operator-funded testnet session names the agent as the delegate key\'s holder, as mainnet does', () => {
+  const display = consentDisplay(cases(), { currentLedger: N - LIVE_SIGNATURE_LEDGERS, operatorFunded: true });
+  assert.equal(display.network, 'testnet');
+  assert.doesNotMatch(JSON.stringify(display), /in-memory|discarded/);
+  assert.equal(display.delegate.key, 'the agent\'s key, held by the agent and by this backend from the operator\'s file');
+  assert.match(display.warning, new RegExp(`the delegate ${DELEGATE}, the agent's own key`));
+  assert.match(display.warning, new RegExp(`the agent could submit the installation itself before ledger ${N}`));
+  assert.match(display.warning, /operator's testnet RPC endpoint/);
+  assert.equal(display.labels[3], 'delegate_is_agent_key_from_operator_file');
+  assert.equal(delegateHolder(NETWORK_ID, { operatorFunded: true }), DELEGATE_HOLDERS.operator);
+  // Only a literal `true` opts in; the statement hashes differ, so a browser and backend that disagree never match.
+  assert.equal(consentDisplay(cases(), { currentLedger: N - LIVE_SIGNATURE_LEDGERS, operatorFunded: 'yes' }).labels[3],
+    'delegate_is_wallet_in_memory_automation_key');
+  assert.notDeepEqual(display, consentDisplay(cases(), { currentLedger: N - LIVE_SIGNATURE_LEDGERS }));
 });

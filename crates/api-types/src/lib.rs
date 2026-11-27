@@ -131,6 +131,9 @@ error_codes! {
     /// stateful limit would not hold.
     EDelegateGrantOverlap => "E_DELEGATE_GRANT_OVERLAP",
     EScanBudgetExceeded => "E_SCAN_BUDGET_EXCEEDED",
+    /// The rule requires the code its spec recorded at its target (an adapter-derived rule, or
+    /// a refuse-on-drift target identity), and the account read found other code there.
+    ETargetCodeChanged => "E_TARGET_CODE_CHANGED",
     // target capture
     /// The record-mode simulation of a supported capture failed: the target refused the call
     /// (for example an insufficient balance or a missing recipient), or the endpoint's
@@ -496,6 +499,55 @@ mod tests {
             .map(|code| code.as_str().to_string())
             .collect();
         assert_eq!(listed, expected);
+    }
+
+    /// The published vocabulary, pinned against the committed wire contract
+    /// (`docs/wire-contract.json`, which `scripts/release-artifacts.py check-wire-contract`
+    /// holds to the built server). This half needs no server build, so a change to the table
+    /// fails here, in this crate's own tests, before anything else is built.
+    #[test]
+    fn published_error_codes_are_pinned_by_the_committed_wire_contract() {
+        let snapshot: serde_json::Value =
+            serde_json::from_str(include_str!("../../../docs/wire-contract.json"))
+                .expect("docs/wire-contract.json must be JSON");
+        let published: Vec<&str> = snapshot["error_codes"]
+            .as_array()
+            .expect("the snapshot must list its error codes")
+            .iter()
+            .map(|code| code.as_str().expect("an error code is a string"))
+            .collect();
+        let current: Vec<&str> = ErrorCode::ALL.iter().map(|code| code.as_str()).collect();
+        let regenerate = "build ozpb-mcp-server, then python3 scripts/release-artifacts.py \
+                          check-wire-contract --server <the built ozpb-mcp-server> --update";
+
+        let gone: Vec<&str> = published
+            .iter()
+            .copied()
+            .filter(|code| !current.contains(code))
+            .collect();
+        assert!(
+            gone.is_empty(),
+            "{gone:?} published in docs/wire-contract.json but no longer in the error_codes! \
+             table. Removing or renaming an E_* code is a breaking change under \
+             docs/VERSIONING.md: restore it, or, if the break is intended, regenerate the \
+             snapshot ({regenerate}) and list it under the release notes' breaking changes."
+        );
+        let new: Vec<&str> = current
+            .iter()
+            .copied()
+            .filter(|code| !published.contains(code))
+            .collect();
+        assert!(
+            new.is_empty(),
+            "{new:?} not yet in docs/wire-contract.json. A new E_* code is additive under \
+             docs/VERSIONING.md (clients treat a code they do not recognize as a failure): \
+             regenerate the snapshot ({regenerate}) and name the code in the release notes."
+        );
+        assert_eq!(
+            published, current,
+            "the same codes in another order: the table appends new codes and moves none; \
+             regenerate the snapshot ({regenerate}) if the order changed on purpose"
+        );
     }
 
     #[test]

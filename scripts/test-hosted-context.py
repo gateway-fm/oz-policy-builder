@@ -158,6 +158,28 @@ class ImageRecordsTheExportedCommitTests(unittest.TestCase):
                 for line in builds:
                     if "--target proxy" in line:
                         self.assertNotIn("OZPB_TOOLKIT_SOURCE", line, "the proxy stage takes none")
+                # The container check is told the same commit and refuses an image recording another.
+                check = text.index("bash scripts/test-hosted-container.sh")
+                told = re.findall(
+                    r"(?m)^\s*export OZPB_TOOLKIT_COMMIT=\"\$\(git rev-parse --verify 'HEAD\^\{commit\}'\)\"$",
+                    text[:check],
+                )
+                self.assertEqual(len(told), 1, "the container check is told the exported commit")
+                self.assertIn("python3 -B scripts/test-check-hosted-build.py", text, "its comparator is tested")
+                self.assertIn("python3 -B scripts/test-check-hosted-retention.py", text,
+                              "its retention reader is tested")
+
+    def test_the_container_check_reads_what_the_tool_session_retains(self):
+        script = (REPO / "scripts/test-hosted-container.sh").read_text().replace("\\\n", " ")
+        kept = script.index("logging: {driver: json-file}")
+        override = script.index('compose+=(-f "$WORK/keep-output.yaml")')
+        tool_session = script.index("scripts/check-hosted-build.py")
+        retention = script.index("python3 scripts/check-hosted-retention.py")
+        self.assertLess(kept, override, "the override that keeps output is written before it is used")
+        self.assertLess(override, tool_session, "the tool session's containers keep their output")
+        self.assertLess(tool_session, retention, "the retention check reads that session")
+        for service in ("api", "tls"):
+            self.assertIn(f"  {service}: {{logging: {{driver: json-file}}}}", script)
 
 
 if __name__ == "__main__":

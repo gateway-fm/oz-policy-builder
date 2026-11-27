@@ -33,9 +33,20 @@ export function readPinnedWasm(dir, hash) {
   } catch { return null; } finally { if (fd !== undefined) closeSync(fd); }
 }
 
+/**
+ * The network arguments of a `stellar` command the owner runs. Testnet is built into stellar-cli; mainnet
+ * is not (`--network mainnet` fails, asking for an RPC provider), so the owner names an endpoint. That
+ * stays a placeholder, never the operator's `rpcUrl`: it may embed an API key, and this text reaches the
+ * browser.
+ */
+export function stellarNetworkArgs(network) {
+  return network.name === 'testnet' ? '--network testnet'
+    : `--rpc-url <your ${network.name} RPC endpoint> --network-passphrase '${network.passphrase}'`;
+}
+
 /** The exact command the owner runs to upload one pinned Wasm, and where the wallet expects the file. */
 export function uploadInstruction(network, dir, hash) {
   const wasmPath = `${dir ?? '<pinnedWasmDir>'}/${hash}.wasm`;
   return Object.freeze({ wasmPath,
-    command: `stellar contract upload --wasm ${wasmPath} --network ${network.name} --source <your funded ${network.name} key>` });
+    command: `stellar contract upload --wasm ${wasmPath} ${stellarNetworkArgs(network)} --source <your funded ${network.name} key>` });
 }

@@ -346,8 +346,9 @@ impl Policy for GeneratedPolicy {
         if !fn_0_ok {
             panic_with_error!(e, PolicyError::FunctionNotAllowed);
         }
-        let tuple_ok = (fn_0_ok && check_call_0(e, &c.args, &smart_account))
-            || (fn_0_ok && check_call_1(e, &c.args, &smart_account));
+        let tuple_ok = fn_0_ok
+            && (check_call_0(e, &c.args, &smart_account)
+                || check_call_1(e, &c.args, &smart_account));
         if !tuple_ok {
             panic_with_error!(e, PolicyError::NoTupleMatched);
         }
